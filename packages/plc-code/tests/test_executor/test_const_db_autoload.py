@@ -30,6 +30,26 @@ def test_constant_db_autoloads_from_search_path() -> None:
     assert harness.get_output("UsesDbConst") == 0x7000
 
 
+def test_db_reference_after_comparison_operator_resolves() -> None:
+    """``IF #v < "db".MEMBER`` must not be mistaken for an enum-string comparison.
+
+    The string-constant collector treats ``< "NAME"`` as a CASE/enum comparison
+    and maps it to an integer; a quoted name followed by ``.member`` is a DB
+    reference and must be left alone.
+    """
+    runtime = PLCRuntime(block_search_paths=[FIXTURES_DIR])
+    h1 = FBTestHarness.from_scl_file(FIXTURES_DIR / "UsesDbCompare.s7dcl", runtime)
+    h1.set_inputs(v=50)
+    h1.execute()
+    assert h1.get_output("UsesDbCompare") is True  # 50 < 100
+
+    runtime2 = PLCRuntime(block_search_paths=[FIXTURES_DIR])
+    h2 = FBTestHarness.from_scl_file(FIXTURES_DIR / "UsesDbCompare.s7dcl", runtime2)
+    h2.set_inputs(v=150)
+    h2.execute()
+    assert h2.get_output("UsesDbCompare") is False  # 150 < 100 is false
+
+
 def test_unregistered_db_still_raises_keyerror() -> None:
     """get_db on a name that exists nowhere must still raise (no silent autoload)."""
     runtime = PLCRuntime()
