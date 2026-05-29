@@ -4,9 +4,79 @@ This module provides the runtime environment for executing transpiled
 SCL code, including clock simulation and global data block management.
 """
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+
+# Matches a constant declaration inside a DATA_BLOCK VAR section:
+#   NAME : Type := value;
+_DB_CONST_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*:\s*\w+\s*:=\s*([^;]+);", re.MULTILINE)
+
+
+def _convert_db_literal(raw: str) -> Any:
+    """Convert an SCL literal from a DATA_BLOCK default to a Python value."""
+    value = raw.strip()
+    lowered = value.lower()
+    if lowered.startswith("16#"):
+        return int(value[3:], 16)
+    if lowered in ("true", "false"):
+        return lowered == "true"
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value.strip('"')
+
+
+def load_data_block(path: str | Path) -> SimpleNamespace:
+    """Load a constant ``DATA_BLOCK`` ``.s7dcl`` file into an attribute namespace.
+
+    Each ``NAME : Type := value;`` declaration in the block's ``VAR`` section
+    becomes an attribute with its converted Python value, so that code referencing
+    ``"DbName".MEMBER`` can read it at execution time.
+
+    Parameters
+    ----------
+    path : str | Path
+        Path to the DATA_BLOCK ``.s7dcl`` file.
+
+    Returns
+    -------
+    SimpleNamespace
+        Namespace exposing each constant as an attribute.
+    """
+    text = Path(path).read_text(encoding="utf-8-sig")
+    members = {name: _convert_db_literal(raw) for name, raw in _DB_CONST_RE.findall(text)}
+    return SimpleNamespace(**members)
+
+
+class _GlobalDBs(dict):
+    """Dict of global data blocks that lazily auto-loads constant DBs.
+
+    On access to a missing key, the matching ``<name>.s7dcl`` is searched for in
+    the owning runtime's ``block_search_paths``; if it is a ``DATA_BLOCK`` it is
+    loaded via :func:`load_data_block` and cached.  ``__contains__`` is *not*
+    overridden, so ``name in runtime.global_dbs`` stays False for unregistered
+    blocks (``get_db`` keeps raising for genuinely unknown names).
+    """
+
+    def __init__(self, runtime: "PLCRuntime") -> None:
+        super().__init__()
+        self._runtime = runtime
+
+    def __missing__(self, key: str) -> Any:
+        for search_dir in self._runtime.block_search_paths:
+            candidate = Path(search_dir) / f"{key}.s7dcl"
+            if candidate.exists() and "DATA_BLOCK" in candidate.read_text(encoding="utf-8-sig"):
+                db = load_data_block(candidate)
+                self[key] = db
+                return db
+        raise KeyError(key)
 
 
 class _AutoStruct:
@@ -233,6 +303,13 @@ class PLCRuntime:
     block_search_paths: list[Path] = field(default_factory=list)
     _named_block_cache: dict[str, Any] = field(default_factory=dict, repr=False)
 
+    def __post_init__(self) -> None:
+        """Wrap ``global_dbs`` so missing constant DBs auto-load from search paths."""
+        if not isinstance(self.global_dbs, _GlobalDBs):
+            wrapped = _GlobalDBs(self)
+            wrapped.update(self.global_dbs)
+            self.global_dbs = wrapped
+
     def register_db(self, name: str, data: Any) -> None:
         """Register a global data block.
 
@@ -419,6 +496,14 @@ class PLCRuntime:
             result_dict[name] = getattr(instance, name)
         for name in instance._in_outs:
             result_dict[name] = getattr(instance, name)
+
+        # Capture the FUNCTION return value.  A ``FUNCTION "Name" : <type>`` block
+        # returns its value through ``#Name := ...`` inside the body, which the
+        # transpiler emits as ``self.Name``.  That attribute is not part of
+        # _outputs/_in_outs, so expose it under the block name so an
+        # expression-position caller (e.g. ``IF "Name"(...) THEN``) can read it.
+        if block_name not in result_dict and hasattr(instance, block_name):
+            result_dict[block_name] = getattr(instance, block_name)
 
         return result_dict
 

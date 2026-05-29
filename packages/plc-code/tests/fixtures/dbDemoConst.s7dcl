@@ -1,0 +1,11 @@
+{
+    S7_Optimized := "TRUE"
+}
+DATA_BLOCK dbDemoConst
+    VAR
+        LIMIT_HI   : Int   := 100;
+        EPS        : LReal := 1.0E-9;
+        CODE_OK    : Word  := 16#7000;
+        FLAG_ON    : Bool  := true;
+    END_VAR
+END_DATA_BLOCK

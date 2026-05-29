@@ -130,7 +130,10 @@ class SCLTranspiler:
 
         # Also find string constants used in comparisons and assignments
         # Pattern: = "CONSTANT_NAME" or ="CONSTANT_NAME"
-        other_refs = re.findall(r'[=<>]\s*"([A-Z_][A-Z0-9_]*)"', all_code, re.IGNORECASE)
+        # The negative lookahead excludes quoted names that are actually global DB
+        # references (`"Db".member`) or sub-block calls (`"Block"(...)`) — those are
+        # not enum-string comparisons and must not be mapped to integers.
+        other_refs = re.findall(r'[=<>]\s*"([A-Z_][A-Z0-9_]*)"(?!\s*[.(])', all_code, re.IGNORECASE)
         for ref in other_refs:
             key = f'"{ref}"'
             if key not in self._string_constants:

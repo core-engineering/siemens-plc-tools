@@ -1,0 +1,19 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Version := "0.1"
+}
+FUNCTION "UsesDbCompare" : Bool
+    VAR_INPUT
+        v : Int;
+    END_VAR
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION Threshold check
+            IF #v < "dbDemoConst".LIMIT_HI THEN
+                #UsesDbCompare := true;
+            ELSE
+                #UsesDbCompare := false;
+            END_IF;
+        END_REGION
+    END_NETWORK
+END_FUNCTION

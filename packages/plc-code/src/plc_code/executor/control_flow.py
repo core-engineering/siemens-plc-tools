@@ -76,29 +76,63 @@ class ControlFlowTranslator:
 
             raw_lines.append(line)
 
-        # Join continuation lines: TIA Portal sometimes splits a single SCL
-        # assignment across two source lines, placing the LHS and ':=' on one
-        # line with nothing after ':=', and the RHS on the next line.
-        # Example:
-        #   # matrixResult[#i, #k] :=
-        #   # matrixResult[#i, #k] * # matrixResult[#k, #k] ;
-        # We detect this by checking whether a non-comment line ends with ':='
-        # (possibly followed only by whitespace) and join it with the next line.
+        # Join continuation lines: TIA Portal preserves the author's line breaks
+        # inside a REGION, so a single SCL statement may span several physical
+        # lines.  Two shapes occur:
+        #   1. the line ends with a dangling operator (``:=``, ``+``, ``(`` ...):
+        #          #matrixResult[#i, #k] :=
+        #              #matrixResult[#i, #k] * #matrixResult[#k, #k] ;
+        #   2. the next line *starts* with a binary operator (operator-led
+        #      continuation), which is never valid at the start of a statement:
+        #          #s := #a
+        #              + #b * 2.0
+        #              + #c * 3.0 ;
+        # We greedily absorb following lines until the statement is complete
+        # (i.e. terminated by ``;`` or no longer looking like a continuation).
         lines: list[str] = []
         i = 0
         while i < len(raw_lines):
-            line = raw_lines[i]
-            stripped = line.rstrip()
-            if stripped.endswith(":=") and i + 1 < len(raw_lines):
-                # Continuation: merge LHS line with the RHS on the next line
-                joined = stripped + " " + raw_lines[i + 1].strip()
-                lines.append(joined)
-                i += 2
-            else:
-                lines.append(line)
+            current = raw_lines[i]
+            while i + 1 < len(raw_lines):
+                cur_stripped = current.rstrip()
+                if cur_stripped.endswith(";"):
+                    break
+                nxt = raw_lines[i + 1].strip()
+                if not self._is_continuation(cur_stripped, nxt):
+                    break
+                current = cur_stripped + " " + nxt
                 i += 1
+            lines.append(current)
+            i += 1
 
         return lines
+
+    # Operators that, at the end of a line, require a right-hand side on the next.
+    _CONT_END = re.compile(r"(:=|[-+*/(,<>=])$")
+    _CONT_END_KW = re.compile(r"\b(AND|OR|MOD|DIV|NOT|TO|BY)$", re.IGNORECASE)
+    # Operators that, at the start of a line, mark it as a continuation of the
+    # previous one (a statement can never legitimately *begin* with these).
+    _CONT_START = re.compile(r"^[-+*/).,<>=]")
+    _CONT_START_KW = re.compile(r"^(AND|OR|MOD|DIV)\b", re.IGNORECASE)
+
+    def _is_continuation(self, current: str, nxt: str) -> bool:
+        """Return True if ``nxt`` continues the (unterminated) statement ``current``.
+
+        Parameters
+        ----------
+        current : str
+            The accumulated statement so far (already right-stripped, not ending
+            in ``;``).
+        nxt : str
+            The next physical line, left/right-stripped.
+        """
+        if not nxt:
+            return False
+        if current.endswith(":=") or self._CONT_END.search(current) or self._CONT_END_KW.search(current):
+            return True
+        if self._CONT_START.match(nxt) or self._CONT_START_KW.match(nxt):
+            return True
+        return False
 
     def _normalize_spacing(self, line: str) -> str:
         """Normalize spacing around SCL keywords.
