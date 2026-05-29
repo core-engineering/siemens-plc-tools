@@ -46,7 +46,9 @@ class ExpressionTranslator:
 
     # Patterns for SCL constructs
     INSTANCE_VAR_PATTERN = re.compile(r"#(\w+)")
-    GLOBAL_DB_PATTERN = re.compile(r'"(\w+)"\.(.+)')
+    # ``"DbName".member`` — the parser joins tokens with spaces, so tolerate
+    # whitespace around the dot (e.g. ``"dbConst" . RESULT_WORKING``).
+    GLOBAL_DB_PATTERN = re.compile(r'"(\w+)"\s*\.\s*(.+)')
     LIBRARY_TYPE_PATTERN = re.compile(r"_\.(\w+)")
     ARRAY_ACCESS_PATTERN = re.compile(r"\[([^\]]+)\]")
     STRING_KEY_PATTERN = re.compile(r'\["([^"]+)"\]')
@@ -120,14 +122,22 @@ class ExpressionTranslator:
         # The parser may insert a space between '#' and the identifier.
         result = re.sub(r"#\s+(\w)", r"#\1", result)
 
+        # Extract quoted-name sub-block calls used in expression position
+        # (e.g. inside an IF condition or on the RHS of an assignment) and protect
+        # them as placeholders.  Each call is fully translated here, so the operator
+        # translation below cannot mangle the ``:=`` of its parameters.
+        result, named_call_placeholders = self._extract_named_calls(result)
+
+        # Translate SCL hex literals (16#XXXX -> 0xXXXX) BEFORE instance variables:
+        # otherwise the ``#`` of ``16#8201`` is mistaken for an instance-variable
+        # prefix and ``#8201`` becomes ``self.8201``.
+        result = self._translate_hex_literals(result)
+
         # Replace instance variables (#var -> self.var)
         result = self.INSTANCE_VAR_PATTERN.sub(r"self.\1", result)
 
         # Replace global DB access ("DB".member -> self._runtime.global_dbs["DB"].member)
         result = self._translate_global_db(result)
-
-        # Translate SCL hex literals (16#XXXX -> 0xXXXX)
-        result = self._translate_hex_literals(result)
 
         # Rewrite LOWER_BOUND/UPPER_BOUND named-param calls before operator translation
         # so that ARR := and DIM := are still intact
@@ -145,7 +155,108 @@ class ExpressionTranslator:
         # Translate multi-index array access: arr[i, j] -> arr[i][j]
         result = self._translate_multi_index(result)
 
+        # Restore protected sub-block calls (already fully translated Python).
+        for placeholder, code in named_call_placeholders.items():
+            result = result.replace(placeholder, code)
+
         return result
+
+    # Opening of a quoted-name block call: "BlockName"(
+    _NAMED_CALL_OPEN = re.compile(r'"([^"]+)"\s*\(')
+
+    def _extract_named_calls(self, expr: str) -> tuple[str, dict[str, str]]:
+        """Replace ``"Block"(args)`` calls with placeholders, fully translating each.
+
+        Parameters
+        ----------
+        expr : str
+            The (instance-variable-normalised) SCL expression.
+
+        Returns
+        -------
+        tuple[str, dict[str, str]]
+            The expression with each call replaced by a ``__NCALL<n>__``
+            placeholder, plus a mapping of placeholder -> Python call expression.
+            Placeholders contain only word characters, so the regex-based operator
+            translation that runs afterwards leaves them untouched.
+        """
+        placeholders: dict[str, str] = {}
+        out: list[str] = []
+        i = 0
+        n = len(expr)
+        while i < n:
+            match = self._NAMED_CALL_OPEN.match(expr, i)
+            if match:
+                # Find the matching closing parenthesis of the argument list.
+                depth = 1
+                j = match.end()
+                while j < n and depth > 0:
+                    if expr[j] == "(":
+                        depth += 1
+                    elif expr[j] == ")":
+                        depth -= 1
+                    j += 1
+                if depth == 0:
+                    params_str = expr[match.end() : j - 1]
+                    placeholder = f"__NCALL{len(placeholders)}__"
+                    placeholders[placeholder] = self._build_named_call(match.group(1), params_str)
+                    out.append(placeholder)
+                    i = j
+                    continue
+            out.append(expr[i])
+            i += 1
+        return "".join(out), placeholders
+
+    def _build_named_call(self, block_name: str, params_str: str) -> str:
+        """Build a ``call_named_block(...)`` expression returning the FUNCTION's value.
+
+        Parameters
+        ----------
+        block_name : str
+            The sub-block name (without quotes).
+        params_str : str
+            The raw argument list between the outer parentheses.
+
+        Returns
+        -------
+        str
+            A Python expression that calls the sub-block and evaluates to its
+            return value.
+        """
+        inputs: list[str] = []
+        for param in self._split_top_level_commas(params_str):
+            param = param.strip()
+            if not param:
+                continue
+            param = re.sub(r":\s*=", ":=", param)
+            if ":=" in param:
+                name, value = param.split(":=", 1)
+                # Recursively translate the argument value (handles #vars, operators...).
+                inputs.append(f'"{name.strip()}": {self.translate(value.strip())}')
+        inputs_dict = "{" + ", ".join(inputs) + "}"
+        return f'self._runtime.call_named_block("{block_name}", {inputs_dict}, {{}})["{block_name}"]'
+
+    @staticmethod
+    def _split_top_level_commas(text: str) -> list[str]:
+        """Split ``text`` on commas that are not nested inside ``()`` or ``[]``."""
+        parts: list[str] = []
+        depth = 0
+        current = ""
+        for ch in text:
+            if ch in "([":
+                depth += 1
+                current += ch
+            elif ch in ")]":
+                depth -= 1
+                current += ch
+            elif ch == "," and depth == 0:
+                parts.append(current)
+                current = ""
+            else:
+                current += ch
+        if current.strip():
+            parts.append(current)
+        return parts
 
     def _translate_global_db(self, expr: str) -> str:
         """Translate global data block access.
@@ -183,8 +294,11 @@ class ExpressionTranslator:
         str
             Expression with hex literals in Python format.
         """
+        # Tolerate whitespace around ``#`` — the parser joins ``16``, ``#`` and the
+        # digits into ``16 # 8201`` when a hex literal appears in code (rather than
+        # as a variable default, which is parsed verbatim).
         return re.sub(
-            r"\b16#([0-9A-Fa-f]+)\b",
+            r"\b16\s*#\s*([0-9A-Fa-f]+)\b",
             lambda m: hex(int(m.group(1), 16)),
             expr,
         )

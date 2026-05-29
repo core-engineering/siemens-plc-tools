@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **plc-code (executor/transpiler)** — five SCL constructs that previously
+  transpiled to broken Python (and forced downstream workarounds) now work:
+  - `REGION` names containing hyphens or digits (e.g. `REGION Per-axis validation`,
+    `REGION Set 7 phases`) — the parser captured only the leading identifier and
+    leaked the rest into the region body as invalid code.
+  - Assignments whose right-hand side spans several source lines inside a `REGION`
+    (operator-led continuation) — only the first line was translated.
+  - Global DB references `"DbName".MEMBER` — the parser inserts spaces around the
+    dot (`"db" . MEMBER`), which the DB-access pattern no longer matched.
+  - Quoted-name sub-block calls used in expression position
+    (`IF NOT "IsFiniteLreal"(x := #v) THEN ...`) — only statement-position calls
+    were supported; `call_named_block` now also returns the `FUNCTION` value.
+  - Hex literals in code (`#status := 16#8201;`) — the `#` was mistaken for an
+    instance-variable prefix and the value was lost.
+
 ## [0.1.0] - 2026-05-29
 
 First public release.
@@ -24,4 +42,5 @@ First public release.
 - `plc-sim` and `plc-sup` are runtime integration tools and require live infrastructure (OPC UA server, Redis, TimescaleDB) to exercise end to end.
 - `plc code docs` writes generated output that is git-ignored.
 
+[Unreleased]: https://github.com/core-engineering/siemens-plc-tools/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/core-engineering/siemens-plc-tools/releases/tag/v0.1.0

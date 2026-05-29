@@ -420,6 +420,14 @@ class PLCRuntime:
         for name in instance._in_outs:
             result_dict[name] = getattr(instance, name)
 
+        # Capture the FUNCTION return value.  A ``FUNCTION "Name" : <type>`` block
+        # returns its value through ``#Name := ...`` inside the body, which the
+        # transpiler emits as ``self.Name``.  That attribute is not part of
+        # _outputs/_in_outs, so expose it under the block name so an
+        # expression-position caller (e.g. ``IF "Name"(...) THEN``) can read it.
+        if block_name not in result_dict and hasattr(instance, block_name):
+            result_dict[block_name] = getattr(instance, block_name)
+
         return result_dict
 
     def execute_cycle(self) -> None:

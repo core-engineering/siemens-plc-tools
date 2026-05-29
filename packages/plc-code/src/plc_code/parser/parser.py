@@ -732,18 +732,29 @@ class SCLParser:
         """
         self._expect(TokenType.REGION)
 
-        # Region name - can be quoted string or multiple identifiers
+        # Region name - can be a quoted string or a free-form sequence of tokens.
+        # TIA Portal allows region names with hyphens, digits and other operator
+        # characters (e.g. ``REGION Per-axis validation`` or ``REGION Set 7 phases``).
+        # The lexer tokenises these into separate tokens (MINUS, NUMBER, ...), so we
+        # must consume *everything* up to the end of the line rather than only
+        # IDENTIFIER tokens — otherwise the tail leaks into the region content and is
+        # later mistranslated as code.
         name_parts = []
         if self._current().type == TokenType.STRING:
             name_parts.append(self._current().value.strip('"'))
             self._advance()
         else:
-            # Collect identifiers until newline
-            while self._current().type == TokenType.IDENTIFIER:
+            # Collect all tokens until the end of the line (or an inline comment).
+            while self._current().type not in (
+                TokenType.NEWLINE,
+                TokenType.EOF,
+                TokenType.COMMENT,
+                TokenType.BLOCK_COMMENT,
+            ):
                 name_parts.append(self._current().value)
                 self._advance()
 
-        name = " ".join(name_parts)
+        name = " ".join(part for part in name_parts if part).strip()
         self._skip_newlines()
 
         region = Region(name=name)
@@ -795,10 +806,16 @@ class SCLParser:
 
         if self._current().type == TokenType.END_REGION:
             self._advance()
-            # TIA Portal emits ``END_REGION <name>`` (unquoted identifiers after the
-            # keyword, mirroring the ``REGION <name>`` header).  Consume those
-            # trailing identifier tokens so they don't leak into the parent's content.
-            while self._current().type == TokenType.IDENTIFIER:
+            # TIA Portal emits ``END_REGION <name>`` (the same free-form name as the
+            # ``REGION <name>`` header, which may contain hyphens or digits).  Consume
+            # every trailing token up to the end of the line so the name does not leak
+            # into the parent's content.
+            while self._current().type not in (
+                TokenType.NEWLINE,
+                TokenType.EOF,
+                TokenType.COMMENT,
+                TokenType.BLOCK_COMMENT,
+            ):
                 self._advance()
 
         return region

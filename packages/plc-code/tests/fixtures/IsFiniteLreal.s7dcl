@@ -1,0 +1,22 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION "IsFiniteLreal" : Bool
+    VAR_INPUT
+        x : LReal;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        // Finite when x equals itself (NaN fails this) and is not infinite.
+        IF #x <> #x THEN
+            #IsFiniteLreal := false;
+        ELSIF (#x > 1.0E308) OR (#x < -1.0E308) THEN
+            #IsFiniteLreal := false;
+        ELSE
+            #IsFiniteLreal := true;
+        END_IF;
+    END_NETWORK
+END_FUNCTION
