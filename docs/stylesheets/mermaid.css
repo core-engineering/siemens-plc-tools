@@ -1,0 +1,28 @@
+/* Make Mermaid diagrams larger and scrollable */
+.mermaid {
+    width: 100%;
+    overflow-x: auto;
+    text-align: center;
+}
+
+.mermaid svg {
+    max-width: none !important;
+    min-width: 800px;
+    height: auto !important;
+    min-height: 400px;
+}
+
+/* Make nodes more clickable */
+.mermaid .node {
+    cursor: pointer;
+}
+
+.mermaid .node:hover rect,
+.mermaid .node:hover polygon {
+    filter: brightness(0.9);
+}
+
+/* Improve edge visibility */
+.mermaid .edgePath path {
+    stroke-width: 2px;
+}

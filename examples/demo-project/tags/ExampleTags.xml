@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Document>
+  <SW.Tags.PlcTagTable ID="0">
+    <AttributeList>
+      <Name>ExampleTags</Name>
+    </AttributeList>
+    <ObjectList>
+      <SW.Tags.PlcTag ID="1">
+        <AttributeList>
+          <Name>DI_STATION_START</Name>
+          <DataTypeName>Bool</DataTypeName>
+          <LogicalAddress>%I0.0</LogicalAddress>
+        </AttributeList>
+        <ObjectList>
+          <MultilingualText ID="2" CompositionName="Comment">
+            <ObjectList>
+              <MultilingualTextItem ID="3" CompositionName="Items">
+                <AttributeList>
+                  <Culture>en-US</Culture>
+                  <Text>Station start pushbutton</Text>
+                </AttributeList>
+              </MultilingualTextItem>
+            </ObjectList>
+          </MultilingualText>
+        </ObjectList>
+      </SW.Tags.PlcTag>
+      <SW.Tags.PlcTag ID="4">
+        <AttributeList>
+          <Name>DO_PUMP_RUN</Name>
+          <DataTypeName>Bool</DataTypeName>
+          <LogicalAddress>%Q0.0</LogicalAddress>
+        </AttributeList>
+        <ObjectList>
+          <MultilingualText ID="5" CompositionName="Comment">
+            <ObjectList>
+              <MultilingualTextItem ID="6" CompositionName="Items">
+                <AttributeList>
+                  <Culture>en-US</Culture>
+                  <Text>Pump run command</Text>
+                </AttributeList>
+              </MultilingualTextItem>
+            </ObjectList>
+          </MultilingualText>
+        </ObjectList>
+      </SW.Tags.PlcTag>
+      <SW.Tags.PlcTag ID="7">
+        <AttributeList>
+          <Name>AI_TANK_LEVEL</Name>
+          <DataTypeName>Int</DataTypeName>
+          <LogicalAddress>%IW64</LogicalAddress>
+        </AttributeList>
+        <ObjectList>
+          <MultilingualText ID="8" CompositionName="Comment">
+            <ObjectList>
+              <MultilingualTextItem ID="9" CompositionName="Items">
+                <AttributeList>
+                  <Culture>en-US</Culture>
+                  <Text>Tank level analog input</Text>
+                </AttributeList>
+              </MultilingualTextItem>
+            </ObjectList>
+          </MultilingualText>
+        </ObjectList>
+      </SW.Tags.PlcTag>
+      <SW.Tags.PlcTag ID="10">
+        <AttributeList>
+          <Name>AO_VALVE_CMD</Name>
+          <DataTypeName>Int</DataTypeName>
+          <LogicalAddress>%QW66</LogicalAddress>
+        </AttributeList>
+        <ObjectList>
+          <MultilingualText ID="11" CompositionName="Comment">
+            <ObjectList>
+              <MultilingualTextItem ID="12" CompositionName="Items">
+                <AttributeList>
+                  <Culture>en-US</Culture>
+                  <Text>Valve position command</Text>
+                </AttributeList>
+              </MultilingualTextItem>
+            </ObjectList>
+          </MultilingualText>
+        </ObjectList>
+      </SW.Tags.PlcTag>
+    </ObjectList>
+  </SW.Tags.PlcTagTable>
+</Document>

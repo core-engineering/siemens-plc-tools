@@ -1,0 +1,22 @@
+document:
+  title: "Example Plant — Control Logic"
+  drawing_number: "DOC-0001"
+  revision: "1"
+  drawn_by: "Example Author"
+  approved_by: "Example Reviewer"
+  output_pdf: ["process+safety"]
+
+fb_rendering:
+  MotorStarter:
+    style: pattern
+    definition_page: 4
+
+chapters:
+  - name: "Station"
+    range: [10, 39]
+    source_blocks: ["110-Station/MotorStarter.s7dcl"]
+    pages:
+      - num: 10
+        title: "Station input"
+        blocks: ["DI-001", "DI-002"]
+        comments: ["Station mode is set to AUTO"]

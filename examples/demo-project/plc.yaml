@@ -1,0 +1,42 @@
+# Example project configuration for the siemens-plc-tools toolchain.
+#
+# This is a unified plc.yaml. The `plc code` commands read the `code:` section
+# and the `plc iol` commands read the `iol:` section. The top-level `project:`
+# block is shared by both.
+
+project:
+  name: "Example Plant"
+  code: "PRJ"
+  version: "1.0.0"
+
+# SCL module configuration (consumed by `plc code ...`)
+code:
+  paths:
+    source: program-blocks   # SCL source files (.s7dcl)
+    tags: tags               # XML tag exports
+    docs: docs               # Generated documentation (git-ignored)
+    tests: tests             # Unit test files (test_*.py)
+  quality:
+    enabled: true            # Run quality analysis
+    fail_on_error: false     # Report findings without failing the example
+  testing:
+    enabled: true
+    test_dirs:
+      - tests
+  include_patterns:
+    - "**/*.s7dcl"
+  exclude_patterns: []
+
+# IOL module configuration (consumed by `plc iol ...`)
+iol:
+  paths:
+    tags: tags               # XML tag exports
+    iol: iol                 # IOL spec sheets
+    database: .iol           # Local database cache (git-ignored)
+  naming:
+    pattern: "{io_category}_{location}_{signal}"
+  functional_groups:
+    - id: COMMON
+      name: "Common Equipment"
+      xml_files:
+        - ExampleTags.xml

@@ -1,0 +1,118 @@
+{
+    S7_Author := "Example Author";
+    S7_EditorMode := "SCL";
+    S7_Family := "ProcessLib";
+    S7_Optimized := "TRUE";
+    S7_Version := "1.0"
+}
+FUNCTION_BLOCK "MotorStarter"
+    VAR_INPUT
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        startCommand : Bool;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        stopCommand : Bool;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        faultDetected : Bool;
+    END_VAR
+    VAR_OUTPUT
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        motorState : USInt;
+    END_VAR
+    VAR
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        activeState : USInt := 0;
+    END_VAR
+    VAR CONSTANT
+        STOPPED : USInt := 0;
+        RUNNING : USInt := 1;
+        FAULT : USInt := 2;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION Block info header
+            //===============================================================================
+            // (c) Example Author
+            //-------------------------------------------------------------------------------
+            // Title:            MotorStarter
+            // Comment/Function: Manage the motor starter state machine
+            // Library/Family:   ProcessLib
+            // Author:           Example Author
+            //-------------------------------------------------------------------------------
+            // Change log table:
+            // Version  | Date       | Expert in charge       | Changes applied
+            //----------|------------|------------------------|------------------------------
+            // v1.0.0 | Example Author | Initial version
+            //
+            //===============================================================================
+        END_REGION
+
+        REGION Description
+            { S7_MLC := "" }
+        END_REGION
+
+        REGION Motor starter state machine
+            CASE #activeState OF
+
+                #STOPPED:
+                    REGION STOPPED state
+
+                        REGION STOPPED state transitions
+                            IF #startCommand AND NOT(#faultDetected) THEN
+                                #activeState := #RUNNING;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+                #RUNNING:
+                    REGION RUNNING state
+
+                        REGION RUNNING state transitions
+                            IF #stopCommand THEN
+                                #activeState := #STOPPED;
+                            END_IF;
+
+                            IF #faultDetected THEN
+                                #activeState := #FAULT;
+                            END_IF;
+
+                        END_REGION
+
+                    END_REGION
+
+                #FAULT:
+                    REGION FAULT state
+
+                        REGION FAULT state transitions
+                            IF NOT(#faultDetected) AND #stopCommand THEN
+                                #activeState := #STOPPED;
+                            END_IF;
+
+                        END_REGION
+
+                    END_REGION
+
+            END_CASE;
+        END_REGION
+
+        REGION Output
+            #motorState := #activeState;
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK

@@ -1,0 +1,91 @@
+{
+    S7_Author := "Example Author";
+    S7_EditorMode := "SCL";
+    S7_Family := "ProcessLib";
+    S7_Optimized := "TRUE";
+    S7_Version := "1.0"
+}
+FUNCTION_BLOCK "ValveControl"
+    VAR_INPUT
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        openCommand : Bool;
+    END_VAR
+    VAR_OUTPUT
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        valveState : USInt;
+    END_VAR
+    VAR
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        activeState : USInt := 0;
+    END_VAR
+    VAR CONSTANT
+        CLOSED : USInt := 0;
+        OPEN : USInt := 1;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION Block info header
+            //===============================================================================
+            // (c) Example Author
+            //-------------------------------------------------------------------------------
+            // Title:            ValveControl
+            // Comment/Function: Manage the valve control state machine
+            // Library/Family:   ProcessLib
+            // Author:           Example Author
+            //-------------------------------------------------------------------------------
+            // Change log table:
+            // Version  | Date       | Expert in charge       | Changes applied
+            //----------|------------|------------------------|------------------------------
+            // v1.0.0 | Example Author | Initial version
+            //
+            //===============================================================================
+        END_REGION
+
+        REGION Description
+            { S7_MLC := "" }
+        END_REGION
+
+        REGION Valve control state machine
+            CASE #activeState OF
+
+                #CLOSED:
+                    REGION CLOSED state
+
+                        REGION CLOSED state transitions
+                            IF #openCommand  THEN
+                                #activeState := #OPEN;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+                #OPEN:
+                    REGION OPEN state
+
+                        REGION OPEN state transitions
+                            IF NOT(#openCommand) THEN
+                                #activeState := #CLOSED;
+                            END_IF;
+
+                        END_REGION
+
+                    END_REGION
+
+            END_CASE;
+        END_REGION
+
+        REGION Output
+            #valveState := #activeState;
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK

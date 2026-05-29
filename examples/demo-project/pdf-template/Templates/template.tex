@@ -1,0 +1,174 @@
+%%
+% Neutral, self-contained pandoc LaTeX template for siemens-plc-tools.
+%
+% This template is intentionally minimal and brand-free. It demonstrates the
+% custom-template export feature (`plc code export pdf --template-dir ...`)
+% without depending on any external image or binary asset, so it compiles
+% standalone with xelatex.
+%
+% It consumes the standard pandoc variables together with the frontmatter keys
+% emitted by the exporter (title, subtitle, author, date, toc, titlepage,
+% papersize, geometry, fontsize, listings). Replace or extend it freely to
+% match your own house style.
+%%
+
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+\PassOptionsToPackage{dvipsnames,svgnames,x11names,table}{xcolor}
+
+\documentclass[
+$if(fontsize)$
+  $fontsize$,
+$endif$
+$if(papersize)$
+  $papersize$paper,
+$else$
+  a4paper,
+$endif$
+$for(classoption)$
+  $classoption$$sep$,
+$endfor$
+]{article}
+
+\usepackage{iftex}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+
+% --- Fonts (xelatex / lualatex) -------------------------------------------
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp}
+\else
+  \usepackage{fontspec}
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+$if(mainfont)$
+  \setmainfont[$for(mainfontoptions)$$mainfontoptions$$sep$,$endfor$]{$mainfont$}
+$endif$
+$if(monofont)$
+  \setmonofont[$for(monofontoptions)$$monofontoptions$$sep$,$endfor$]{$monofont$}
+$endif$
+\fi
+
+% --- Page geometry --------------------------------------------------------
+$if(geometry)$
+\usepackage[$for(geometry)$$geometry$$sep$,$endfor$]{geometry}
+$else$
+\usepackage[margin=2.5cm]{geometry}
+$endif$
+
+% --- Tables / lists -------------------------------------------------------
+\usepackage{longtable,booktabs,array}
+\usepackage{calc}
+\usepackage{etoolbox}
+\usepackage{enumitem}
+\setlist[itemize]{leftmargin=*}
+\setlist[enumerate]{leftmargin=*}
+
+% pandoc table helpers
+\providecommand{\toprule}{\hline}
+\providecommand{\midrule}{\hline}
+\providecommand{\bottomrule}{\hline}
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+% pandoc 3.x column-width helpers for pipe tables
+\newlength{\cslhangindent}
+\newcommand{\real}[1]{#1}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+% --- Code listings --------------------------------------------------------
+$if(listings)$
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  breakatwhitespace=true,
+  columns=fullflexible,
+  frame=single,
+  framesep=4pt,
+  rulecolor=\color{gray!40},
+  backgroundcolor=\color{gray!5},
+  keepspaces=true,
+  showstringspaces=false,
+  tabsize=2,
+}
+\newcommand{\passthrough}[1]{#1}
+$endif$
+
+% --- Syntax highlighting (pandoc-generated) -------------------------------
+$if(highlighting-macros)$
+$highlighting-macros$
+$endif$
+
+% --- Links ----------------------------------------------------------------
+\usepackage{hyperref}
+\hypersetup{
+  pdftitle={$title-meta$},
+  pdfauthor={$author-meta$},
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue!60!black,
+  citecolor=blue!60!black,
+}
+\urlstyle{same}
+
+% --- Header / footer ------------------------------------------------------
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\pagestyle{fancy}
+\fancyhf{}
+$if(header-left)$\fancyhead[L]{\small $header-left$}$endif$
+$if(header-center)$\fancyhead[C]{\small $header-center$}$endif$
+\fancyfoot[C]{\small $if(footer-center)$$footer-center$$endif$}
+\fancyfoot[R]{\small \thepage\ / \pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+% --- Title metadata -------------------------------------------------------
+\title{$title$$if(subtitle)$\\[0.4em]\large $subtitle$$endif$}
+\author{$for(author)$$author$$sep$ \and $endfor$}
+\date{$date$}
+
+\begin{document}
+
+% --- Title page -----------------------------------------------------------
+$if(titlepage)$
+\begin{titlepage}
+\thispagestyle{empty}
+\centering
+\vspace*{4cm}
+{\Huge\bfseries $title$\par}
+$if(subtitle)$
+\vspace{0.8cm}
+{\Large $subtitle$\par}
+$endif$
+\vspace{2cm}
+$for(author)$
+{\large $author$\par}
+$endfor$
+$if(date)$
+\vspace{0.4cm}
+{\large $date$\par}
+$endif$
+\vfill
+\end{titlepage}
+$else$
+\maketitle
+$endif$
+
+% --- Table of contents ----------------------------------------------------
+$if(toc)$
+{
+\hypersetup{linkcolor=black}
+\setcounter{tocdepth}{$if(toc-depth)$$toc-depth$$else$2$endif$}
+\tableofcontents
+\newpage
+}
+$endif$
+
+% --- Body -----------------------------------------------------------------
+$body$
+
+\end{document}

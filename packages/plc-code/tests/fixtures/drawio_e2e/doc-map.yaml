@@ -1,0 +1,21 @@
+document:
+  title: "E2E test fixture"
+  drawing_number: "E2E-001"
+  revision: "1"
+  drawn_by: "Tester"
+  approved_by: "Reviewer"
+  output_pdf: ["process+safety"]
+
+chapters:
+  - name: "Station"
+    range: [10, 39]
+    source_blocks: []
+    pages:
+      - num: 10
+        title: "Station input"
+        blocks: ["DI-001", "DI-002"]
+        comments: ["Station mode is AUTO"]
+      - num: 12
+        title: "Steering"
+        blocks: ["DI-003"]
+        comments: []

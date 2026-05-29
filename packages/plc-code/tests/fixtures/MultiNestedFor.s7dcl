@@ -1,0 +1,28 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION "MultiNestedFor" : Void
+    VAR_INPUT
+        scale : Real;
+    END_VAR
+    VAR_OUTPUT
+        result : Real;
+    END_VAR
+    VAR_TEMP
+        arr : Array[1..2, 0..1] of Real;
+        i : Int;
+        j : Int;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        FOR #i := 1 TO 2 DO
+            FOR #j := 0 TO 1 DO
+                #arr[#i, #j] := #scale * #i;
+            END_FOR;
+        END_FOR;
+        #result := #arr[2, 1];
+    END_NETWORK
+END_FUNCTION

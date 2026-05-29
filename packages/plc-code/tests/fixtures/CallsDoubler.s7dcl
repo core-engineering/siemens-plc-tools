@@ -1,0 +1,24 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION "CallsDoubler" : Void
+    VAR_INPUT
+        value : Real;
+    END_VAR
+    VAR_OUTPUT
+        doubled : Real;
+        quadrupled : Real;
+    END_VAR
+    VAR_TEMP
+        intermediate : Real;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        "Doubler"(x := #value, result := #intermediate);
+        "Doubler"(x := #intermediate, result := #quadrupled);
+        #doubled := #intermediate;
+    END_NETWORK
+END_FUNCTION

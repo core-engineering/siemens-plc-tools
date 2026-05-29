@@ -1,0 +1,177 @@
+{
+    S7_Author := "Example Author";
+    S7_EditorMode := "SCL";
+    S7_Family := "ProcessLib";
+    S7_Optimized := "TRUE";
+    S7_Version := "2.0"
+}
+FUNCTION_BLOCK "ConveyorMode"
+    VAR_INPUT
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        manualSelect : Bool;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        autoSelect : Bool;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        jogSelect : Bool;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        maintSelect : Bool;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        runPermissive : USInt;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        beltStopped : Bool;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        guardClosed : Bool;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        faultActive : Bool;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        operatorPresent : Bool;
+    END_VAR
+    VAR_OUTPUT
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        conveyorMode : USInt;
+    END_VAR
+    VAR
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        activeState : USInt;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION Block info header
+            //===============================================================================
+            // (c) Example Author
+            //-------------------------------------------------------------------------------
+            // Title:            ConveyorMode
+            // Comment/Function: Manage the conveyor operating mode state machine
+            // Library/Family:   ProcessLib
+            // Author:           Example Author
+            //-------------------------------------------------------------------------------
+            // Change log table:
+            // Version  | Date       | Expert in charge       | Changes applied
+            //----------|------------|------------------------|------------------------------
+            // v1.0.0 | Example Author | Initial version
+            //
+            //===============================================================================
+        END_REGION
+
+        REGION Description
+            { S7_MLC := "" }
+        END_REGION
+
+        REGION Conveyor mode state machine
+            CASE #activeState OF
+
+                "MANUAL":
+                    REGION MANUAL mode
+                        REGION MANUAL mode transitions
+                            IF #autoSelect AND #guardClosed THEN
+                                #activeState := "AUTO";
+                            END_IF;
+
+                            IF #jogSelect AND #beltStopped THEN
+                                #activeState := "JOG";
+                            END_IF;
+                        END_REGION
+
+                        REGION MANUAL mode actions
+                        END_REGION
+
+                    END_REGION
+
+                "AUTO":
+                    REGION AUTO mode
+                        REGION AUTO mode transitions
+                            IF NOT (#autoSelect)
+                                AND NOT(#runPermissive = 1) THEN
+                                #activeState := "MANUAL";
+                            END_IF;
+
+                            IF (#manualSelect AND #faultActive)
+                                OR #beltStopped
+                                OR #operatorPresent
+                                OR NOT(#guardClosed)
+                                OR (NOT(#autoSelect) AND (#runPermissive = 0))THEN
+                                #activeState := "MAINT";
+                            END_IF;
+
+                        END_REGION
+
+                        REGION AUTO mode actions
+                        END_REGION
+
+                    END_REGION
+
+                "JOG":
+                    REGION JOG mode
+                        REGION JOG mode transitions
+                            IF #manualSelect
+                                AND #beltStopped
+                                AND #guardClosed
+                                AND NOT(#faultActive)
+                            THEN
+                                #activeState := "MANUAL";
+                            END_IF;
+                        END_REGION
+
+                        REGION JOG mode actions
+                        END_REGION
+
+                    END_REGION
+
+                "MAINT":
+                    REGION MAINT mode
+                        REGION MAINT mode transitions
+                            IF #manualSelect
+                                AND NOT(#faultActive)
+                                AND #guardClosed
+                            THEN
+                                #activeState := "MANUAL";
+                            END_IF;
+                        END_REGION
+
+                        REGION MAINT mode actions
+                        END_REGION
+
+                    END_REGION
+
+            END_CASE;
+        END_REGION
+
+        REGION Outputs
+            #conveyorMode := #activeState;
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK

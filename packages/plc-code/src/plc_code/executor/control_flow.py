@@ -1,0 +1,995 @@
+"""Control flow statement translation for SCL to Python.
+
+This module provides parsing and translation of SCL control flow statements
+including IF, CASE, WHILE, and FOR constructs.
+"""
+
+import re
+from dataclasses import dataclass, field
+
+from plc_code.executor.codegen import ExpressionTranslator, StatementTranslator
+
+
+@dataclass
+class ControlFlowTranslator:
+    """Translates SCL control flow statements to Python.
+
+    This class handles parsing and translation of:
+    - IF/ELSIF/ELSE/END_IF
+    - CASE/OF/END_CASE
+    - WHILE/DO/END_WHILE
+    - FOR/TO/DO/END_FOR
+    """
+
+    expr_translator: ExpressionTranslator = field(default_factory=ExpressionTranslator)
+    stmt_translator: StatementTranslator = field(default_factory=StatementTranslator)
+    _indent: int = 0
+
+    def translate_block(self, scl_code: str) -> list[str]:
+        """Translate a block of SCL code to Python statements.
+
+        Parameters
+        ----------
+        scl_code : str
+            SCL code block to translate.
+
+        Returns
+        -------
+        list[str]
+            List of Python statements with proper indentation.
+        """
+        lines = self._preprocess(scl_code)
+        return self._translate_statements(lines)
+
+    def _preprocess(self, code: str) -> list[str]:
+        """Preprocess SCL code into normalized lines.
+
+        Parameters
+        ----------
+        code : str
+            Raw SCL code.
+
+        Returns
+        -------
+        list[str]
+            Preprocessed lines.
+        """
+        raw_lines: list[str] = []
+
+        for line in code.split("\n"):
+            line = line.strip()
+
+            # Skip empty lines and comments
+            if not line or line.startswith("//"):
+                continue
+
+            # Skip pragma lines
+            if line.startswith("{") or line.startswith("}"):
+                continue
+
+            # Skip REGION markers (including END_REGION with optional trailing name)
+            if line.upper().startswith("REGION") or line.upper().startswith("END_REGION"):
+                continue
+
+            # Normalize spacing around keywords that may have been stripped
+            line = self._normalize_spacing(line)
+
+            raw_lines.append(line)
+
+        # Join continuation lines: TIA Portal sometimes splits a single SCL
+        # assignment across two source lines, placing the LHS and ':=' on one
+        # line with nothing after ':=', and the RHS on the next line.
+        # Example:
+        #   # matrixResult[#i, #k] :=
+        #   # matrixResult[#i, #k] * # matrixResult[#k, #k] ;
+        # We detect this by checking whether a non-comment line ends with ':='
+        # (possibly followed only by whitespace) and join it with the next line.
+        lines: list[str] = []
+        i = 0
+        while i < len(raw_lines):
+            line = raw_lines[i]
+            stripped = line.rstrip()
+            if stripped.endswith(":=") and i + 1 < len(raw_lines):
+                # Continuation: merge LHS line with the RHS on the next line
+                joined = stripped + " " + raw_lines[i + 1].strip()
+                lines.append(joined)
+                i += 2
+            else:
+                lines.append(line)
+                i += 1
+
+        return lines
+
+    def _normalize_spacing(self, line: str) -> str:
+        """Normalize spacing around SCL keywords.
+
+        The parser may strip spaces between tokens, so we need to restore them.
+        This handles cases like:
+        - IF#var -> IF #var
+        - #varANDNOT(#var) -> #var AND NOT (#var)
+        - CASE#varOF -> CASE #var OF
+
+        Parameters
+        ----------
+        line : str
+            Line that may have missing spaces.
+
+        Returns
+        -------
+        str
+            Line with proper spacing around keywords.
+        """
+        result = line
+
+        # Use case-insensitive matching throughout
+        # We need to ensure keyword operators are properly spaced without matching
+        # keywords embedded within variable names (e.g., "hornAcknowledge" contains "OR")
+
+        # Strategy: Use word boundaries but then also handle concatenated keywords
+        # by explicitly looking for known keyword-to-keyword transitions
+
+        # First, handle keyword-to-keyword transitions where there's no space
+        # These are unambiguous: ANDNOT, ORNOT, etc.
+        result = re.sub(r"AND(NOT)", r"AND \1", result, flags=re.IGNORECASE)
+        result = re.sub(r"OR(NOT)", r"OR \1", result, flags=re.IGNORECASE)
+        result = re.sub(r"AND(IF)", r"AND \1", result, flags=re.IGNORECASE)
+        result = re.sub(r"OR(IF)", r"OR \1", result, flags=re.IGNORECASE)
+
+        # Handle keyword followed by # (instance variable)
+        result = re.sub(r"\bAND#", "AND #", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bOR#", "OR #", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bNOT#", "NOT #", result, flags=re.IGNORECASE)
+
+        # Handle keyword followed by (
+        result = re.sub(r"\bAND\(", "AND (", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bOR\(", "OR (", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bNOT\(", "NOT (", result, flags=re.IGNORECASE)
+
+        # Handle ) followed by keyword
+        result = re.sub(r"\)AND\b", ") AND", result, flags=re.IGNORECASE)
+        result = re.sub(r"\)OR\b", ") OR", result, flags=re.IGNORECASE)
+        result = re.sub(r"\)NOT\b", ") NOT", result, flags=re.IGNORECASE)
+
+        # Now handle identifiers that end with AND/OR followed by keyword
+        # Pattern: 2+ wordchars followed by AND/OR - this naturally excludes BAND/FOR/XOR/NOR
+        # which only have 1 char before AND/OR.
+        # Only split when OR/AND is directly concatenated (no preceding space) and followed
+        # by #, ( or NOT (not just whitespace, to avoid splitting words like "error" or "forward").
+        result = re.sub(r"(\w{2,})(AND)(NOT\b|[#(])", r"\1 \2 \3", result, flags=re.IGNORECASE)
+        result = re.sub(r"(\w{2,})(OR)(NOT\b|[#(])", r"\1 \2 \3", result, flags=re.IGNORECASE)
+
+        # Handle word char followed by AND/OR before another word char (like #var)
+        # This handles: varAND#var -> var AND #var
+        # Require 2+ chars before AND/OR to preserve BAND/FOR/XOR/NOR
+        result = re.sub(r"(\w{2,})(AND)\s*#", r"\1 \2 #", result, flags=re.IGNORECASE)
+        result = re.sub(r"(\w{2,})(OR)\s*#", r"\1 \2 #", result, flags=re.IGNORECASE)
+
+        # Handle word char followed by AND/OR at end (before THEN, etc.)
+        # Require 2+ chars before AND/OR to preserve keywords.
+        # IMPORTANT: Only split when AND/OR is NOT a substring of a real identifier.
+        # We detect "real" concatenation by requiring that there is NO space between
+        # the identifier part and AND/OR (i.e. they appear directly glued together),
+        # and that OR/AND is not preceded by a word-char that would make it part of a
+        # word like "mulError" (er-OR), "forward" (forw-AND), etc.
+        # Strategy: require the AND/OR to be immediately followed by the keyword
+        # WITH NO SPACE (direct concatenation), so "varORTHEN" not "mulError THEN".
+        result = re.sub(r"(\w{2,})(AND)(THEN|DO|OF)\b", r"\1 \2 \3", result, flags=re.IGNORECASE)
+        result = re.sub(r"(\w{2,})(OR)(THEN|DO|OF)\b", r"\1 \2 \3", result, flags=re.IGNORECASE)
+
+        # IF - ensure space after
+        result = re.sub(r"\bIF(?=[^\s])", "IF ", result, flags=re.IGNORECASE)
+
+        # ELSIF - ensure space after
+        result = re.sub(r"\bELSIF(?=[^\s])", "ELSIF ", result, flags=re.IGNORECASE)
+
+        # WHILE - ensure space after
+        result = re.sub(r"\bWHILE(?=[^\s])", "WHILE ", result, flags=re.IGNORECASE)
+
+        # CASE - ensure space after
+        result = re.sub(r"\bCASE(?=[^\s])", "CASE ", result, flags=re.IGNORECASE)
+
+        # FOR - ensure space after (must come after OR handling)
+        result = re.sub(r"\bFOR(?=[^\s])", "FOR ", result, flags=re.IGNORECASE)
+
+        # THEN - ensure space before
+        result = re.sub(r"(?<=[^\s])THEN\b", " THEN", result, flags=re.IGNORECASE)
+
+        # DO - ensure space before
+        result = re.sub(r"(?<=[^\s])DO\b", " DO", result, flags=re.IGNORECASE)
+
+        # OF - ensure space before
+        result = re.sub(r"(?<=[^\s])OF\b", " OF", result, flags=re.IGNORECASE)
+
+        # TO - ensure space before (for FOR loops)
+        result = re.sub(r"(?<=[^\s])TO\b", " TO", result, flags=re.IGNORECASE)
+
+        # BY - ensure space before (for FOR loops)
+        result = re.sub(r"(?<=[^\s])BY\b", " BY", result, flags=re.IGNORECASE)
+
+        # Clean up any double spaces that may have been introduced
+        result = re.sub(r"  +", " ", result)
+
+        return result
+
+    def _translate_statements(self, lines: list[str]) -> list[str]:
+        """Translate a list of statement lines.
+
+        Parameters
+        ----------
+        lines : list[str]
+            Preprocessed lines.
+
+        Returns
+        -------
+        list[str]
+            Translated Python statements.
+        """
+        result: list[str] = []
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+            upper = line.upper()
+
+            # Handle IF statement
+            if upper.startswith("IF ") or upper == "IF":
+                block_lines, i = self._extract_if_block(lines, i)
+                result.extend(self._translate_if_block(block_lines))
+
+            # Handle CASE statement
+            elif upper.startswith("CASE "):
+                block_lines, i = self._extract_case_block(lines, i)
+                result.extend(self._translate_case_block(block_lines))
+
+            # Handle WHILE statement
+            elif upper.startswith("WHILE ") or upper.startswith("WHILE("):
+                block_lines, i = self._extract_while_block(lines, i)
+                result.extend(self._translate_while_block(block_lines))
+
+            # Handle FOR statement
+            elif upper.startswith("FOR "):
+                block_lines, i = self._extract_for_block(lines, i)
+                result.extend(self._translate_for_block(block_lines))
+
+            # Handle simple statements
+            else:
+                translated = self._translate_simple_statement(line)
+                if translated:
+                    result.extend(translated)
+                i += 1
+
+        return result
+
+    def _extract_if_block(self, lines: list[str], start: int) -> tuple[list[str], int]:
+        """Extract IF block including ELSIF/ELSE branches.
+
+        Parameters
+        ----------
+        lines : list[str]
+            All lines.
+        start : int
+            Starting index of IF.
+
+        Returns
+        -------
+        tuple[list[str], int]
+            Block lines and next index.
+        """
+        block: list[str] = []
+        depth = 0
+        i = start
+
+        while i < len(lines):
+            line = lines[i]
+            upper = line.upper()
+            block.append(line)
+
+            # Count IF depth
+            if upper.startswith("IF ") or upper == "IF":
+                depth += 1
+            elif upper.rstrip("; ") == "END_IF":
+                depth -= 1
+                if depth == 0:
+                    return block, i + 1
+
+            i += 1
+
+        return block, i
+
+    def _extract_case_block(self, lines: list[str], start: int) -> tuple[list[str], int]:
+        """Extract CASE block.
+
+        Parameters
+        ----------
+        lines : list[str]
+            All lines.
+        start : int
+            Starting index of CASE.
+
+        Returns
+        -------
+        tuple[list[str], int]
+            Block lines and next index.
+        """
+        block: list[str] = []
+        depth = 0
+        i = start
+
+        while i < len(lines):
+            line = lines[i]
+            upper = line.upper()
+            block.append(line)
+
+            if upper.startswith("CASE "):
+                depth += 1
+            elif upper.rstrip("; ") == "END_CASE":
+                depth -= 1
+                if depth == 0:
+                    return block, i + 1
+
+            i += 1
+
+        return block, i
+
+    def _extract_while_block(self, lines: list[str], start: int) -> tuple[list[str], int]:
+        """Extract WHILE block.
+
+        Parameters
+        ----------
+        lines : list[str]
+            All lines.
+        start : int
+            Starting index of WHILE.
+
+        Returns
+        -------
+        tuple[list[str], int]
+            Block lines and next index.
+        """
+        block: list[str] = []
+        depth = 0
+        i = start
+
+        while i < len(lines):
+            line = lines[i]
+            upper = line.upper()
+            block.append(line)
+
+            if upper.startswith("WHILE ") or upper.startswith("WHILE("):
+                depth += 1
+            elif upper.rstrip("; ") == "END_WHILE":
+                depth -= 1
+                if depth == 0:
+                    return block, i + 1
+
+            i += 1
+
+        return block, i
+
+    def _extract_for_block(self, lines: list[str], start: int) -> tuple[list[str], int]:
+        """Extract FOR block.
+
+        Parameters
+        ----------
+        lines : list[str]
+            All lines.
+        start : int
+            Starting index of FOR.
+
+        Returns
+        -------
+        tuple[list[str], int]
+            Block lines and next index.
+        """
+        block: list[str] = []
+        depth = 0
+        i = start
+
+        while i < len(lines):
+            line = lines[i]
+            upper = line.upper()
+            block.append(line)
+
+            # Count all FOR...DO occurrences on this line (handles multiple FORs per line)
+            for_count = len(re.findall(r"\bFOR\s+\S", upper))
+            end_for_count = len(re.findall(r"\bEND_FOR\b", upper))
+            depth += for_count - end_for_count
+            if depth <= 0:
+                return block, i + 1
+
+            i += 1
+
+        return block, i
+
+    def _translate_if_block(self, block: list[str]) -> list[str]:
+        """Translate IF/ELSIF/ELSE block to Python.
+
+        Parameters
+        ----------
+        block : list[str]
+            IF block lines.
+
+        Returns
+        -------
+        list[str]
+            Python if/elif/else statements.
+        """
+        result: list[str] = []
+        body_lines: list[str] = []
+        current_condition = ""
+        current_keyword = ""
+        depth = 0
+        accumulating_condition = ""  # For multi-line conditions
+
+        for line in block:
+            upper = line.upper()
+
+            # Check if we're accumulating a multi-line condition
+            if accumulating_condition:
+                # Continue accumulating until we find THEN
+                if "THEN" in upper:
+                    # Find THEN and extract everything before it
+                    then_idx = upper.find("THEN")
+                    condition_part = line[:then_idx].strip()
+                    accumulating_condition += " " + condition_part
+                    current_condition = accumulating_condition.strip()
+                    accumulating_condition = ""
+                    depth = 1
+                    continue
+                else:
+                    # Keep accumulating
+                    accumulating_condition += " " + line.strip()
+                    continue
+
+            # IF condition THEN [body] (single line, body may follow THEN)
+            if_match = re.match(r"IF\s+(.+?)\s+THEN\b(.*)", line, re.IGNORECASE)
+            if if_match and depth == 0:
+                current_condition = if_match.group(1)
+                current_keyword = "if"
+                depth = 1
+                # Capture any inline body statement after THEN on the same line
+                inline_body = if_match.group(2).strip().rstrip(";").strip()
+                if inline_body:
+                    body_lines.append(inline_body)
+                continue
+
+            # IF without THEN on same line (multi-line condition)
+            if_start_match = re.match(r"IF\s+(.+)", line, re.IGNORECASE)
+            if if_start_match and depth == 0 and "THEN" not in upper:
+                current_keyword = "if"
+                accumulating_condition = if_start_match.group(1).strip()
+                continue
+
+            # Nested IF increases depth
+            if (upper.startswith("IF ") or upper == "IF") and depth > 0:
+                depth += 1
+                body_lines.append(line)
+                continue
+
+            # ELSIF condition THEN [body] (single line, body may follow THEN)
+            elsif_match = re.match(r"ELSIF\s+(.+?)\s+THEN\b(.*)", line, re.IGNORECASE)
+            if elsif_match and depth == 1:
+                # Output previous branch
+                if current_keyword:
+                    py_cond = self.expr_translator.translate(current_condition)
+                    result.append(f"{current_keyword} {py_cond}:")
+                    body = self._translate_statements(body_lines)
+                    if body:
+                        result.extend(["    " + ln for ln in body])
+                    else:
+                        result.append("    pass")
+
+                current_condition = elsif_match.group(1)
+                current_keyword = "elif"
+                body_lines = []
+                # Capture any inline body statement after THEN on the same line
+                inline_body = elsif_match.group(2).strip().rstrip(";").strip()
+                if inline_body:
+                    body_lines.append(inline_body)
+                continue
+
+            # ELSIF without THEN (multi-line condition)
+            elsif_start_match = re.match(r"ELSIF\s+(.+)", line, re.IGNORECASE)
+            if elsif_start_match and depth == 1 and "THEN" not in upper:
+                # Output previous branch
+                if current_keyword:
+                    py_cond = self.expr_translator.translate(current_condition)
+                    result.append(f"{current_keyword} {py_cond}:")
+                    body = self._translate_statements(body_lines)
+                    if body:
+                        result.extend(["    " + ln for ln in body])
+                    else:
+                        result.append("    pass")
+
+                current_keyword = "elif"
+                accumulating_condition = elsif_start_match.group(1).strip()
+                body_lines = []
+                continue
+
+            # ELSE [body]  — matches bare "ELSE" or "ELSE <inline-body>"
+            else_match = re.match(r"ELSE\b(.*)", line, re.IGNORECASE)
+            if else_match and depth == 1:
+                # Output previous branch
+                if current_keyword:
+                    py_cond = self.expr_translator.translate(current_condition)
+                    result.append(f"{current_keyword} {py_cond}:")
+                    body = self._translate_statements(body_lines)
+                    if body:
+                        result.extend(["    " + ln for ln in body])
+                    else:
+                        result.append("    pass")
+
+                current_keyword = "else"
+                current_condition = ""
+                body_lines = []
+                # Capture any inline body statement after ELSE on the same line
+                inline_body = else_match.group(1).strip().rstrip(";").strip()
+                if inline_body:
+                    body_lines.append(inline_body)
+                continue
+
+            # END_IF
+            if upper.rstrip("; ") == "END_IF":
+                depth -= 1
+                if depth == 0:
+                    # Output final branch
+                    if current_keyword == "else":
+                        result.append("else:")
+                    elif current_keyword:
+                        py_cond = self.expr_translator.translate(current_condition)
+                        result.append(f"{current_keyword} {py_cond}:")
+
+                    body = self._translate_statements(body_lines)
+                    if body:
+                        result.extend(["    " + ln for ln in body])
+                    else:
+                        result.append("    pass")
+                    break
+                else:
+                    body_lines.append(line)
+                    continue
+
+            # Accumulate body lines
+            body_lines.append(line)
+
+        return result
+
+    def _translate_case_block(self, block: list[str]) -> list[str]:
+        """Translate CASE/OF block to Python if/elif chain.
+
+        Parameters
+        ----------
+        block : list[str]
+            CASE block lines.
+
+        Returns
+        -------
+        list[str]
+            Python if/elif statements.
+        """
+        result: list[str] = []
+        case_var = ""
+        current_values: list[str] = []
+        body_lines: list[str] = []
+        is_first = True
+        depth = 0
+
+        for line in block:
+            upper = line.upper()
+
+            # CASE #var OF
+            case_match = re.match(r"CASE\s+(.+?)\s+OF", line, re.IGNORECASE)
+            if case_match and depth == 0:
+                case_var = self.expr_translator.translate(case_match.group(1))
+                depth = 1
+                continue
+
+            # Nested CASE increases depth
+            if upper.startswith("CASE ") and depth > 0:
+                depth += 1
+                body_lines.append(line)
+                continue
+
+            # Case label: #VALUE: or "STRING_VALUE": or numeric values
+            # (at start of line, not followed by =)
+            # Must not match assignments like #activeState:=#ALARM;
+            # Patterns:
+            #   #NO_ALARM:
+            #   "USER_FREEWHEEL":
+            #   1, 2, 3:
+            #   ELSE: (for default case)
+            label_match = re.match(r'^\s*(#\w+|"\w+"|[\d,\s]+|ELSE)\s*:\s*$', line, re.IGNORECASE)
+            if label_match and depth == 1 and not upper.rstrip("; ") == "END_CASE":
+                # Output previous case if any
+                if current_values and body_lines:
+                    self._emit_case_branch(result, case_var, current_values, body_lines, is_first)
+                    is_first = False
+
+                # Parse new case values
+                values_str = label_match.group(1)
+                current_values = [self.expr_translator.translate(v.strip()) for v in values_str.split(",")]
+                body_lines = []
+                continue
+
+            # END_CASE
+            if upper.rstrip("; ") == "END_CASE":
+                depth -= 1
+                if depth == 0:
+                    # Output final case
+                    if current_values and body_lines:
+                        self._emit_case_branch(result, case_var, current_values, body_lines, is_first)
+                    break
+                else:
+                    body_lines.append(line)
+                    continue
+
+            # Accumulate body lines
+            body_lines.append(line)
+
+        return result
+
+    def _emit_case_branch(
+        self,
+        result: list[str],
+        case_var: str,
+        values: list[str],
+        body_lines: list[str],
+        is_first: bool,
+    ) -> None:
+        """Emit a CASE branch as Python if/elif.
+
+        Parameters
+        ----------
+        result : list[str]
+            Result list to append to.
+        case_var : str
+            Variable being switched on.
+        values : list[str]
+            Values for this branch.
+        body_lines : list[str]
+            Body lines for this branch.
+        is_first : bool
+            Whether this is the first branch.
+        """
+        keyword = "if" if is_first else "elif"
+
+        if len(values) == 1:
+            condition = f"{case_var} == {values[0]}"
+        else:
+            condition = f"{case_var} in ({', '.join(values)})"
+
+        result.append(f"{keyword} {condition}:")
+        body = self._translate_statements(body_lines)
+        if body:
+            result.extend(["    " + ln for ln in body])
+        else:
+            result.append("    pass")
+
+    def _translate_while_block(self, block: list[str]) -> list[str]:
+        """Translate WHILE block to Python while.
+
+        Parameters
+        ----------
+        block : list[str]
+            WHILE block lines.
+
+        Returns
+        -------
+        list[str]
+            Python while statement.
+        """
+        result: list[str] = []
+        condition = ""
+        body_lines: list[str] = []
+        depth = 0
+
+        for line in block:
+            upper = line.upper()
+
+            # WHILE (condition) DO
+            while_match = re.match(r"WHILE\s*\((.+?)\)\s*DO", line, re.IGNORECASE)
+            if while_match and depth == 0:
+                condition = while_match.group(1)
+                depth = 1
+                continue
+
+            # Alternative: WHILE condition DO
+            while_match2 = re.match(r"WHILE\s+(.+?)\s+DO", line, re.IGNORECASE)
+            if while_match2 and depth == 0:
+                condition = while_match2.group(1)
+                depth = 1
+                continue
+
+            # Nested WHILE
+            if (upper.startswith("WHILE ") or upper.startswith("WHILE(")) and depth > 0:
+                depth += 1
+                body_lines.append(line)
+                continue
+
+            # END_WHILE
+            if upper.rstrip("; ") == "END_WHILE":
+                depth -= 1
+                if depth == 0:
+                    py_cond = self.expr_translator.translate(condition)
+                    result.append(f"while {py_cond}:")
+                    body = self._translate_statements(body_lines)
+                    if body:
+                        result.extend(["    " + ln for ln in body])
+                    else:
+                        result.append("    pass")
+                    break
+                else:
+                    body_lines.append(line)
+                    continue
+
+            body_lines.append(line)
+
+        return result
+
+    def _translate_for_block(self, block: list[str]) -> list[str]:
+        """Translate FOR block to Python for.
+
+        Parameters
+        ----------
+        block : list[str]
+            FOR block lines.
+
+        Returns
+        -------
+        list[str]
+            Python for statement.
+        """
+        result: list[str] = []
+        loop_var = ""
+        start_val = ""
+        end_val = ""
+        step_val = "1"
+        body_lines: list[str] = []
+        depth = 0
+
+        for line in block:
+            upper = line.upper()
+
+            # FOR #var := start TO end BY step DO [inline_body]
+            for_match = re.match(
+                r"FOR\s+(.+?)\s*:=\s*(.+?)\s+TO\s+(.+?)(?:\s+BY\s+(.+?))?\s+DO\b(.*)",
+                line,
+                re.IGNORECASE,
+            )
+            if for_match and depth == 0:
+                loop_var = self.expr_translator.translate(for_match.group(1))
+                start_val = self.expr_translator.translate(for_match.group(2))
+                end_val = self.expr_translator.translate(for_match.group(3))
+                if for_match.group(4):
+                    step_val = self.expr_translator.translate(for_match.group(4))
+                depth = 1
+                # Capture any inline body content after DO on the same line.
+                # Skip pure comment lines (starting with //) which TIA Portal sometimes
+                # emits inline after DO (e.g. FOR j := 1 TO 6 DO // some comment).
+                inline_body = for_match.group(5).strip().rstrip(";").strip() if for_match.group(5) else ""
+                if inline_body and not inline_body.startswith("//"):
+                    body_lines.append(inline_body)
+                    # If inline body contains additional FOR loops, adjust depth to account
+                    # for them (they will need matching END_FORs in subsequent lines)
+                    inline_for_count = len(re.findall(r"\bFOR\s+\S", inline_body.upper()))
+                    inline_end_for_count = len(re.findall(r"\bEND_FOR\b", inline_body.upper()))
+                    depth += inline_for_count - inline_end_for_count
+                continue
+
+            # Nested FOR (may contain multiple FOR...DO on the same line)
+            if upper.startswith("FOR ") and depth > 0:
+                # Count all FOR and END_FOR on this line for accurate depth tracking
+                line_for_count = len(re.findall(r"\bFOR\s+\S", upper))
+                line_end_for_count = len(re.findall(r"\bEND_FOR\b", upper))
+                depth += line_for_count - line_end_for_count
+                body_lines.append(line)
+                continue
+
+            # END_FOR
+            if upper.rstrip("; ") == "END_FOR":
+                depth -= 1
+                if depth == 0:
+                    # Python range is exclusive on the upper bound
+                    if step_val == "1":
+                        result.append(f"for {loop_var} in range({start_val}, {end_val} + 1):")
+                    else:
+                        result.append(f"for {loop_var} in range({start_val}, {end_val} + 1, {step_val}):")
+                    body = self._translate_statements(body_lines)
+                    if body:
+                        result.extend(["    " + ln for ln in body])
+                    else:
+                        result.append("    pass")
+                    break
+                else:
+                    body_lines.append(line)
+                    continue
+
+            body_lines.append(line)
+
+        return result
+
+    # Pattern for quoted-name block call: "BlockName"(param1 := val, out => var, ...)
+    _NAMED_BLOCK_CALL_PATTERN = re.compile(
+        r'^"([^"]+)"\s*\((.*)[\);]',
+        re.DOTALL,
+    )
+
+    def _translate_named_block_call(self, line: str) -> list[str] | None:
+        """Translate a ``"BlockName"(param := val, ...)`` call to Python.
+
+        This handles SCL FUNCTION/FUNCTION_BLOCK calls using the quoted-name
+        syntax, dispatching to ``self._runtime.call_named_block()``.
+
+        Parameters
+        ----------
+        line : str
+            The SCL statement line.
+
+        Returns
+        -------
+        list[str] | None
+            Translated Python statements, or ``None`` if the line is not a
+            quoted-name block call.
+        """
+        # Quick rejection: must start with a double-quote
+        stripped = line.strip()
+        if not stripped.startswith('"'):
+            return None
+
+        # Try to match "BlockName"(...)
+        # We need to handle the full parameter list which may contain nested parens
+        # Step 1: find the closing paren of the argument list
+        match = re.match(r'^"([^"]+)"\s*\(', stripped)
+        if not match:
+            return None
+
+        block_name = match.group(1)
+        paren_start = match.end()  # position just after the opening '('
+
+        # Find matching closing paren
+        depth = 1
+        pos = paren_start
+        while pos < len(stripped) and depth > 0:
+            if stripped[pos] == "(":
+                depth += 1
+            elif stripped[pos] == ")":
+                depth -= 1
+            pos += 1
+
+        if depth != 0:
+            return None  # unbalanced parens - not a valid call
+
+        params_str = stripped[paren_start : pos - 1]  # content between outer parens
+
+        # Parse parameters: split by top-level commas
+        params = self.stmt_translator._split_params(params_str)
+
+        # Categorise parameters:
+        #   param := val   ->  input (or in-out passed in)
+        #   param => var   ->  output assignment
+        input_params: dict[str, str] = {}  # name -> translated value expr
+        output_params: list[tuple[str, str]] = []  # (block_output_name, target_var_expr)
+
+        for param in params:
+            param = param.strip()
+            if not param:
+                continue
+
+            # Normalize `:=` and `=>`
+            param = re.sub(r":\s*=", ":=", param)
+            param = re.sub(r"=\s*>", "=>", param)
+
+            if ":=" in param:
+                name, value = param.split(":=", 1)
+                name = name.strip()
+                value_expr = self.expr_translator.translate(value.strip())
+                input_params[name] = value_expr
+            elif "=>" in param:
+                name, target = param.split("=>", 1)
+                name = name.strip()
+                target_expr = self.expr_translator.translate(target.strip())
+                output_params.append((name, target_expr))
+
+        # Build Python statements
+        # 1. Call the sub-block and capture its result dict
+        result_var = f"_sub_{block_name.replace(' ', '_')}_result"
+        inputs_dict = "{" + ", ".join(f'"{k}": {v}' for k, v in input_params.items()) + "}"
+        call_line = f"{result_var} = self._runtime.call_named_block(" f'"{block_name}", {inputs_dict}, {{}})'
+        result_lines = [call_line]
+
+        # 2. Assign output parameters from result dict
+        for out_name, target_expr in output_params:
+            result_lines.append(f'{target_expr} = {result_var}["{out_name}"]')
+
+        # 3. For `:=` params that are also outputs (i.e. in-out params),
+        #    we read them back from the result dict if they appear there.
+        #    The `:=` in-out semantics: value goes in, updated value comes out.
+        #    We handle this by updating the target variable if the param appears in result.
+        for in_name, value_expr in input_params.items():
+            # Only write back if the value_expr is a self.xxx reference (not a literal)
+            if value_expr.startswith("self.") and " " not in value_expr.strip():
+                # This param may be an in-out: write back if present in result
+                result_lines.append(
+                    f'if "{in_name}" in {result_var}: {value_expr} = {result_var}["{in_name}"]'
+                )
+
+        return result_lines
+
+    def _translate_simple_statement(self, line: str) -> list[str]:
+        """Translate a simple (non-control-flow) statement.
+
+        Parameters
+        ----------
+        line : str
+            Single statement line.
+
+        Returns
+        -------
+        list[str]
+            Translated Python statements.
+        """
+        # Normalize spaces
+        normalized = re.sub(r"#\s+", "#", line)
+        normalized = re.sub(r"=\s*>", "=>", normalized)
+        normalized = re.sub(r":\s*=", ":=", normalized)
+
+        # Handle RETURN statement
+        if normalized.strip().rstrip(";").strip().upper() == "RETURN":
+            return ["return"]
+
+        # Handle quoted-name block call: "BlockName"(params...)
+        # Must be checked before assignment detection since these lines start with "
+        named_block_result = self._translate_named_block_call(normalized)
+        if named_block_result is not None:
+            return named_block_result
+
+        # Handle compound assignment (+=, -=, etc.)
+        compound_match = re.match(r"(.+?)\s*(\+|-|\*|/)=\s*(.+);?", normalized)
+        if compound_match:
+            target = self.expr_translator.translate(compound_match.group(1).strip())
+            op = compound_match.group(2)
+            value = self.expr_translator.translate(compound_match.group(3).strip().rstrip(";"))
+            return [f"{target} {op}= {value}"]
+
+        # Assignment: `:=` must appear BEFORE the first `(` in the statement.
+        # This distinguishes:
+        #   - `#ca := COS(#alpha);`  → assignment (`:=` before first `(`)
+        #   - `#timer(IN := #x, ...);` → FB call (first `(` before `:=`)
+        assign_pos = normalized.find(":=")
+        paren_pos = normalized.find("(")
+        is_assignment = assign_pos != -1 and (paren_pos == -1 or assign_pos < paren_pos)
+        if is_assignment:
+            # Use `normalized` (with `# var` collapsed to `#var`) so that the
+            # expression translator's INSTANCE_VAR_PATTERN (#\w+) matches.
+            return [self.stmt_translator.translate_assignment(normalized)]
+
+        # FB call pattern: #name(...);
+        if normalized.startswith("#") and "(" in normalized and ")" in normalized:
+            return self.stmt_translator.translate_fb_call(normalized)
+
+        # Other expression
+        translated = self.expr_translator.translate(normalized.rstrip(";"))
+        if translated:
+            return [translated]
+
+        return []
+
+
+# Default instance
+default_control_flow_translator = ControlFlowTranslator()
+
+
+def translate_control_flow(scl_code: str) -> list[str]:
+    """Translate SCL code with control flow to Python.
+
+    Parameters
+    ----------
+    scl_code : str
+        SCL code block.
+
+    Returns
+    -------
+    list[str]
+        Python statements.
+    """
+    return default_control_flow_translator.translate_block(scl_code)

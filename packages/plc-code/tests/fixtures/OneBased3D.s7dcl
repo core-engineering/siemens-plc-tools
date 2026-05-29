@@ -1,0 +1,31 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION "OneBased3D" : Void
+    VAR_INPUT
+        val : Real;
+    END_VAR
+    VAR_OUTPUT
+        readBack : Real;
+    END_VAR
+    VAR_TEMP
+        cube : Array[1..2, 0..1, 0..1] of Real;
+        i : Int;
+        j : Int;
+        k : Int;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        FOR #i := 1 TO 2 DO
+            FOR #j := 0 TO 1 DO
+                FOR #k := 0 TO 1 DO
+                    #cube[#i, #j, #k] := #val * #i;
+                END_FOR;
+            END_FOR;
+        END_FOR;
+        #readBack := #cube[2, 1, 1];
+    END_NETWORK
+END_FUNCTION

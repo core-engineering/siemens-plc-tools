@@ -1,0 +1,18 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION "Doubler" : Void
+    VAR_INPUT
+        x : Real;
+    END_VAR
+    VAR_OUTPUT
+        result : Real;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        #result := #x * 2.0;
+    END_NETWORK
+END_FUNCTION

@@ -1,0 +1,175 @@
+{
+    S7_Author := "Example Author";
+    S7_EditorMode := "SCL";
+    S7_Family := "ProcessLib";
+    S7_Optimized := "TRUE";
+    S7_Version := "1.0"
+}
+FUNCTION_BLOCK "PumpControl"
+    VAR_INPUT
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        processState : USInt;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        operatorAcknowledge : Bool;
+    END_VAR
+    VAR_OUTPUT
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        pumpState : USInt;
+    END_VAR
+    VAR
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        activeState : USInt := 0;
+    END_VAR
+    VAR CONSTANT
+        IDLE : USInt := 0;
+        PRIMING : USInt := 1;
+        RUNNING : USInt := 2;
+        TRIP_LOW : USInt := 3;
+        TRIP_HIGH : USInt := 4;
+        TRIP_LOW_ACKNOWLEDGE : USInt := 5;
+        TRIP_HIGH_ACKNOWLEDGE : USInt := 6;
+        PROC_STOPPED : USInt := 0;
+        PROC_READY : USInt := 1;
+        PROC_LOW_FLOW : USInt := 2;
+        PROC_LOW_PRESSURE : USInt := 3;
+        PROC_HIGH_PRESSURE : USInt := 4;
+        PROC_OVERLOAD : USInt := 5;
+        PROC_NOMINAL : USInt := 6;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION Block info header
+            //===============================================================================
+            // (c) Example Author
+            //-------------------------------------------------------------------------------
+            // Title:            PumpControl
+            // Comment/Function: Manage the pump control state machine
+            // Library/Family:   ProcessLib
+            // Author:           Example Author
+            //-------------------------------------------------------------------------------
+            // Change log table:
+            // Version  | Date       | Expert in charge       | Changes applied
+            //----------|------------|------------------------|------------------------------
+            // v1.0.0 | Example Author | Initial version
+            //
+            //===============================================================================
+        END_REGION
+
+        REGION Description
+            { S7_MLC := "" }
+        END_REGION
+
+        REGION Pump control state machine
+            CASE #activeState OF
+
+                #IDLE:
+                    REGION IDLE state
+
+                        REGION IDLE state transitions
+                            IF #processState = PROC_READY THEN
+                                #activeState := #PRIMING;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+                #PRIMING:
+                    REGION PRIMING state
+
+                        REGION PRIMING state transitions
+                            IF #processState = #PROC_NOMINAL THEN
+                                #activeState := #RUNNING;
+                            END_IF;
+
+                            IF #processState = #PROC_LOW_FLOW OR #processState = #PROC_LOW_PRESSURE THEN
+                                #activeState := #TRIP_LOW;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+                #RUNNING:
+                    REGION RUNNING state
+
+                        REGION RUNNING state transitions
+                            IF #processState = #PROC_LOW_FLOW OR #processState = #PROC_LOW_PRESSURE THEN
+                                #activeState := #TRIP_LOW;
+                            END_IF;
+
+                            IF #processState = #PROC_HIGH_PRESSURE OR #processState = #PROC_OVERLOAD THEN
+                                #activeState := #TRIP_HIGH;
+                            END_IF;
+
+                            IF #processState = #PROC_STOPPED THEN
+                                #activeState := #IDLE;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+                #TRIP_LOW:
+                    REGION TRIP_LOW state
+
+                        REGION TRIP_LOW state transitions
+                            IF #operatorAcknowledge THEN
+                                #activeState := #TRIP_LOW_ACKNOWLEDGE;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+                #TRIP_HIGH:
+                    REGION TRIP_HIGH state
+
+                        REGION TRIP_HIGH state transitions
+                            IF #operatorAcknowledge THEN
+                                #activeState := #TRIP_HIGH_ACKNOWLEDGE;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+                #TRIP_LOW_ACKNOWLEDGE:
+                    REGION TRIP_LOW_ACKNOWLEDGE
+
+                        REGION TRIP_LOW_ACKNOWLEDGE state transitions
+                            IF #processState = #PROC_STOPPED OR #processState = #PROC_READY THEN
+                                #activeState := #IDLE;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+
+                #TRIP_HIGH_ACKNOWLEDGE:
+                    REGION TRIP_HIGH_ACKNOWLEDGE
+
+                        REGION TRIP_HIGH_ACKNOWLEDGE state transitions
+                            IF #processState = #PROC_STOPPED OR #processState = #PROC_READY THEN
+                                #activeState := #IDLE;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+            END_CASE;
+        END_REGION
+
+        REGION Output
+            #pumpState := #activeState;
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync workspace
+        run: uv sync --all-extras --all-packages
+
+      - name: Lint (ruff)
+        run: uv run ruff check packages/*/src
+
+      - name: Format check (black)
+        run: uv run black --check packages/*/src
+
+      - name: Type check (mypy)
+        run: uv run mypy packages/*/src
+
+      - name: Tests (per package)
+        run: |
+          # Run per package (a repo-root glob collides on duplicate tests/conftest.py).
+          # Tolerate pytest exit code 5 ("no tests collected") for packages without a suite yet.
+          for p in plc-core plc-code plc-iol plc-modbus plc-sim plc-sup; do
+            echo "=== $p ==="
+            (cd packages/$p && uv run pytest -q) || { code=$?; [ "$code" -eq 5 ] || exit "$code"; }
+          done
+          echo "=== integration ==="
+          uv run pytest tests/ -q

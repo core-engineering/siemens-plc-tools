@@ -1,0 +1,157 @@
+{
+    S7_Author := "Example Author";
+    S7_EditorMode := "SCL";
+    S7_Family := "ProcessLib";
+    S7_Optimized := "TRUE";
+    S7_Version := "1.0"
+}
+FUNCTION_BLOCK "TankLevelMonitor"
+    VAR_INPUT
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        levelLow : Bool;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        levelHigh : Bool;
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        operatorAcknowledge : Bool;
+    END_VAR
+    VAR_OUTPUT
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        levelState : USInt;
+    END_VAR
+    VAR
+        {
+            S7_Access := "ReadOnly := External";
+            S7_Visibility := "Hidden := External"
+        }
+        activeState : USInt := 0;
+    END_VAR
+    VAR CONSTANT
+        NORMAL : USInt := 0;
+        LOW_ALARM : USInt := 1;
+        HIGH_ALARM : USInt := 2;
+        LOW_ALARM_ACKNOWLEDGE : USInt := 3;
+        HIGH_ALARM_ACKNOWLEDGE : USInt := 4;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION Block info header
+            //===============================================================================
+            // (c) Example Author
+            //-------------------------------------------------------------------------------
+            // Title:            TankLevelMonitor
+            // Comment/Function: Manage the tank level monitoring state machine
+            // Library/Family:   ProcessLib
+            // Author:           Example Author
+            //-------------------------------------------------------------------------------
+            // Change log table:
+            // Version  | Date       | Expert in charge       | Changes applied
+            //----------|------------|------------------------|------------------------------
+            // v1.0.0 | Example Author | Initial version
+            //
+            //===============================================================================
+        END_REGION
+
+        REGION Description
+            { S7_MLC := "" }
+        END_REGION
+
+        REGION Tank level state machine
+            CASE #activeState OF
+
+                #NORMAL:
+                    REGION NORMAL state
+
+                        REGION NORMAL state transitions
+                            IF #levelLow AND NOT(#levelHigh) THEN
+                                #activeState := #LOW_ALARM;
+                            END_IF;
+
+                            IF #levelHigh THEN
+                                #activeState := #HIGH_ALARM;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+                #LOW_ALARM:
+                    REGION LOW_ALARM state
+
+                        REGION LOW_ALARM state transitions
+                            IF NOT(#levelLow) THEN
+                                #activeState := #NORMAL;
+                            END_IF;
+
+                            IF #operatorAcknowledge AND #levelLow AND NOT(#levelHigh) THEN
+                                #activeState := #LOW_ALARM_ACKNOWLEDGE;
+                            END_IF;
+
+                            IF #levelHigh THEN
+                                #activeState := #HIGH_ALARM;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+                #HIGH_ALARM:
+                    REGION HIGH_ALARM state
+
+                        REGION HIGH_ALARM state transitions
+                            IF NOT(#levelHigh) THEN
+                                #activeState := #NORMAL;
+                            END_IF;
+
+                            IF #operatorAcknowledge AND #levelHigh THEN
+                                #activeState := #HIGH_ALARM_ACKNOWLEDGE;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+                #LOW_ALARM_ACKNOWLEDGE:
+                    REGION LOW_ALARM_ACKNOWLEDGE
+
+                        REGION LOW_ALARM_ACKNOWLEDGE state transitions
+                            IF NOT(#levelLow) AND NOT(#levelHigh) THEN
+                                #activeState := #NORMAL;
+                            END_IF;
+
+                            IF #levelHigh THEN
+                                #activeState := #HIGH_ALARM;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+
+                #HIGH_ALARM_ACKNOWLEDGE:
+                    REGION HIGH_ALARM_ACKNOWLEDGE
+
+                        REGION HIGH_ALARM_ACKNOWLEDGE state transitions
+                            IF NOT(#levelHigh) THEN
+                                #activeState := #NORMAL;
+                            END_IF;
+                        END_REGION
+
+                    END_REGION
+
+            END_CASE;
+        END_REGION
+
+        REGION Output
+            #levelState := #activeState;
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK

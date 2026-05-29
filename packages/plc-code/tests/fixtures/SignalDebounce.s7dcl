@@ -1,0 +1,49 @@
+{
+    S7_Author := "Example Author";
+    S7_EditorMode := "SCL";
+    S7_Family := "ProcessLib";
+    S7_Optimized := "TRUE";
+    S7_Version := "1.0"
+}
+FUNCTION_BLOCK "SignalDebounce"
+    VAR_INPUT
+        input : Bool;
+    END_VAR
+    VAR_OUTPUT
+        output : Bool;
+    END_VAR
+    VAR
+        debounceTimer : TON_TIME;
+    END_VAR
+    VAR CONSTANT
+        delay : Time := T#150ms;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION Block info header
+            //===============================================================================
+            // (c) Example Author
+            //-------------------------------------------------------------------------------
+            // Title:            SignalDebounce
+            // Comment/Function: Manage the debounce of a digital input
+            // Library/Family:   ProcessLib
+            // Author:           Example Author
+            //-------------------------------------------------------------------------------
+            // Change log table:
+            // Version  | Date       | Expert in charge       | Changes applied
+            //----------|------------|------------------------|------------------------------
+            // v1.0.0 | Example Author | Initial version
+            //
+            //===============================================================================
+        END_REGION
+
+        REGION Description
+            { S7_MLC := "" }
+        END_REGION
+
+        #debounceTimer(IN := #input,
+                       PT := #delay,
+                       Q => #output);
+    END_NETWORK
+END_FUNCTION_BLOCK

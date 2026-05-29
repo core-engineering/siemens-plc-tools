@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "plc-net"
+version = "0.1.0"
+description = "Industrial network monitoring for PLC environments"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Camille Martin", email = "cma@core-engineering.fr" }
+]
+keywords = ["plc", "network-monitoring", "scapy", "industrial-network", "pcap"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "scapy>=2.5",
+    "rich>=13.0",
+    "click>=8.0",
+]
+
+[project.scripts]
+plc-net = "plc_net.cli:main"
+
+[project.entry-points."plc_tools.plugins"]
+net = "plc_net.cli:net_group"
+
+[project.urls]
+Homepage = "https://github.com/core-engineering/siemens-plc-tools"
+Repository = "https://github.com/core-engineering/siemens-plc-tools"
+Issues = "https://github.com/core-engineering/siemens-plc-tools/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/plc_net"]

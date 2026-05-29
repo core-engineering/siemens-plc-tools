@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Testing
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+coverage.xml
+*.cover
+
+# Type checking
+.mypy_cache/
+
+# Linting
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# MkDocs
+site/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Windows DLP / NTFS Alternate Data Streams (Symantec / Endpoint DLP)
+*:sec.endpointdlp
+*:Zone.Identifier
+
+# Outputs générés par les tools
+docs/plc-blocks/
+docs/types/
+docs/data-blocks/
+docs/graphs/
+docs/type-graphs/
+docs/analysis/
+docs/tests/
+docs/index.md
+docs/_nav.yml
+site/
+htmlcov/
+.coverage
+
+# Generated outputs from example projects (source files are kept)
+examples/**/docs/
+examples/**/site/
+examples/**/.iol/
+examples/**/report.pdf
+
+# Claude Code
+.claude/
+
+# Lock files (regenerate with uv sync)
+uv.lock
