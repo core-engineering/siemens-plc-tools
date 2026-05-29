@@ -1,0 +1,14 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Version := "0.1"
+}
+FUNCTION "UsesDbConst" : Word
+    VAR_OUTPUT
+        limit : Int;
+    END_VAR
+    { S7_Language := "SCL" }
+    NETWORK
+        #limit := "dbDemoConst".LIMIT_HI;
+        #UsesDbConst := "dbDemoConst".CODE_OK;
+    END_NETWORK
+END_FUNCTION

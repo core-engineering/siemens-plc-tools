@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **plc-code (executor/runtime)** — constant `DATA_BLOCK`s referenced as
+  `"DbName".MEMBER` now auto-load from the runtime's block search paths (mirroring
+  `call_named_block` for FUNCTION/FB sub-blocks), so shared constant DBs no longer
+  need to be registered by hand. New public helper `load_data_block(path)`.
+
 ### Fixed
 - **plc-code (executor/transpiler)** — five SCL constructs that previously
   transpiled to broken Python (and forced downstream workarounds) now work:
