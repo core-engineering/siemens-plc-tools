@@ -6,11 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+> Working-tree note (2026-05-30): all changes in this section are committed on
+> `main` (tip `7d3e9c2`). Whether `main` is fully pushed to `origin/main` must be
+> re-verified after a WSL restart — the shell was unstable when these were made.
+
 ### Added
+- **plc-code (executor/codegen)** — `ExpressionTranslator.BUILTIN_MAP` now maps the
+  inverse-trigonometric builtins `ASIN/ACOS/ATAN/ATAN2` to `math.asin/acos/atan/atan2`
+  (needed by trig-form closed solutions, e.g. Cardano's three-real-roots branch).
 - **plc-code (executor/runtime)** — constant `DATA_BLOCK`s referenced as
   `"DbName".MEMBER` now auto-load from the runtime's block search paths (mirroring
   `call_named_block` for FUNCTION/FB sub-blocks), so shared constant DBs no longer
   need to be registered by hand. New public helper `load_data_block(path)`.
+
+### Known issues
+- **plc-code (parser/lexer)** — an identifier whose name ends in `of`
+  (e.g. `ComputeProfile1Dof`) is mis-tokenised: the trailing `of` is read as the
+  `OF` keyword (as in `Array[..] OF`), corrupting the statement. Workaround: avoid
+  a trailing `of`/`Dof` in block/variable names. Candidate fix: the lexer must not
+  split `OF` out of a longer identifier (respect word boundaries).
 
 ### Fixed
 - **plc-code (executor/transpiler)** — five SCL constructs that previously
