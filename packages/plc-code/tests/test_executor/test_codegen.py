@@ -1,6 +1,7 @@
 """Tests for code generation utilities."""
 
 from plc_code.executor.codegen import (
+    ExpressionTranslator,
     translate_assignment,
     translate_expression,
     translate_fb_call,
@@ -158,3 +159,11 @@ class TestSpacedComparisonOperators:
         result = translate_expression("#a > = #b")
         assert ">=" in result
         assert "> =" not in result
+
+
+def test_inverse_trig_builtins():
+    t = ExpressionTranslator()
+    assert t.translate("ACOS(#x)") == "math.acos(self.x)"
+    assert t.translate("ASIN(#x)") == "math.asin(self.x)"
+    assert t.translate("ATAN(#x)") == "math.atan(self.x)"
+    assert t.translate("ATAN2(#y, #x)") == "math.atan2(self.y, self.x)"
