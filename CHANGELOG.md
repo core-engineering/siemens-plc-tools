@@ -7,8 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 > Working-tree note (2026-05-30): all changes in this section are committed on
-> `main` (tip `7d3e9c2`). Whether `main` is fully pushed to `origin/main` must be
-> re-verified after a WSL restart — the shell was unstable when these were made.
+> `main`, which is ahead of `origin/main` and not yet pushed. The shell was
+> unstable when these were made — re-verify with `git log --oneline origin/main`.
 
 ### Added
 - **plc-code (executor/codegen)** — `ExpressionTranslator.BUILTIN_MAP` now maps the
