@@ -1,0 +1,22 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION "CallsRetWithOut" : Void
+    VAR_INPUT
+        value : Real;
+    END_VAR
+    VAR_OUTPUT
+        ret    : Real;
+        doubled : Real;
+        tripled : Real;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        // Return value consumed in an assignment WHILE also binding the "=>"
+        // outputs. The transpiler must capture both the return AND the outputs.
+        #ret := "RetWithOut"(x := #value, dbl => #doubled, trp => #tripled);
+    END_NETWORK
+END_FUNCTION

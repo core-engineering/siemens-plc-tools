@@ -6,10 +6,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-> Working-tree note (2026-05-30): all changes in this section are committed on
-> `main`, which is ahead of `origin/main` and not yet pushed. The shell was
-> unstable when these were made — re-verify with `git log --oneline origin/main`.
-
 ### Added
 - **plc-code (executor/codegen)** — `ExpressionTranslator.BUILTIN_MAP` now maps the
   inverse-trigonometric builtins `ASIN/ACOS/ATAN/ATAN2` to `math.asin/acos/atan/atan2`
@@ -41,6 +37,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     were supported; `call_named_block` now also returns the `FUNCTION` value.
   - Hex literals in code (`#status := 16#8201;`) — the `#` was mistaken for an
     instance-variable prefix and the value was lost.
+- **plc-code (executor/control_flow)** — a `FUNCTION` whose return value is
+  consumed in an assignment while it ALSO binds `=>` VAR_OUTPUT params
+  (`#ret := "Foo"(x := #a, out => #b)`) now wires both: the return value went
+  through the expression path, which silently dropped the `=>` outputs (the
+  targets kept their default value). Such a call is now routed through the
+  multi-statement form (call into a temp dict, assign every `=>` output, then
+  assign the return value). Statement-position calls (`"Foo"(out => #b);`) were
+  already correct; pure return-value calls (no `=>`) are unchanged.
+
+### Known issues
+- **plc-code (parser/lexer)** — two `:=` assignments on a single source line:
+  only the first is translated, the second is **silently dropped**. Workaround:
+  one assignment statement per line.
+- **plc-code (executor)** — an `Array[..] of <UDT>` used as a **direct FC
+  parameter** does not resolve (`"<typeName>" is not defined`). Workaround: wrap
+  the array in a `STRUCT`/UDT and pass that (an array-of-UDT works as a struct
+  member, just not as a bare parameter).
 
 ## [0.1.0] - 2026-05-29
 

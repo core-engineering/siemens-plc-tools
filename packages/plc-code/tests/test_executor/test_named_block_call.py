@@ -46,3 +46,18 @@ class TestNamedBlockCall:
         out = harness.get_outputs()
         assert out["doubled"] == pytest.approx(-10.0)
         assert out["quadrupled"] == pytest.approx(-20.0)
+
+    def test_return_value_consumed_with_output_params(self) -> None:
+        """A FUNCTION whose return value is consumed in an assignment AND which
+        also binds `=>` VAR_OUTPUT params: BOTH must be captured.
+
+        Regression: the expression path used for the return value dropped the
+        `=>` output bindings, leaving the targets at their default (0.0).
+        """
+        harness = create_harness(FIXTURES_DIR / "CallsRetWithOut.s7dcl")
+        harness.set_inputs(value=4.0)
+        harness.execute()
+        out = harness.get_outputs()
+        assert out["ret"] == pytest.approx(5.0)  # return value x + 1
+        assert out["doubled"] == pytest.approx(8.0)  # => output x * 2
+        assert out["tripled"] == pytest.approx(12.0)  # => output x * 3

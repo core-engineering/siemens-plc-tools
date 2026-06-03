@@ -895,6 +895,27 @@ class ControlFlowTranslator:
 
         params_str = stripped[paren_start : pos - 1]  # content between outer parens
 
+        return self._emit_named_call(block_name, params_str)[0]
+
+    def _emit_named_call(self, block_name: str, params_str: str) -> tuple[list[str], str]:
+        """Emit the Python statements for a ``"BlockName"(...)`` call.
+
+        Shared by the standalone-call path and the return-value-assignment path
+        so both wire ``=>`` outputs (and ``:=`` in-out write-back) identically.
+
+        Parameters
+        ----------
+        block_name : str
+            The sub-block name (without quotes).
+        params_str : str
+            The raw argument list between the outer parentheses.
+
+        Returns
+        -------
+        tuple[list[str], str]
+            The call + output-assignment statements, and the result-dict
+            variable name (so the caller can also read the return value).
+        """
         # Parse parameters: split by top-level commas
         params = self.stmt_translator._split_params(params_str)
 
@@ -947,7 +968,50 @@ class ControlFlowTranslator:
                     f'if "{in_name}" in {result_var}: {value_expr} = {result_var}["{in_name}"]'
                 )
 
+        return result_lines, result_var
+
+    def _translate_named_call_assignment(
+        self, target_expr: str, block_name: str, params_str: str
+    ) -> list[str]:
+        """Translate ``<target> := "BlockName"(... out => var ...)``.
+
+        A FUNCTION whose return value is consumed in an assignment may ALSO bind
+        ``=>`` outputs. The expression path can only return the value (it cannot
+        emit the output-assignment statements), so this routes such a call
+        through the multi-statement form and assigns the return value last.
+        """
+        result_lines, result_var = self._emit_named_call(block_name, params_str)
+        result_lines.append(f'{target_expr} = {result_var}["{block_name}"]')
         return result_lines
+
+    def _match_named_call_with_outputs(self, rhs: str) -> tuple[str, str] | None:
+        """Return ``(block_name, params_str)`` if ``rhs`` is exactly one
+        ``"BlockName"(...)`` call that binds at least one ``=>`` output.
+
+        Returns ``None`` for anything else (plain return-value calls, mixed
+        expressions, no outputs) so those keep the existing expression path.
+        """
+        rhs = rhs.strip().rstrip(";").strip()
+        match = re.match(r'^"([^"]+)"\s*\(', rhs)
+        if not match:
+            return None
+        # Find the matching close paren of the argument list.
+        depth = 1
+        pos = match.end()
+        while pos < len(rhs) and depth > 0:
+            if rhs[pos] == "(":
+                depth += 1
+            elif rhs[pos] == ")":
+                depth -= 1
+            pos += 1
+        # The call must span the ENTIRE rhs (no trailing operators / operands).
+        if depth != 0 or pos != len(rhs):
+            return None
+        params_str = rhs[match.end() : pos - 1]
+        normalized_params = re.sub(r"=\s*>", "=>", params_str)
+        if "=>" not in normalized_params:
+            return None
+        return match.group(1), params_str
 
     def _translate_simple_statement(self, line: str) -> list[str]:
         """Translate a simple (non-control-flow) statement.
@@ -993,6 +1057,16 @@ class ControlFlowTranslator:
         paren_pos = normalized.find("(")
         is_assignment = assign_pos != -1 and (paren_pos == -1 or assign_pos < paren_pos)
         if is_assignment:
+            # Special case: RHS is a single named-block call that ALSO binds `=>`
+            # outputs (e.g. `#ret := "Foo"(x := #a, out => #b)`). The expression
+            # path can only return the value and silently drops the `=>` outputs,
+            # so route it through the multi-statement call form instead.
+            lhs, rhs = normalized.split(":=", 1)
+            named_out = self._match_named_call_with_outputs(rhs)
+            if named_out is not None:
+                call_block_name, call_params = named_out
+                target_expr = self.expr_translator.translate(lhs.strip())
+                return self._translate_named_call_assignment(target_expr, call_block_name, call_params)
             # Use `normalized` (with `# var` collapsed to `#var`) so that the
             # expression translator's INSTANCE_VAR_PATTERN (#\w+) matches.
             return [self.stmt_translator.translate_assignment(normalized)]

@@ -1,0 +1,21 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION "RetWithOut" : Real
+    VAR_INPUT
+        x : Real;
+    END_VAR
+    VAR_OUTPUT
+        dbl : Real;
+        trp : Real;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        #dbl := #x * 2.0;
+        #trp := #x * 3.0;
+        #RetWithOut := #x + 1.0;
+    END_NETWORK
+END_FUNCTION
