@@ -170,6 +170,20 @@ class ModbusWaitUntilStep:
     dtype: str = "uint16"
 
 
+@dataclass
+class CaptureStep:
+    """Record an OPC UA variable stream by subscription for a fixed window."""
+
+    step_type: str = "capture"
+    description: str = ""
+    paths: list[str] = field(default_factory=list)
+    duration_s: float = 0.0
+    until_path: str = ""
+    until_value: Any = None
+    output: str = ""
+    sampling_interval_ms: int = 50
+
+
 Step = (
     WriteStep
     | WaitStep
@@ -181,6 +195,7 @@ Step = (
     | ModbusReadStep
     | ModbusAssertStep
     | ModbusWaitUntilStep
+    | CaptureStep
 )
 
 
@@ -444,6 +459,29 @@ def _parse_modbus_wait_until(raw: dict[str, Any]) -> ModbusWaitUntilStep:
     )
 
 
+def _parse_capture(raw: dict[str, Any]) -> CaptureStep:
+    if not raw.get("paths"):
+        raise ValueError("capture step requires a non-empty 'paths' list")
+    if not raw.get("output"):
+        raise ValueError("capture step requires an 'output' file path")
+    until = raw.get("until") or {}
+    duration_s = parse_duration(raw.get("duration", "0s"))
+    until_path = until.get("path", "")
+    if duration_s <= 0 and not until_path:
+        raise ValueError(
+            "capture step requires either a positive 'duration' or an 'until' condition"
+        )
+    return CaptureStep(
+        description=raw.get("description", ""),
+        paths=list(raw["paths"]),
+        duration_s=duration_s,
+        until_path=until_path,
+        until_value=until.get("value"),
+        output=raw["output"],
+        sampling_interval_ms=int(raw.get("sampling_interval_ms", 50)),
+    )
+
+
 register_step_parser("write", _parse_write)
 register_step_parser("wait", _parse_wait)
 register_step_parser("assert", _parse_assert)
@@ -454,3 +492,4 @@ register_step_parser("restore", _parse_restore)
 register_step_parser("modbus_read", _parse_modbus_read)
 register_step_parser("modbus_assert", _parse_modbus_assert)
 register_step_parser("modbus_wait_until", _parse_modbus_wait_until)
+register_step_parser("capture", _parse_capture)

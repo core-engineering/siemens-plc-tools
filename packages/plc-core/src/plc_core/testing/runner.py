@@ -7,17 +7,21 @@ step-by-step with real-time reporting.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
 
 from plc_core.opcua.client import OpcUaClient
+from plc_core.opcua.models import OpcUaValue
 from plc_core.testing.models import Outcome, ScenarioResult, StepResult, TestSuiteResult
 from plc_core.testing.schema import (
     AssertStep,
+    CaptureStep,
     ModbusAssertStep,
     ModbusReadStep,
     ModbusWaitUntilStep,
@@ -106,6 +110,7 @@ class ScenarioRunner:
             "assert": self._execute_assert,
             "wait_until": self._execute_wait_until,
             "read": self._execute_read,
+            "capture": self._execute_capture,
             "snapshot": self._execute_snapshot,
             "restore": self._execute_restore,
             "modbus_read": self._execute_modbus_read,
@@ -468,6 +473,86 @@ class ScenarioRunner:
             outcome=Outcome.PASSED,
             duration_s=time.monotonic() - t0,
             actual_values=actual,
+        )
+
+    async def _execute_capture(self, index: int, step: CaptureStep, t0: float) -> StepResult:
+        # Resolve paths -> node-ids and build a reverse map for labelling samples.
+        node_to_path: dict[str, str] = {}
+        node_ids: list[str] = []
+        for path in step.paths:
+            tag = self._tags.resolve(path)
+            node_to_path[tag.node_id] = path
+            node_ids.append(tag.node_id)
+
+        # The OPC UA subscription handler enqueues values via `put_nowait`; if this
+        # bounded queue (maxsize 10000) saturates, values are silently dropped, so a
+        # very high-rate capture can under-report samples.
+        queue: asyncio.Queue[OpcUaValue] = asyncio.Queue(maxsize=10000)
+        sub_id = await self._client.subscribe(node_ids, queue, interval_ms=step.sampling_interval_ms)
+
+        samples: list[dict[str, Any]] = []
+        start = time.monotonic()
+        deadline = start + step.duration_s if step.duration_s > 0 else None
+        try:
+            while True:
+                if deadline is None:
+                    # `until` mode: poll the queue at a fixed cadence.
+                    timeout = 0.1
+                else:
+                    # duration mode: loop-top check handles expiry; wait the remaining
+                    # time, clamped to a small positive minimum so we never pass <= 0.
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    timeout = max(0.001, remaining)
+                try:
+                    val = await asyncio.wait_for(queue.get(), timeout=timeout)
+                except TimeoutError:
+                    if deadline is None:
+                        # `until` mode with no traffic — poll the stop condition.
+                        if step.until_path:
+                            tag = self._tags.resolve(step.until_path)
+                            cur = await self._client.read_value(tag.node_id)
+                            if _values_match(cur.value, step.until_value):
+                                break
+                    continue
+                path = node_to_path.get(val.node_id, val.node_id)
+                samples.append(
+                    {
+                        "t": time.monotonic() - start,
+                        "path": path,
+                        "value": val.value,
+                    }
+                )
+                if step.until_path and path == step.until_path and _values_match(val.value, step.until_value):
+                    break
+        finally:
+            await self._client.unsubscribe(sub_id)
+
+        out_path = Path(step.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(
+                {
+                    "meta": {
+                        "paths": step.paths,
+                        "sampling_interval_ms": step.sampling_interval_ms,
+                        "duration_s": step.duration_s,
+                    },
+                    "samples": samples,
+                },
+                indent=2,
+            )
+        )
+
+        return StepResult(
+            step_index=index,
+            step_type="capture",
+            description=step.description or f"Capture {len(step.paths)} path(s)",
+            outcome=Outcome.PASSED,
+            duration_s=time.monotonic() - t0,
+            actual_values={"samples": len(samples), "output": step.output},
+            expected_values={},
         )
 
     async def _execute_snapshot(self, index: int, step: SnapshotStep, t0: float) -> StepResult:
