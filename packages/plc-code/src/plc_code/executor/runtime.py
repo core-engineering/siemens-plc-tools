@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from plc_code.parser.models import BlockType
+
 # Matches a constant declaration inside a DATA_BLOCK VAR section:
 #   NAME : Type := value;
 _DB_CONST_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*:\s*\w+\s*:=\s*([^;]+);", re.MULTILINE)
@@ -161,8 +163,36 @@ class _AutoStruct:
 
         return result
 
+    def clone(self) -> "_AutoStruct":
+        """Return a deep copy of this struct.
+
+        Used to honour S7 ``VAR_INPUT`` copy-in semantics when a UDT is passed
+        into a (nested) FB call: the callee receives its own copy so that a
+        later mutation of the caller's struct is not aliased into the callee's
+        retained state (e.g. an internal ``prevInput := input`` snapshot).
+        """
+        attrs = object.__getattribute__(self, "_attrs")
+        items = object.__getattribute__(self, "_items")
+        new = _AutoStruct()
+        new_attrs = object.__getattribute__(new, "_attrs")
+        new_items = object.__getattribute__(new, "_items")
+        for k, v in attrs.items():
+            new_attrs[k] = _clone_value(v)
+        for k, v in items.items():
+            new_items[k] = _clone_value(v)
+        return new
+
     def __repr__(self) -> str:
         return f"_AutoStruct({self.to_dict()!r})"
+
+
+def _clone_value(value: Any) -> Any:
+    """Deep-copy *_AutoStruct* / list containers; return scalars unchanged."""
+    if isinstance(value, _AutoStruct):
+        return value.clone()
+    if isinstance(value, list):
+        return [_clone_value(v) for v in value]
+    return value
 
 
 def _dict_to_auto_struct(value: Any) -> Any:
@@ -302,6 +332,8 @@ class PLCRuntime:
     fb_instances: dict[str, Any] = field(default_factory=dict)
     block_search_paths: list[Path] = field(default_factory=list)
     _named_block_cache: dict[str, Any] = field(default_factory=dict, repr=False)
+    _block_kind_cache: dict[str, BlockType | None] = field(default_factory=dict, repr=False)
+    _fb_instantiating: set[str] = field(default_factory=set, repr=False)
 
     def __post_init__(self) -> None:
         """Wrap ``global_dbs`` so missing constant DBs auto-load from search paths."""
@@ -378,22 +410,91 @@ class PLCRuntime:
             raise KeyError(f"Function block instance '{name}' not registered")
         return self.fb_instances[name]
 
-    def create_fb_instance(self, name: str, fb_class: type) -> Any:
+    def _compile_named_fb_class(self, block_name: str) -> Any:
+        """Resolve, compile (or fetch cached), and return an FB class by name.
+
+        Compiles the named block with an FB-type resolver bound to this runtime,
+        so that the compiled class supports nested FB members itself.  The result
+        is cached in :attr:`_named_block_cache`.
+
+        Parameters
+        ----------
+        block_name : str
+            The SCL block name without quotes.
+
+        Returns
+        -------
+        Any
+            The compiled function block class.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the block SCL file cannot be found in any search path.
+        ValueError
+            If block compilation fails.
+        """
+        # Lazy-import to avoid circular dependency (runtime <- transpiler <- runtime)
+        from plc_code.executor.transpiler import compile_block  # noqa: PLC0415
+        from plc_code.parser import parse_scl_file  # noqa: PLC0415
+
+        if block_name not in self._named_block_cache:
+            block_path = self._find_block_file(block_name)
+            if block_path is None:
+                search_dirs_str = ", ".join(str(p) for p in self.block_search_paths)
+                raise FileNotFoundError(
+                    f"Sub-block '{block_name}.s7dcl' not found in search paths: [{search_dirs_str}]"
+                )
+            parsed = parse_scl_file(block_path)
+            result = compile_block(
+                parsed,
+                fb_type_resolver=lambda n: self.block_kind(n) == "FUNCTION_BLOCK",
+            )
+            if not result.success:
+                raise ValueError(f"Failed to compile sub-block '{block_name}': {result.compile_error}")
+            self._named_block_cache[block_name] = result.fb_class
+
+        return self._named_block_cache[block_name]
+
+    def create_fb_instance(self, name: str, fb_class: type | None = None) -> Any:
         """Create and register a function block instance.
 
         Parameters
         ----------
         name : str
-            The instance name.
-        fb_class : type
-            The function block class to instantiate.
+            The instance/block name.  When ``fb_class`` is omitted, ``name`` is
+            treated as a block name and the FB class is resolved and compiled
+            from the registered search paths (with nested-FB support).
+        fb_class : type | None
+            The function block class to instantiate.  When None, the class is
+            resolved from ``name`` via :meth:`_compile_named_fb_class`.
 
         Returns
         -------
         Any
-            The created function block instance.
+            The created function block instance, bound to this runtime.
+
+        Raises
+        ------
+        ValueError
+            If a circular FB nesting is detected (the same block name is
+            requested while already being instantiated).
         """
-        instance = fb_class(_runtime=self)
+        if fb_class is None:
+            if name in self._fb_instantiating:
+                chain = ", ".join(sorted(self._fb_instantiating))
+                raise ValueError(
+                    f"circular FB nesting: '{name}' is already being instantiated "
+                    f"(in-progress: {chain})"
+                )
+            self._fb_instantiating.add(name)
+            try:
+                resolved_class = self._compile_named_fb_class(name)
+                instance = resolved_class(_runtime=self)
+            finally:
+                self._fb_instantiating.discard(name)
+        else:
+            instance = fb_class(_runtime=self)
         self.fb_instances[name] = instance
         return instance
 
@@ -422,6 +523,41 @@ class PLCRuntime:
                     if candidate2.exists():
                         return candidate2
         return None
+
+    def block_kind(self, name: str) -> BlockType | None:
+        """Return the declared kind of a block by name, or ``None`` if unresolved.
+
+        Resolves ``name`` via the registered search paths (same logic as
+        :meth:`call_named_block`) and reports the block's declared kind
+        (e.g. ``"FUNCTION_BLOCK"``, ``"FUNCTION"``, ``"TYPE"``,
+        ``"DATA_BLOCK"``, ``"ORGANIZATION_BLOCK"``).  Results are cached.
+
+        Parameters
+        ----------
+        name : str
+            The block name without quotes (e.g. ``"MotionProfile"``).
+
+        Returns
+        -------
+        BlockType | None
+            The declared block kind, or ``None`` if the block cannot be
+            found or parsed.
+        """
+        if name in self._block_kind_cache:
+            return self._block_kind_cache[name]
+        # Lazy-import to match call_named_block's import path.
+        from plc_code.parser import parse_scl_file  # noqa: PLC0415
+
+        path = self._find_block_file(name)
+        kind: BlockType | None = None
+        if path is not None:
+            try:
+                parsed = parse_scl_file(path)
+                kind = parsed.block_type
+            except Exception:
+                kind = None
+        self._block_kind_cache[name] = kind
+        return kind
 
     def call_named_block(
         self,
@@ -458,24 +594,7 @@ class PLCRuntime:
         ValueError
             If block compilation fails.
         """
-        # Lazy-import to avoid circular dependency (runtime <- transpiler <- runtime)
-        from plc_code.executor.transpiler import compile_block  # noqa: PLC0415
-        from plc_code.parser import parse_scl_file  # noqa: PLC0415
-
-        if block_name not in self._named_block_cache:
-            block_path = self._find_block_file(block_name)
-            if block_path is None:
-                search_dirs_str = ", ".join(str(p) for p in self.block_search_paths)
-                raise FileNotFoundError(
-                    f"Sub-block '{block_name}.s7dcl' not found in search paths: [{search_dirs_str}]"
-                )
-            parsed = parse_scl_file(block_path)
-            result = compile_block(parsed)
-            if not result.success:
-                raise ValueError(f"Failed to compile sub-block '{block_name}': {result.compile_error}")
-            self._named_block_cache[block_name] = result.fb_class
-
-        fb_class = self._named_block_cache[block_name]
+        fb_class = self._compile_named_fb_class(block_name)
         instance = fb_class(_runtime=self)
 
         # Set inputs (VAR_INPUT parameters)

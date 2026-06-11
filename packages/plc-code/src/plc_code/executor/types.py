@@ -441,6 +441,13 @@ class TypeMapper:
         type_info = self.parse_type(type_str)
 
         if isinstance(type_info, ArrayTypeInfo):
+            # UDT / _.Type elements become _AutoStruct (or dict) at runtime and
+            # their bare name is undefined in the generated module namespace, so a
+            # hint like ``list[someUdt]`` would raise NameError. Emit ``list[Any]``
+            # instead. ``Any`` is available because scalar UDTs already emit it.
+            element_info = self.parse_type(type_info.element_type)
+            if isinstance(element_info, TypeInfo) and element_info.scl_type == SCLType.UDT:
+                return "list[Any]"
             if len(type_info.dimensions) == 1:
                 element_hint = self.get_python_type_hint(type_info.element_type)
                 return f"list[{element_hint}]"

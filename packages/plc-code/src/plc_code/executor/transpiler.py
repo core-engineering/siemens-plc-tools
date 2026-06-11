@@ -4,6 +4,7 @@ This module provides the main transpilation functionality, converting
 parsed SCL blocks into executable Python classes.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -14,7 +15,7 @@ from plc_code.executor.codegen import (
 )
 from plc_code.executor.control_flow import ControlFlowTranslator
 from plc_code.executor.models import CompileResult, TranspileOptions, TranspileResult
-from plc_code.executor.types import ArrayTypeInfo, TypeMapper
+from plc_code.executor.types import ArrayTypeInfo, SCLType, TypeInfo, TypeMapper
 from plc_code.parser.models import Block, Network, Region, VariableDeclaration
 
 
@@ -38,6 +39,7 @@ class SCLTranspiler:
     block: Block
     options: TranspileOptions = field(default_factory=TranspileOptions)
     type_mapper: TypeMapper = field(default_factory=TypeMapper)
+    fb_type_resolver: Callable[[str], bool] | None = None
     _expr_translator: ExpressionTranslator = field(default_factory=ExpressionTranslator, repr=False)
     _stmt_translator: StatementTranslator = field(default_factory=StatementTranslator, repr=False)
     _cf_translator: ControlFlowTranslator = field(default_factory=ControlFlowTranslator, repr=False)
@@ -46,6 +48,7 @@ class SCLTranspiler:
     _errors: list[str] = field(default_factory=list, repr=False)
     _warnings: list[str] = field(default_factory=list, repr=False)
     _string_constants: dict[str, int] = field(default_factory=dict, repr=False)
+    _fb_members: list[tuple[str, str]] = field(default_factory=list, repr=False)
 
     def transpile(self) -> TranspileResult:
         """Transpile the block to Python code.
@@ -60,6 +63,7 @@ class SCLTranspiler:
         self._warnings = []
         self._ctx = CodeGenContext()
         self._string_constants = {}
+        self._fb_members = []
 
         try:
             # Pre-scan for string constants in CASE statements
@@ -140,11 +144,31 @@ class SCLTranspiler:
                 self._string_constants[key] = value
                 value += 1
 
+    def _type_is_udt(self, data_type: str) -> bool:
+        """Return True if ``data_type`` is a scalar UDT or a UDT-element array.
+
+        Detects scalar UDTs (``_.Foo``) and arrays whose ELEMENT type is a UDT
+        (``Array[..] of _.Foo``). Uses the same parsed-type UDT determination as
+        :meth:`_get_array_default`, so a symbolic array bound (e.g.
+        ``Array[0.._.AXIS_NUM] of Real``) is NOT mistaken for a UDT just because
+        the string contains ``_.``.
+        """
+        parsed = self.type_mapper.parse_type(data_type)
+        if isinstance(parsed, ArrayTypeInfo):
+            elem = self.type_mapper.parse_type(parsed.element_type)
+            return isinstance(elem, TypeInfo) and elem.scl_type == SCLType.UDT
+        return parsed.scl_type == SCLType.UDT
+
     def _has_udt_variables(self) -> bool:
-        """Return True if any variable section uses a _.TypeName UDT type."""
+        """Return True if any variable uses a _.TypeName UDT type.
+
+        Detects both scalar UDTs (``_.Foo``) and arrays whose element type is a
+        UDT (``Array[..] of _.Foo``), so that ``_AutoStruct`` / ``Any`` are
+        imported for either form.
+        """
         for section in self.block.variable_sections:
             for var in section.variables:
-                if var.data_type.startswith("_."):
+                if self._type_is_udt(var.data_type):
                     return True
         return False
 
@@ -160,13 +184,19 @@ class SCLTranspiler:
         self._emit("from dataclasses import dataclass, field")
         self._emit("")
 
+        # _clone_value backs the generated __call__ (S7 VAR_INPUT copy-in
+        # semantics); FUNCTION_BLOCKs always get a __call__, so import it there.
+        runtime_imports = ["PLCRuntime"]
+        if self.block.block_type == "FUNCTION_BLOCK":
+            runtime_imports.append("_clone_value")
         # Import _AutoStruct and Any when UDT variables are present
         if self._has_udt_variables():
             self._emit("from typing import Any")
             self._emit("")
-            self._emit("from plc_code.executor.runtime import PLCRuntime, _AutoStruct")
-        else:
-            self._emit("from plc_code.executor.runtime import PLCRuntime")
+            runtime_imports.append("_AutoStruct")
+        self._emit(
+            "from plc_code.executor.runtime import " + ", ".join(sorted(runtime_imports))
+        )
 
         # Check if we need timer imports
         timer_types = set()
@@ -191,6 +221,7 @@ class SCLTranspiler:
         self._emit(f"class {self.block.name}:")
 
         self._ctx = self._ctx.push()
+        class_body_ctx = self._ctx
 
         # Docstring
         if self.options.include_docstrings and self.block.header_info.comment:
@@ -218,6 +249,21 @@ class SCLTranspiler:
 
         # Generate execute method
         self._generate_execute_method()
+
+        # Generate __call__ for FUNCTION_BLOCKs so instances are callable
+        # (timer-style protocol): inst(**inputs) sets inputs then runs execute().
+        # Restore the class-body indentation level first, since
+        # _generate_execute_method leaves the context inside the method body.
+        if self.block.block_type == "FUNCTION_BLOCK":
+            self._ctx = class_body_ctx
+            self._generate_call_method()
+
+        # Generate __post_init__ to instantiate persistent nested FB members once.
+        # Restore class-body indentation first (prior method emission leaves the
+        # context inside a method body).
+        if self._fb_members:
+            self._ctx = class_body_ctx
+            self._generate_post_init_method()
 
     def _generate_variables(self) -> None:
         """Generate variable declarations as class attributes."""
@@ -258,6 +304,17 @@ class SCLTranspiler:
         # attribute and index access works without needing to resolve the actual
         # UDT class at compile time.
         if var.data_type.startswith("_."):
+            type_name = var.data_type[2:].strip()
+            # If the member's type is itself a FUNCTION_BLOCK (per the resolver),
+            # it needs a persistent runtime-bound instance instead of an
+            # _AutoStruct, so that the child's VAR state survives across cycles.
+            # The instance is created once in __post_init__; the field defaults to
+            # None here.  Scalar members only — arrays of _.X go through the
+            # _get_array_default path, never this branch.
+            if self.fb_type_resolver is not None and self.fb_type_resolver(type_name):
+                self._fb_members.append((name, type_name))
+                self._emit(f"{name}: Any = field(default=None)")
+                return
             self._emit(f"{name}: Any = field(default_factory=_AutoStruct)")
             return
 
@@ -406,7 +463,16 @@ class SCLTranspiler:
         # map directly to Python list indices without an explicit offset.
         alloc_size = hi + 1 if lo > 0 else (hi - lo + 1)
 
+        # UDT element arrays: each slot needs its own _AutoStruct (mirrors the
+        # scalar UDT default). Use a comprehension so the instances are distinct
+        # (``[_AutoStruct()] * N`` would alias a single shared object) and so
+        # attribute/index access works at runtime instead of a bare dict.
+        elem = self.type_mapper.parse_type(type_info.element_type)
+        element_is_udt = isinstance(elem, TypeInfo) and elem.scl_type == SCLType.UDT
+
         if len(type_info.dimensions) == 1:
+            if element_is_udt:
+                return f"[_AutoStruct() for _ in range({alloc_size})]"
             # 1-D: keep the existing [elem] * size form
             element_default = self._get_element_default(type_info.element_type)
             return f"[{element_default}] * {alloc_size}"
@@ -459,6 +525,43 @@ class SCLTranspiler:
 
         if not has_code:
             self._emit("pass")
+
+    def _generate_call_method(self) -> None:
+        """Generate the __call__() method (timer-style callable protocol).
+
+        Calling an instance with keyword arguments sets each as an attribute
+        (inputs), then runs one cycle via execute(). This lets a nested member
+        FB be driven as ``self.member(in=x)`` followed by reading
+        ``self.member.out`` with no codegen change.
+        """
+        self._emit("")
+        self._emit("def __call__(self, **kwargs):")
+        method_ctx = self._ctx.push()
+        self._ctx = method_ctx
+        self._emit("for _name, _value in kwargs.items():")
+        self._ctx = method_ctx.push()
+        # S7 VAR_INPUT copy-in semantics: a UDT / array passed into the callee is
+        # copied by value, so a later mutation of the caller's struct is not
+        # aliased into the callee's retained state (e.g. an internal
+        # ``prevInput := input`` snapshot used for change detection).
+        self._emit("setattr(self, _name, _clone_value(_value))")
+        self._ctx = method_ctx
+        self._emit("self.execute()")
+
+    def _generate_post_init_method(self) -> None:
+        """Generate __post_init__ to create persistent nested FB members once.
+
+        Each nested FUNCTION_BLOCK member is instantiated a single time via the
+        runtime (``self._runtime.create_fb_instance("Name")``) so that the
+        child's VAR state survives across the parent's ``execute()`` cycles.
+        Runs after dataclass init, so ``self._runtime`` is already populated.
+        """
+        self._emit("")
+        self._emit("def __post_init__(self):")
+        method_ctx = self._ctx.push()
+        self._ctx = method_ctx
+        for attr_name, type_name in self._fb_members:
+            self._emit(f'self.{attr_name} = self._runtime.create_fb_instance("{type_name}")')
 
     def _extract_network_code(self, network: Network) -> list[str]:
         """Extract executable code from a network.
@@ -605,6 +708,7 @@ def transpile_block(
     block: Block,
     options: TranspileOptions | None = None,
     type_mapper: TypeMapper | None = None,
+    fb_type_resolver: Callable[[str], bool] | None = None,
 ) -> TranspileResult:
     """Transpile an SCL block to Python code.
 
@@ -616,6 +720,11 @@ def transpile_block(
         Transpilation options.
     type_mapper : TypeMapper | None
         Type mapper for SCL to Python conversion.
+    fb_type_resolver : Callable[[str], bool] | None
+        Optional predicate returning True when a ``_.Name`` member type names a
+        FUNCTION_BLOCK (rather than a UDT/TYPE).  When supplied, scalar FB
+        members are emitted as persistent runtime-bound instances.  When None,
+        every ``_.`` member keeps the legacy ``_AutoStruct`` behaviour.
 
     Returns
     -------
@@ -626,6 +735,7 @@ def transpile_block(
         block=block,
         options=options or TranspileOptions(),
         type_mapper=type_mapper or TypeMapper(),
+        fb_type_resolver=fb_type_resolver,
     )
     return transpiler.transpile()
 
@@ -635,6 +745,7 @@ def compile_block(
     options: TranspileOptions | None = None,
     type_mapper: TypeMapper | None = None,
     extra_globals: dict[str, Any] | None = None,
+    fb_type_resolver: Callable[[str], bool] | None = None,
 ) -> CompileResult:
     """Transpile and compile an SCL block to an executable Python class.
 
@@ -651,6 +762,10 @@ def compile_block(
         Type mapper for SCL to Python conversion.
     extra_globals : dict[str, Any] | None
         Additional globals to make available during compilation.
+    fb_type_resolver : Callable[[str], bool] | None
+        Optional predicate identifying which ``_.Name`` member types are
+        FUNCTION_BLOCKs (forwarded to :func:`transpile_block`).  When None,
+        legacy ``_AutoStruct`` behaviour is preserved for every ``_.`` member.
 
     Returns
     -------
@@ -658,7 +773,7 @@ def compile_block(
         The compilation result containing the class.
     """
     # First transpile
-    transpile_result = transpile_block(block, options, type_mapper)
+    transpile_result = transpile_block(block, options, type_mapper, fb_type_resolver)
 
     if not transpile_result.success:
         return CompileResult(

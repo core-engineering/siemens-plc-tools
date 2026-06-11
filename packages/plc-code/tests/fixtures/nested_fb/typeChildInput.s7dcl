@@ -1,0 +1,5 @@
+TYPE
+    typeChildInput : STRUCT
+        target : LReal := 0.0;
+    END_STRUCT;
+END_TYPE

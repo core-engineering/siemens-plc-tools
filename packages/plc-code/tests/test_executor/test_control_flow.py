@@ -467,3 +467,122 @@ class TestMultiLineAssignments:
             if "=" in stripped and not stripped.startswith("#") and not stripped.startswith("//"):
                 # Ensure no line ends with bare "=" or "= "
                 assert not stripped.endswith("= "), f"Dangling assignment: {stripped!r}"
+
+
+class TestIdentifierSafeKeywordSpacing:
+    """Regression tests for commit 2e30253: TO/DO/OF/BY spacing must not split identifiers.
+
+    The lookbehind was tightened from ``(?<=[^\\s])`` to ``(?<=[^\\sA-Za-z])`` so
+    that keywords are only spaced when glued to a non-letter (digit, ')', ']') —
+    the real FOR-range / CASE selector case — and never when they form the tail of
+    an alphabetic identifier such as ``triggerGoto``, ``autoBy``, ``infoOf``, or
+    ``calDo``.
+    """
+
+    # ------------------------------------------------------------------
+    # Identifiers that END in a keyword letter-sequence must be preserved
+    # ------------------------------------------------------------------
+
+    def test_identifier_ending_in_to_is_not_split(self) -> None:
+        """'triggerGoto' must not become 'triggerGo TO'.
+
+        The old regex ``(?<=[^\\s])TO\\b`` fired on the 'o' before 'TO', turning
+        the tail of the identifier into a keyword.  The fixed regex requires the
+        preceding character to be a non-letter, so alphabetic tails are safe.
+        """
+        scl = "#triggerGoto := TRUE;"
+        result = translate_control_flow(scl)
+
+        combined = " ".join(result)
+        assert "triggerGoto" in combined, (
+            f"Identifier 'triggerGoto' was mangled: {result}"
+        )
+        assert "triggerGo" not in combined.replace("triggerGoto", ""), (
+            f"'TO' was spuriously inserted into 'triggerGoto': {result}"
+        )
+
+    def test_identifier_ending_in_by_is_not_split(self) -> None:
+        """'autoBy' must not become 'auto BY'."""
+        scl = "#autoBy := 1;"
+        result = translate_control_flow(scl)
+
+        combined = " ".join(result)
+        assert "autoBy" in combined, f"Identifier 'autoBy' was mangled: {result}"
+
+    def test_identifier_ending_in_of_is_not_split(self) -> None:
+        """'infoOf' must not become 'info OF'."""
+        scl = "#infoOf := 42;"
+        result = translate_control_flow(scl)
+
+        combined = " ".join(result)
+        assert "infoOf" in combined, f"Identifier 'infoOf' was mangled: {result}"
+
+    def test_identifier_ending_in_do_is_not_split(self) -> None:
+        """'calDo' must not become 'cal DO'."""
+        scl = "#calDo := FALSE;"
+        result = translate_control_flow(scl)
+
+        combined = " ".join(result)
+        assert "calDo" in combined, f"Identifier 'calDo' was mangled: {result}"
+
+    def test_multiple_suffix_identifiers_in_one_block(self) -> None:
+        """All four suffix variants survive in one block, verifying no cross-contamination."""
+        scl = """
+        #triggerGoto := TRUE;
+        #autoBy := 1;
+        #infoOf := 42;
+        #calDo := FALSE;
+        """
+        result = translate_control_flow(scl)
+        combined = " ".join(result)
+
+        assert "triggerGoto" in combined, f"'triggerGoto' mangled: {result}"
+        assert "autoBy" in combined, f"'autoBy' mangled: {result}"
+        assert "infoOf" in combined, f"'infoOf' mangled: {result}"
+        assert "calDo" in combined, f"'calDo' mangled: {result}"
+
+    # ------------------------------------------------------------------
+    # Genuinely-glued keywords (non-letter before keyword) MUST be spaced
+    # ------------------------------------------------------------------
+
+    def test_glued_to_in_for_range_is_spaced(self) -> None:
+        """A digit-glued ``0TO #n`` range must still get a space.
+
+        The ``\b`` boundary only fires when ``TO`` is followed by a non-word
+        character (space, ``#``).  The digit ``0`` before ``TO`` is non-letter, so
+        ``(?<=[^\\sA-Za-z])TO\\b`` fires on ``0TO #n`` and inserts the space,
+        yielding a parseable FOR range.
+        """
+        # '0TO #n': digit before TO, word boundary fires because '#' follows.
+        scl = "FOR #i := 0TO #n DO\n    #x := #i;\nEND_FOR;"
+        result = translate_control_flow(scl)
+
+        combined = " ".join(result)
+        # The FOR loop must have been parsed (range produced)
+        assert "for self.i in range(" in combined, (
+            f"FOR loop not translated (glued 0TO not spaced): {result}"
+        )
+        # The loop body assignment must be present
+        assert "self.x = self.i" in combined, (
+            f"FOR loop body missing: {result}"
+        )
+
+    def test_glued_to_after_bracket_is_spaced(self) -> None:
+        """A ``]TO`` form (array-element upper bound) must get a space.
+
+        ``]`` is a non-letter, so ``(?<=[^\\sA-Za-z])TO\\b`` fires on ``arr[0]TO``
+        and inserts the required space between the bound expression and the keyword.
+        """
+        scl = "FOR #i := #arr[0]TO 5 DO\n    #x := #i;\nEND_FOR;"
+        result = translate_control_flow(scl)
+
+        combined = " ".join(result)
+        assert "for self.i in range(" in combined, (
+            f"FOR loop not translated (glued ]TO not spaced): {result}"
+        )
+        assert "self.arr[0]" in combined, (
+            f"Lower bound missing: {result}"
+        )
+        assert "self.x = self.i" in combined, (
+            f"FOR loop body missing: {result}"
+        )

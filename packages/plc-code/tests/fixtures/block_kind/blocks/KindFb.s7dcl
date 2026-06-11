@@ -1,0 +1,18 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION_BLOCK "KindFb"
+    VAR_INPUT
+        enable : Bool := false;
+    END_VAR
+    VAR_OUTPUT
+        done : Bool := false;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        #done := #enable;
+    END_NETWORK
+END_FUNCTION_BLOCK

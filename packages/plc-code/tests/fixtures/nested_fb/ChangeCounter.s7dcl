@@ -1,0 +1,31 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION_BLOCK "ChangeCounter"
+    VAR_INPUT
+        cfg : _.typeChildInput;
+    END_VAR
+    VAR_OUTPUT
+        changes : Int := 0;
+    END_VAR
+    VAR
+        prevCfg   : _.typeChildInput;
+        firstCall : Bool := true;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        // Counts how often the UDT input's target differs from the retained
+        // snapshot. With S7 VAR_INPUT copy-in semantics, prevCfg must be an
+        // independent copy of cfg; if cfg aliased prevCfg, no change would ever
+        // be seen and this counter would stay at 0.
+        IF #firstCall THEN
+            #firstCall := false;
+        ELSIF #cfg.target <> #prevCfg.target THEN
+            #changes := #changes + 1;
+        END_IF;
+        #prevCfg := #cfg;
+    END_NETWORK
+END_FUNCTION_BLOCK

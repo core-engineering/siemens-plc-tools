@@ -1,0 +1,6 @@
+TYPE
+    typeKindUdt : STRUCT
+        position : LReal;
+        velocity : LReal;
+    END_STRUCT;
+END_TYPE

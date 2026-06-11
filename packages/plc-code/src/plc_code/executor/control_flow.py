@@ -228,17 +228,15 @@ class ControlFlowTranslator:
         # THEN - ensure space before
         result = re.sub(r"(?<=[^\s])THEN\b", " THEN", result, flags=re.IGNORECASE)
 
-        # DO - ensure space before
-        result = re.sub(r"(?<=[^\s])DO\b", " DO", result, flags=re.IGNORECASE)
-
-        # OF - ensure space before
-        result = re.sub(r"(?<=[^\s])OF\b", " OF", result, flags=re.IGNORECASE)
-
-        # TO - ensure space before (for FOR loops)
-        result = re.sub(r"(?<=[^\s])TO\b", " TO", result, flags=re.IGNORECASE)
-
-        # BY - ensure space before (for FOR loops)
-        result = re.sub(r"(?<=[^\s])BY\b", " BY", result, flags=re.IGNORECASE)
+        # DO/OF/TO/BY - ensure space before (FOR-loop / CASE glued keywords).
+        # Only insert a space when the keyword is glued to a NON-LETTER (digit, ')',
+        # ']', '.') i.e. the end of a real range/selector expression. A letter before
+        # the keyword means it is the tail of an identifier (e.g. "triggerGoto" ->
+        # "...Go" + "to", "autoBy", "infoOf") and must be left intact.
+        result = re.sub(r"(?<=[^\sA-Za-z])DO\b", " DO", result, flags=re.IGNORECASE)
+        result = re.sub(r"(?<=[^\sA-Za-z])OF\b", " OF", result, flags=re.IGNORECASE)
+        result = re.sub(r"(?<=[^\sA-Za-z])TO\b", " TO", result, flags=re.IGNORECASE)
+        result = re.sub(r"(?<=[^\sA-Za-z])BY\b", " BY", result, flags=re.IGNORECASE)
 
         # Clean up any double spaces that may have been introduced
         result = re.sub(r"  +", " ", result)

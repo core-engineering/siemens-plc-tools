@@ -1,0 +1,26 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION_BLOCK "ParentUdt"
+    VAR_INPUT
+        target : LReal;
+    END_VAR
+    VAR_OUTPUT
+        changes : Int := 0;
+    END_VAR
+    VAR
+        child    : _.ChangeCounter;
+        childCfg : _.typeChildInput;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        // A single persistent childCfg member is mutated in place each cycle and
+        // passed by value into the child. Copy-in semantics must shield the
+        // child's retained prevCfg from this in-place mutation.
+        #childCfg.target := #target;
+        #child(cfg := #childCfg, changes => #changes);
+    END_NETWORK
+END_FUNCTION_BLOCK

@@ -1,0 +1,22 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION_BLOCK "Accumulator"
+    VAR_INPUT
+        add : LReal;
+    END_VAR
+    VAR_OUTPUT
+        total : LReal;
+    END_VAR
+    VAR
+        runningTotal : LReal := 0.0;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        #runningTotal := #runningTotal + #add;
+        #total := #runningTotal;
+    END_NETWORK
+END_FUNCTION_BLOCK

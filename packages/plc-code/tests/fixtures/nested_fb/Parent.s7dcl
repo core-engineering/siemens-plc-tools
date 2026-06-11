@@ -1,0 +1,21 @@
+{
+    S7_EditorMode := "SCL";
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION_BLOCK "Parent"
+    VAR_INPUT
+        step : LReal;
+    END_VAR
+    VAR_OUTPUT
+        sum : LReal;
+    END_VAR
+    VAR
+        acc : _.Accumulator;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        #acc(add := #step, total => #sum);
+    END_NETWORK
+END_FUNCTION_BLOCK

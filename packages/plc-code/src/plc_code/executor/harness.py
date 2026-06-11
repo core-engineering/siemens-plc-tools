@@ -185,7 +185,15 @@ class FBTestHarness:
         ValueError
             If compilation fails.
         """
-        result = compile_block(block)
+        # A runtime is needed both to compile the root block (so nested FB
+        # members resolve) and to bind the resulting instance.  Build it here if
+        # the caller didn't supply one, mirroring the constructor's fallback.
+        if runtime is None:
+            runtime = PLCRuntime()
+        result = compile_block(
+            block,
+            fb_type_resolver=lambda n: runtime.block_kind(n) == "FUNCTION_BLOCK",
+        )
         if not result.success:
             raise ValueError(
                 f"Failed to compile block: {result.compile_error}\n"
