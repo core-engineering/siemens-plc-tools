@@ -772,6 +772,11 @@ def compile_block(
     CompileResult
         The compilation result containing the class.
     """
+    if block.is_ladder:
+        from plc_code.executor.ladder.compile import compile_ladder_block  # noqa: PLC0415
+
+        return compile_ladder_block(block)
+
     # First transpile
     transpile_result = transpile_block(block, options, type_mapper, fb_type_resolver)
 
