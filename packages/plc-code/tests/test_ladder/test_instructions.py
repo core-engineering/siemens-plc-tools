@@ -63,3 +63,14 @@ def test_rd_array_di_in_and_out_of_bounds() -> None:
     inst.idx = 99
     run_callbox(cb, c)
     assert inst.val == 0 and inst.err is True  # substitute element[0], ERROR set
+
+
+def test_negated_contact() -> None:
+    assert eval_rail(((Contact("#a", negated=True),),), _ctx(a=False)) is True
+    assert eval_rail(((Contact("#a", negated=True),),), _ctx(a=True)) is False
+
+
+def test_box_div_truncates_toward_zero_on_negative() -> None:
+    c = _ctx(x=-7)
+    run_box(Box("Div", {"in1": "#x", "in2": "2"}, {"out": "#x"}), c)
+    assert c.instance.x == -3  # truncation toward zero, not floor (-4)
