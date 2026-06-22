@@ -32,6 +32,10 @@ class TestDivTrunc:
         assert div_trunc(8192, 16384) == 0
         assert div_trunc(-16384, 16384) == -1
 
+    def test_zero_divisor_raises(self) -> None:
+        with pytest.raises(ZeroDivisionError):
+            div_trunc(5, 0)
+
 
 class TestOverflow:
     """32-bit overflow raises; in-range values pass through."""
@@ -54,7 +58,21 @@ class TestOverflow:
 
 
 class TestArithmetic:
+    """Arithmetic operations with overflow detection."""
+
     def test_add_sub_neg(self) -> None:
         assert add(2, 3) == 5
         assert sub(2, 3) == -1
         assert neg(5) == -5
+
+    def test_neg_overflow(self) -> None:
+        with pytest.raises(DIntOverflowError):
+            neg(DINT_MIN)
+
+    def test_add_overflow(self) -> None:
+        with pytest.raises(DIntOverflowError):
+            add(DINT_MAX, 1)
+
+    def test_sub_overflow(self) -> None:
+        with pytest.raises(DIntOverflowError):
+            sub(DINT_MIN, 1)

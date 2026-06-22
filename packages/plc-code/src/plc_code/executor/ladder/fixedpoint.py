@@ -24,22 +24,72 @@ def to_dint(x: int) -> int:
 
 
 def div_trunc(a: int, b: int) -> int:
-    """Integer division truncating toward zero (Siemens DInt semantics)."""
+    """Integer division truncating toward zero (Siemens DInt semantics).
+
+    Parameters
+    ----------
+    a : int
+        Dividend.
+    b : int
+        Divisor.
+
+    Returns
+    -------
+    int
+        Quotient, truncated toward zero, checked for overflow.
+
+    Raises
+    ------
+    ZeroDivisionError
+        If b == 0.
+    DIntOverflowError
+        If the result overflows the 32-bit signed range.
+    """
+    if b == 0:
+        raise ZeroDivisionError("DInt division by zero")
     q = abs(a) // abs(b)
     return to_dint(q if (a >= 0) == (b >= 0) else -q)
 
 
 def mul(a: int, b: int) -> int:
+    """Multiply two DInts, checking for overflow.
+
+    Raises
+    ------
+    DIntOverflowError
+        If the result overflows the 32-bit signed range.
+    """
     return to_dint(a * b)
 
 
 def add(a: int, b: int) -> int:
+    """Add two DInts, checking for overflow.
+
+    Raises
+    ------
+    DIntOverflowError
+        If the result overflows the 32-bit signed range.
+    """
     return to_dint(a + b)
 
 
 def sub(a: int, b: int) -> int:
+    """Subtract two DInts, checking for overflow.
+
+    Raises
+    ------
+    DIntOverflowError
+        If the result overflows the 32-bit signed range.
+    """
     return to_dint(a - b)
 
 
 def neg(a: int) -> int:
+    """Negate a DInt, checking for overflow.
+
+    Raises
+    ------
+    DIntOverflowError
+        If the result overflows the 32-bit signed range.
+    """
     return to_dint(-a)
