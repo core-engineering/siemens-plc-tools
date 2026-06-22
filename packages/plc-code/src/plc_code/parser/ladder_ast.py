@@ -48,13 +48,14 @@ class CallBox:
     params: tuple[tuple[str, str, str], ...]  # (param_name, ":=" | "=>", operand)
 
 
-RailTerm = tuple  # tuple[Contact | CompareContact, ...]
+type RailTerm = tuple[Contact | CompareContact, ...]
+type Action = Coil | JumpCoil | Box | CallBox
 
 
 @dataclass(frozen=True)
 class Rung:
-    rail: tuple  # tuple[RailTerm, ...]; AND of terms, each term an OR of contacts
-    actions: tuple  # tuple[Coil | JumpCoil | Box | CallBox, ...]
+    rail: tuple[RailTerm, ...]  # AND of terms, each term an OR of contacts
+    actions: tuple[Action, ...]
 
 
 @dataclass(frozen=True)
@@ -64,4 +65,4 @@ class LabelRung:
 
 @dataclass(frozen=True)
 class LadderProgram:
-    rungs: tuple  # tuple[Rung | LabelRung, ...]
+    rungs: tuple[Rung | LabelRung, ...]
