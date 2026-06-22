@@ -12,9 +12,22 @@ from typing import Any
 
 from plc_code.parser.models import BlockType
 
-# Matches a constant declaration inside a DATA_BLOCK VAR section:
+# Matches a scalar constant declaration inside a DATA_BLOCK VAR section:
 #   NAME : Type := value;
 _DB_CONST_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*:\s*\w+\s*:=\s*([^;]+);", re.MULTILINE)
+
+# Matches an array member declaration with bounds:
+#   NAME : Array[lo..hi] of Type;
+_DB_ARRAY_DECL_RE = re.compile(
+    r"^\s*([A-Za-z_]\w*)\s*:\s*Array\[\s*(-?\d+)\s*\.\.\s*(-?\d+)\s*\]\s*of\s+\w+\s*;",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# Matches an array element initialiser:
+#   NAME[idx] := value;
+_DB_ARRAY_ELEM_RE = re.compile(
+    r"^\s*([A-Za-z_]\w*)\s*\[\s*(-?\d+)\s*\]\s*:=\s*([^;]+);", re.MULTILINE
+)
 
 
 def _convert_db_literal(raw: str) -> Any:
@@ -38,9 +51,11 @@ def _convert_db_literal(raw: str) -> Any:
 def load_data_block(path: str | Path) -> SimpleNamespace:
     """Load a constant ``DATA_BLOCK`` ``.s7dcl`` file into an attribute namespace.
 
-    Each ``NAME : Type := value;`` declaration in the block's ``VAR`` section
-    becomes an attribute with its converted Python value, so that code referencing
-    ``"DbName".MEMBER`` can read it at execution time.
+    Each ``NAME : Type := value;`` scalar declaration in the block's ``VAR``
+    section becomes an attribute with its converted Python value. Array members
+    declared as ``NAME : Array[lo..hi] of Type;`` and filled by ``NAME[idx] :=
+    value;`` initialisers become a 0-based Python ``list`` (so that
+    ``"DbName".MEMBER`` and ``RD_ARRAY_DI`` can read them at execution time).
 
     Parameters
     ----------
@@ -50,10 +65,28 @@ def load_data_block(path: str | Path) -> SimpleNamespace:
     Returns
     -------
     SimpleNamespace
-        Namespace exposing each constant as an attribute.
+        Namespace exposing each scalar constant and array member as an attribute.
     """
     text = Path(path).read_text(encoding="utf-8-sig")
-    members = {name: _convert_db_literal(raw) for name, raw in _DB_CONST_RE.findall(text)}
+    members: dict[str, Any] = {
+        name: _convert_db_literal(raw) for name, raw in _DB_CONST_RE.findall(text)
+    }
+
+    # Array members: the declaration gives the (0-based) size, the element
+    # initialisers give the values. Missing elements default to 0.
+    arrays: dict[str, list[Any]] = {}
+    for name, _lo, hi in _DB_ARRAY_DECL_RE.findall(text):
+        arrays[name] = [0] * (int(hi) + 1)
+    for name, idx, raw in _DB_ARRAY_ELEM_RE.findall(text):
+        index = int(idx)
+        if name not in arrays:
+            # Initialiser without a matching declaration: size to the max index seen.
+            arrays[name] = []
+        if index >= len(arrays[name]):
+            arrays[name].extend([0] * (index + 1 - len(arrays[name])))
+        arrays[name][index] = _convert_db_literal(raw)
+    members.update(arrays)
+
     return SimpleNamespace(**members)
 
 

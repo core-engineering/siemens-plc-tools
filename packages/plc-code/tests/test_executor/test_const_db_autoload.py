@@ -22,6 +22,17 @@ def test_load_data_block_parses_typed_literals() -> None:
     assert db.FLAG_ON is True
 
 
+def test_load_data_block_parses_array_initialisers() -> None:
+    """A DB with `MEMBER[idx] := value;` array initialisers loads as a list."""
+    db = load_data_block(FIXTURES_DIR / "ladder" / "DataSafetyKinematics.s7dcl")
+    assert isinstance(db.LutSinQ14, list)
+    assert len(db.LutSinQ14) == 902  # Array[0..901]
+    assert db.LutSinQ14[0] == 0
+    assert db.LutSinQ14[1] == 29
+    assert db.LutSinQ14[300] == 8192
+    assert db.LutSinQ14[901] == 16384
+
+
 def test_constant_db_autoloads_from_search_path() -> None:
     runtime = PLCRuntime(block_search_paths=[FIXTURES_DIR])
     harness = FBTestHarness.from_scl_file(FIXTURES_DIR / "UsesDbConst.s7dcl", runtime)

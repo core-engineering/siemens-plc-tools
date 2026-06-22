@@ -3,56 +3,28 @@
 Fixture paths are anchored to this file's location so the suite passes from
 both the repo root and the package directory.  The fixture directory is
 auto-registered as a sub-block search path by ``create_harness``, so
-``ABS`` and ``SIGN`` resolve automatically.
-
-The ``DataSafetyKinematics`` constant DB must be registered explicitly:
-the runtime DB loader does not parse ``MEMBER[idx] := value;`` array
-initialisers, so the ``LutSinQ14`` LUT would otherwise be empty and the
-replay would silently produce wrong values.  We reuse the ``_load_array_db``
-helper pattern from ``test_compile.py``.
+``ABS``/``SIGN`` and the ``DataSafetyKinematics`` constant DB (with its
+``LutSinQ14`` array initialisers) resolve automatically — no manual
+registration.
 """
 
 import csv
-import re
 from collections.abc import Generator
 from pathlib import Path
-from types import SimpleNamespace
 
 from plc_code.executor import FBTestHarness, create_harness
 
 FIX = Path(__file__).parent.parent / "fixtures" / "ladder"
 
-_ARRAY_ASSIGN_RE = re.compile(r"(\w+)\[(\d+)\]\s*:=\s*(-?\d+)")
-
-
-def _load_array_db(path: Path) -> SimpleNamespace:
-    """Build a DB namespace from ``MEMBER[idx] := value;`` array assignments.
-
-    ``load_data_block`` only extracts scalar ``NAME : Type := value;``
-    declarations; the array initialiser lines used by ``DataSafetyKinematics``
-    are not parsed.  This loader fills that gap for the test.
-    """
-    text = path.read_text(encoding="utf-8-sig")
-    arrays: dict[str, dict[int, int]] = {}
-    for member, idx, value in _ARRAY_ASSIGN_RE.findall(text):
-        arrays.setdefault(member, {})[int(idx)] = int(value)
-    members = {
-        name: [cells.get(i, 0) for i in range(max(cells) + 1)]
-        for name, cells in arrays.items()
-    }
-    return SimpleNamespace(**members)
-
 
 def _make_harness() -> FBTestHarness:
-    """Create and return a fully-initialised harness with the LUT registered."""
+    """Create a harness; the LUT DB auto-loads from the fixture search path."""
     h = create_harness(FIX / "SinCalculation.s7dcl")
-    db = _load_array_db(FIX / "DataSafetyKinematics.s7dcl")
-    # Sanity-check: ensure the LUT loaded correctly (indices 0..901 → 902 cells).
-    assert len(db.LutSinQ14) == 902, (
-        f"DataSafetyKinematics.LutSinQ14 has {len(db.LutSinQ14)} entries, expected 902; "
-        "the DB loader may have failed silently."
+    # Touch the auto-loaded DB so a load failure fails loudly here, not as a
+    # silently-wrong replay (indices 0..901 -> 902 cells).
+    assert len(h.runtime.global_dbs["DataSafetyKinematics"].LutSinQ14) == 902, (
+        "DataSafetyKinematics.LutSinQ14 did not auto-load with 902 entries"
     )
-    h.runtime.register_db("DataSafetyKinematics", db)
     return h
 
 

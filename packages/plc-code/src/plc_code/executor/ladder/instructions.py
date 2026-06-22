@@ -42,7 +42,9 @@ class EvalContext:
             return int(operand)
         m = _DB_MEMBER_RE.match(operand)
         if m:
-            return getattr(self.runtime.get_db(m.group("db")), m.group("member"))
+            # Subscript access (not get_db) so a constant DB auto-loads from the
+            # runtime's search paths on first use, mirroring the SCL codegen path.
+            return getattr(self.runtime.global_dbs[m.group("db")], m.group("member"))
         # bare identifier = block variable
         return getattr(self.instance, operand)
 

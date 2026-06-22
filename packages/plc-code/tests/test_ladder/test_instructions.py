@@ -11,10 +11,7 @@ class FakeInstance:
 
 class FakeRuntime:
     def __init__(self, dbs: dict[str, Any] | None = None) -> None:
-        self._dbs: dict[str, Any] = dbs or {}
-
-    def get_db(self, name: str) -> Any:
-        return self._dbs[name]
+        self.global_dbs: dict[str, Any] = dbs or {}
 
 
 def _ctx(**vars_: Any) -> EvalContext:
