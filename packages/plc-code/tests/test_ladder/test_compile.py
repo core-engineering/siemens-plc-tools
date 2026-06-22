@@ -11,8 +11,26 @@ argument.
 from pathlib import Path
 
 from plc_code.executor import create_harness
+from plc_code.executor.models import TranspileOptions
+from plc_code.executor.transpiler import SCLTranspiler
+from plc_code.executor.types import TypeMapper
+from plc_code.parser import parse_scl_file
 
 FIX = Path(__file__).parent.parent / "fixtures" / "ladder"
+
+
+def test_emit_fields_and_metadata_public_seam() -> None:
+    """The ladder compiler reuses ``SCLTranspiler.emit_fields_and_metadata`` (a
+    public seam) rather than poking private members, so fields/metadata stay
+    identical to the SCL path."""
+    block = parse_scl_file(FIX / "ABS.s7dcl")  # VAR_INPUT x, VAR_OUTPUT y, VAR_TEMP end
+    source = SCLTranspiler(
+        block=block, options=TranspileOptions(), type_mapper=TypeMapper()
+    ).emit_fields_and_metadata()
+    assert "x:" in source  # the input field declaration
+    assert "y:" in source  # the output field declaration
+    assert "_inputs" in source  # metadata tuple the harness reads
+    assert "_outputs" in source
 
 
 def test_abs_via_harness() -> None:

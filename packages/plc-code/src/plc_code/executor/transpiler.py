@@ -265,6 +265,27 @@ class SCLTranspiler:
             self._ctx = class_body_ctx
             self._generate_post_init_method()
 
+    def emit_fields_and_metadata(self) -> str:
+        """Generate the field declarations and ``_inputs``/``_outputs``/``_in_outs``
+        metadata at class-body indentation, returned as a source string.
+
+        This is the public seam shared with the F-LAD (ladder) compile path
+        (``plc_code.executor.ladder.compile``): both paths obtain byte-identical
+        fields and metadata for the same VAR sections through this method,
+        instead of the ladder path reaching into private emit state.
+
+        Returns
+        -------
+        str
+            The generated field and metadata lines, newline-joined, indented one
+            level (i.e. ready to drop into a ``class`` body).
+        """
+        self._lines = []
+        self._ctx = CodeGenContext().push()
+        self._generate_variables()
+        self._generate_metadata()
+        return "\n".join(self._lines)
+
     def _generate_variables(self) -> None:
         """Generate variable declarations as class attributes."""
         section_comments = {
