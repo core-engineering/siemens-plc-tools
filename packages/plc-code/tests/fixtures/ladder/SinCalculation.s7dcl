@@ -1,0 +1,239 @@
+{
+    S7_Optimized := "TRUE";
+    S7_PreferredLanguage := "LAD";
+    S7_Safety := "TRUE";
+    S7_Version := "0.1"
+}
+FUNCTION "SinCalculation" : Void
+    VAR_INPUT
+        angle : DInt;
+        length : DInt;
+    END_VAR
+    VAR_OUTPUT
+        result : DInt;
+        fault : Bool;
+    END_VAR
+    VAR_TEMP
+        isNegative : Bool;
+        isOutOfDomain : Bool;
+        lutError : Bool;
+        lutError2 : Bool;
+        angleAbs : DInt;
+        index : DInt;
+        indexPlus : DInt;
+        baseTenth : DInt;
+        remainder : DInt;
+        sin0 : DInt;
+        sin1 : DInt;
+        delta : DInt;
+        corr : DInt;
+        corrDiv : DInt;
+        sinQ14 : DInt;
+        scaleTemp : DInt;
+        resultAbs : DInt;
+    END_VAR
+
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            GT_Contact(
+                in1 := #angle,
+                in2 := 9000
+            )
+            wire#w1
+            Coil( #isOutOfDomain )
+        END_RUNG
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            LT_Contact(
+                in1 := #angle,
+                in2 := -9000
+            )
+        END_RUNG wire#w1
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            LT_Contact(
+                in1 := #angle,
+                in2 := 0
+            )
+            Coil( #isNegative )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            "ABS"(
+                x := #angle,
+                y => #angleAbs
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            Div(
+                in1 := #angleAbs,
+                in2 := 10,
+                out => #index
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            Mul(
+                in1 := #index,
+                in2 := 10,
+                out => #baseTenth
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            Sub(
+                in1 := #angleAbs,
+                in2 := #baseTenth,
+                out => #remainder
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            {
+                f_user_card := "1";
+                f_imageplus_card := "0"
+            }
+            RD_ARRAY_DI(
+                ARRAY := "DataSafetyKinematics".LutSinQ14,
+                INDEX := #index,
+                OUT => #sin0,
+                ERROR => #lutError
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            Add(
+                in1 := #index,
+                in2 := 1,
+                out => #indexPlus
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            {
+                f_user_card := "1";
+                f_imageplus_card := "0"
+            }
+            RD_ARRAY_DI(
+                ARRAY := "DataSafetyKinematics".LutSinQ14,
+                INDEX := #indexPlus,
+                OUT => #sin1,
+                ERROR => #lutError2
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            Sub(
+                in1 := #sin1,
+                in2 := #sin0,
+                out => #delta
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            Mul(
+                in1 := #delta,
+                in2 := #remainder,
+                out => #corr
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            Div(
+                in1 := #corr,
+                in2 := 10,
+                out => #corrDiv
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            Add(
+                in1 := #sin0,
+                in2 := #corrDiv,
+                out => #sinQ14
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            Mul(
+                in1 := #sinQ14,
+                in2 := #length,
+                out => #scaleTemp
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            { S7_Templates := "SrcType := DInt" }
+            Div(
+                in1 := #scaleTemp,
+                in2 := 16384,
+                out => #resultAbs
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            "SIGN"(
+                x := #resultAbs,
+                isNegative := #isNegative,
+                y => #result
+            )
+        END_RUNG
+    END_NETWORK
+    { S7_Language := "LAD" }
+    NETWORK
+        RUNG wire#powerrail
+            Contact( #isOutOfDomain )
+            wire#w1
+            Coil( #fault )
+        END_RUNG
+        RUNG wire#powerrail
+            Contact( #lutError )
+        END_RUNG wire#w1
+        RUNG wire#powerrail
+            Contact( #lutError2 )
+        END_RUNG wire#w1
+    END_NETWORK
+END_FUNCTION

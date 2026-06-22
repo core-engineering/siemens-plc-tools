@@ -170,12 +170,19 @@ class Network:
         Raw content of the network (for LADDER: RUNG elements).
     ladder_elements : list[str]
         Parsed LADDER elements (Contact, Coil, etc.).
+    rungs_raw : list
+        Per-rung structure for the ladder builder. Each entry is a dict with
+        keys ``open_wire`` (str, the ``wire#…`` token after ``RUNG``),
+        ``elements`` (list[str], the element strings — same as the contribution
+        to ``ladder_elements``), and ``close_wire`` (str | None, the ``wire#…``
+        token after ``END_RUNG`` if present).
     """
 
     attributes: NetworkAttributes = field(default_factory=NetworkAttributes)
     regions: list[Region] = field(default_factory=list)
     content: str = ""
     ladder_elements: list[str] = field(default_factory=list)
+    rungs_raw: list = field(default_factory=list)  # list[dict]: open_wire/elements/close_wire
 
 
 @dataclass

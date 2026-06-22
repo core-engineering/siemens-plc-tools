@@ -694,8 +694,26 @@ class SCLParser:
 
             # RUNG elements (LADDER)
             elif self._current().type == TokenType.RUNG:
-                rung_content = self._parse_rung()
-                network.ladder_elements.extend(rung_content)
+                rung = self._parse_rung()
+                network.rungs_raw.append(rung)
+                rung_elements = rung["elements"]
+                assert isinstance(rung_elements, list)
+                network.ladder_elements.extend(rung_elements)
+
+            # A bare ``Label(NAME)`` that sits at network scope (before a RUNG).
+            # TIA Portal emits jump targets this way (see ABS/SIGN END labels).
+            # Capture it as its own raw rung so the ladder builder can turn it
+            # into a LabelRung while keeping the existing content stream intact.
+            elif (
+                self._current().type == TokenType.IDENTIFIER
+                and self._current().value == "Label"
+                and self._peek().type == TokenType.LPAREN
+            ):
+                label_elem = self._parse_ladder_call()
+                network.rungs_raw.append(
+                    {"open_wire": "", "elements": [label_elem], "close_wire": None}
+                )
+                network.ladder_elements.append(label_elem)
 
             # Other content
             else:
@@ -846,20 +864,70 @@ class SCLParser:
 
         return mlc_id
 
-    def _parse_rung(self) -> list[str]:
+    def _read_wire(self) -> str:
+        """Read a ``wire#<name>`` reference, returning ``wire#<name>`` or "".
+
+        The lexer splits ``wire#powerrail`` into IDENTIFIER('wire'), HASH,
+        IDENTIFIER('powerrail'); this consumes that sequence and rejoins it.
+        """
+        if not (
+            self._current().type == TokenType.IDENTIFIER
+            and self._current().value == "wire"
+            and self._peek().type == TokenType.HASH
+        ):
+            return ""
+        self._advance()  # wire
+        self._advance()  # #
+        name = ""
+        if self._current().type == TokenType.IDENTIFIER:
+            name = self._current().value
+            self._advance()
+        return f"wire#{name}"
+
+    def _parse_ladder_call(self) -> str:
+        """Parse a single ladder element token, e.g. ``Coil( #x )`` -> string.
+
+        Assumes the current token is the element name (IDENTIFIER or STRING).
+        Quotes are stripped from STRING names. Returns the element string with
+        its parenthesised argument list collapsed (whitespace removed).
+        """
+        if self._current().type == TokenType.STRING:
+            element = self._current().value.strip('"')
+        else:
+            element = self._current().value
+        self._advance()
+
+        if self._current().type == TokenType.LPAREN:
+            element += "("
+            self._advance()
+            while self._current().type != TokenType.RPAREN:
+                if self._current().type == TokenType.EOF:
+                    break
+                element += self._current().value
+                self._advance()
+            element += ")"
+            if self._current().type == TokenType.RPAREN:
+                self._advance()
+        return element
+
+    def _parse_rung(self) -> dict[str, object]:
         """Parse a LADDER RUNG.
 
         Returns
         -------
-        list[str]
-            List of LADDER elements.
+        dict
+            ``{"open_wire": str, "elements": list[str], "close_wire": str | None}``.
+            ``open_wire`` is the ``wire#…`` token following ``RUNG`` (e.g.
+            ``wire#powerrail``); ``elements`` are the element strings (including
+            any internal ``wire#…`` markers that appear between elements, e.g. the
+            tap point of a parallel-OR branch); ``close_wire`` is the ``wire#…``
+            token following ``END_RUNG`` if present (the branch's join point).
         """
-        elements = []
+        elements: list[str] = []
         self._advance()  # Skip RUNG
 
-        # Skip wire references after RUNG (e.g., "RUNG wire#powerrail")
-        while self._current().type in (TokenType.IDENTIFIER, TokenType.HASH):
-            self._advance()
+        # Capture the wire reference after RUNG (e.g., "RUNG wire#powerrail")
+        open_wire = self._read_wire()
         self._skip_newlines()
 
         # Parse until END_RUNG
@@ -873,46 +941,31 @@ class SCLParser:
                 self._skip_newlines()
                 continue
 
+            # Internal wire markers (e.g. "wire#w1" between a contact and its
+            # coil) tag the rail term that parallel-OR branches join onto.
+            internal_wire = self._read_wire()
+            if internal_wire:
+                elements.append(internal_wire)
+                self._skip_newlines()
+                continue
+
             # Capture ladder elements like Contact(...), Coil(...), "FunctionName"(...)
             if self._current().type in (TokenType.IDENTIFIER, TokenType.STRING):
-                # For STRING tokens (quoted function names), strip the quotes
-                if self._current().type == TokenType.STRING:
-                    element = self._current().value.strip('"')
-                else:
-                    element = self._current().value
-                self._advance()
-
-                # Check for function call
-                if self._current().type == TokenType.LPAREN:
-                    element += "("
-                    self._advance()
-                    # Collect arguments
-                    while self._current().type != TokenType.RPAREN:
-                        if self._current().type == TokenType.EOF:
-                            break
-                        element += self._current().value
-                        self._advance()
-                    element += ")"
-                    if self._current().type == TokenType.RPAREN:
-                        self._advance()
-
-                elements.append(element)
+                elements.append(self._parse_ladder_call())
             else:
                 self._advance()
 
             self._skip_newlines()
 
+        close_wire: str | None = None
         if self._current().type == TokenType.END_RUNG:
             self._advance()
-            # Skip wire references after END_RUNG (e.g., "END_RUNG wire#w2")
-            while self._current().type in (
-                TokenType.IDENTIFIER,
-                TokenType.HASH,
-            ):
-                self._advance()
+            # Capture the wire reference after END_RUNG (e.g., "END_RUNG wire#w2")
+            wire = self._read_wire()
+            close_wire = wire or None
 
         self._skip_newlines()
-        return elements
+        return {"open_wire": open_wire, "elements": elements, "close_wire": close_wire}
 
     def _parse_udt(self, block: Block) -> None:
         """Parse a TYPE (UDT) definition.
@@ -1010,12 +1063,12 @@ class SCLParser:
         block.user_data_type = udt
 
 
-def parse_scl_file(file_path: Path) -> Block:
+def parse_scl_file(file_path: Path | str) -> Block:
     """Parse an SCL file into a Block.
 
     Parameters
     ----------
-    file_path : Path
+    file_path : Path | str
         Path to .s7dcl file.
 
     Returns
@@ -1030,6 +1083,7 @@ def parse_scl_file(file_path: Path) -> Block:
     ParseError
         When parsing fails.
     """
+    file_path = Path(file_path)
     if not file_path.exists():
         raise FileNotFoundError(f"SCL file not found: {file_path}")
 
