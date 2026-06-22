@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from plc_code.parser import parse_scl_file
 from plc_code.parser.ladder_ast import (  # noqa: F401 (LabelRung used via type-name assert)
     Box,
@@ -10,11 +12,11 @@ from plc_code.parser.ladder_ast import (  # noqa: F401 (LabelRung used via type-
 )
 from plc_code.parser.ladder_builder import build_ladder_program
 
-FIX = "tests/fixtures/ladder"
+FIX = Path(__file__).parent.parent / "fixtures" / "ladder"
 
 
 def test_abs_program_shape() -> None:
-    block = parse_scl_file(f"{FIX}/ABS.s7dcl")
+    block = parse_scl_file(FIX / "ABS.s7dcl")
     prog = build_ladder_program(block)
     kinds = [type(r).__name__ for r in prog.rungs]
     # ABS: coil(end); Move(x->y); GE_Contact -> JumpCoil(END); Neg(x->y); Label(END) coil(end)
@@ -28,7 +30,7 @@ def test_abs_program_shape() -> None:
 
 
 def test_sin_domain_check_is_parallel_or() -> None:
-    block = parse_scl_file(f"{FIX}/SinCalculation.s7dcl")
+    block = parse_scl_file(FIX / "SinCalculation.s7dcl")
     prog = build_ladder_program(block)
     # the first coil-bearing rung writes #isOutOfDomain, gated by an OR of two compare contacts
     coil_rungs = [r for r in prog.rungs if isinstance(r, Rung)
@@ -41,7 +43,7 @@ def test_sin_domain_check_is_parallel_or() -> None:
 
 
 def test_rd_array_di_is_callbox() -> None:
-    block = parse_scl_file(f"{FIX}/SinCalculation.s7dcl")
+    block = parse_scl_file(FIX / "SinCalculation.s7dcl")
     prog = build_ladder_program(block)
     calls = [a for r in prog.rungs if isinstance(r, Rung) for a in r.actions if isinstance(a, CallBox)]
     names = {c.name for c in calls}
