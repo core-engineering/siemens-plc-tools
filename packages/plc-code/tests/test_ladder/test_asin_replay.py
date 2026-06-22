@@ -74,10 +74,10 @@ def test_spot_checks() -> None:
         h.set_inputs(angle=angle, length=13106)
         h.execute()
         assert h.get_output("result") == expected, f"angle={angle}"
-        assert h.get_output("fault") is False
+        assert not h.get_output("fault")
     h.set_inputs(angle=9050, length=13106)
     h.execute()
-    assert h.get_output("fault") is True
+    assert h.get_output("fault")
 
 
 def test_full_18001_vectors_bit_exact() -> None:
@@ -93,10 +93,7 @@ def test_full_18001_vectors_bit_exact() -> None:
         got_fault = bool(h.get_output("fault"))
         if got_result != expected or got_fault != fault:
             mismatches.append((angle, got_result, expected, got_fault, fault))
-            if len(mismatches) > 10:
-                break
     assert n == 18001, f"expected 18001 vectors, replayed {n}"
     assert not mismatches, (
-        "first mismatches (angle, got_result, expected_result, got_fault, expected_fault):\n"
-        + "\n".join(str(m) for m in mismatches[:10])
+        f"bit-exact mismatches (first 10 of {len(mismatches)}): {mismatches[:10]}"
     )
