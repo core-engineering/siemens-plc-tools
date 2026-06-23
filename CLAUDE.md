@@ -6,17 +6,25 @@ This document describes the architectural patterns, coding standards, and qualit
 
 ### Purpose
 PLC Tools is a monorepo containing packages for:
-- **plc-core**: Shared utilities, models, and configuration
-- **plc-code**: SCL code analysis, documentation, and testing for TIA Portal V21
+- **plc-core**: Shared utilities, models, config, reporting, OPC UA client, and a YAML scenario test framework
+- **plc-code**: SCL/LADDER code analysis, documentation, and simulation/testing for TIA Portal V21
 - **plc-iol**: I/O list management and validation
+- **plc-modbus**: Async Modbus TCP client (read) for integration testing
+- **plc-sim**: OPC UA simulation interface and live-PLC YAML scenario runner
+- **plc-sup**: Supervision-pipeline integration tests (OPC UA → Redis → TimescaleDB → REST)
+- **plc-net**: Industrial network / OPC UA traffic monitoring (scapy)
 
-### Current Status (v0.3.0)
+### Current Status (v0.1.0)
 
 | Package | Status | Description |
 |---------|--------|-------------|
-| plc-core | Complete | Shared utilities: config, models, CLI, reporting |
-| plc-code | Complete | Parser, extractor, generator, analyzer, executor, testing |
-| plc-iol | Complete | Importers, exporters, analyzers, validation |
+| plc-core | Stable | config, models, CLI plugin framework, reporting, OPC UA client, YAML test framework |
+| plc-code | Stable | parser (SCL + LADDER), extractor, generator, analyzer, executor (incl. F-LAD interpreter), testing, web, draw.io, PDF/Word export |
+| plc-iol | Beta | importers/exporters (XML/Excel), comparison, validation |
+| plc-modbus | Alpha | async Modbus TCP client (read-side) for integration tests |
+| plc-sim | Alpha | OPC UA simulation + live-PLC scenario runner + web UI |
+| plc-sup | Experimental | supervision-pipeline integration tests (no unit tests yet) |
+| plc-net | Experimental | network / OPC UA monitoring (no unit tests yet) |
 
 ---
 
@@ -64,16 +72,20 @@ plc-tools/                          # Monorepo root
 │   │   ├── tests/
 │   │   └── pyproject.toml          # depends on plc-core
 │   │
-│   └── plc-iol/                    # IOL module (from 204-iol-management)
-│       ├── src/plc_iol/
-│       │   ├── __init__.py
-│       │   ├── cli.py              # Click commands: plc iol ...
-│       │   ├── core/               # IOPoint, IODatabase, config
-│       │   ├── importers/          # XML, Excel importers
-│       │   ├── exporters/          # XML, Excel exporters
-│       │   └── analyzers/          # Comparison, validation
-│       ├── tests/
-│       └── pyproject.toml          # depends on plc-core
+│   ├── plc-iol/                    # IOL module (from 204-iol-management)
+│   │   ├── src/plc_iol/
+│   │   │   ├── __init__.py
+│   │   │   ├── cli.py              # Click commands: plc iol ...
+│   │   │   ├── core/               # IOPoint, IODatabase, config
+│   │   │   ├── importers/          # XML, Excel importers
+│   │   │   ├── exporters/          # XML, Excel exporters
+│   │   │   └── analyzers/          # Comparison, validation
+│   │   ├── tests/
+│   │   └── pyproject.toml          # depends on plc-core
+│   ├── plc-modbus/                 # async Modbus TCP client (read) — depends on plc-core
+│   ├── plc-sim/                    # OPC UA sim + scenario runner + web — plc-core + plc-modbus
+│   ├── plc-sup/                    # supervision-pipeline tests (Redis/Timescale/REST) — plc-core
+│   └── plc-net/                    # network / OPC UA monitoring (scapy) — standalone
 │
 ├── src/plc_tools/                  # Main entry point package
 │   ├── __init__.py                 # Version, imports
@@ -91,52 +103,82 @@ plc-tools/                          # Monorepo root
 ```
 plc-core (standalone)
     ↑
-    ├── plc-code (depends on plc-core)
-    └── plc-iol (depends on plc-core)
+    ├── plc-code   (→ plc-core)
+    ├── plc-iol    (→ plc-core)
+    ├── plc-modbus (→ plc-core)
+    ├── plc-sim    (→ plc-core[opcua] + plc-modbus)
+    └── plc-sup    (→ plc-core[opcua])
+plc-net (standalone — no internal deps)
 
 plc-tools (meta-package, optional extras)
     ├── [core] → plc-core
-    ├── [code]  → plc-core + plc-code
+    ├── [code] → plc-core + plc-code
     ├── [iol]  → plc-core + plc-iol
+    ├── [sim]  → plc-core + plc-modbus + plc-sim
+    ├── [sup]  → plc-core + plc-sup
+    ├── [net]  → plc-net
     └── [all]  → everything
 ```
+
+The only cross-peripheral coupling is `plc-sim → plc-modbus` (declared) and an
+optional runtime import of `plc_code.web` inside `plc sim web` (degrades if absent).
 
 ---
 
 ## 3. CLI Structure
 
 ### Command Hierarchy
+
+Each subgroup is contributed by a package plugin (see Plugin Architecture); a
+partial install exposes only the installed groups.
+
 ```bash
 plc                              # Root command group
-├── scl                          # SCL subgroup
-│   ├── init                     # Initialize project
+├── code                         # plc-code: SCL/LADDER analysis, docs, simulation
+│   ├── init [--with-tests]      # Initialize project
 │   ├── status                   # Show project status
-│   ├── lint [PATH]              # Quality analysis
-│   ├── docs [PATH] [--serve]    # Generate documentation
-│   ├── test [PATH] [-v]         # Run unit tests
-│   └── export pdf [-o FILE]     # Export PDF report
+│   ├── lint [PATH] [-f]         # Quality analysis (text/json)
+│   ├── docs [PATH] [--serve]    # Generate MkDocs documentation
+│   ├── test [PATH] [-v]         # Run block unit tests
+│   ├── trace [PATH] [-b -o -f]  # I/O→logic dependency trace (text/json/mermaid)
+│   ├── drawio --doc-map --out   # Generate Draw.io diagrams
+│   ├── web [--port --build-docs]# FastAPI analysis server / I/O explorer
+│   └── export {pdf|params}      # PDF report / Word parameter tables
 │
-└── iol                          # IOL subgroup
-    ├── init                     # Initialize IOL config
-    ├── status                   # Show project status
-    ├── import <source>          # Import from XML or Excel
-    │   ├── tags [--path]        # Import S7-1500 XML
-    │   └── excel [--path]       # Import IOL Excel
-    ├── export <target>          # Export to XML or Excel
-    │   ├── tags [-o DIR]        # Export S7-1500 XML
-    │   └── excel [-o FILE]      # Export IOL Excel
-    ├── list [--category] [--group]  # List I/O points
-    ├── compare <src> <tgt>      # Compare databases
-    └── validate                 # Validate database
+├── iol                          # plc-iol: I/O list management
+│   ├── init | status
+│   ├── import {tags|iol}        # Import S7-1500 XML / IOL Excel
+│   ├── export {tags|iol}        # Export S7-1500 XML / IOL Excel
+│   ├── list [--category --group]
+│   ├── compare <src> <tgt>
+│   └── validate
+│
+├── sim                          # plc-sim: live-PLC OPC UA + scenario runner
+│   ├── connect | browse | read | write | monitor
+│   ├── web                      # OPC UA web UI (co-hosts plc-code web if present)
+│   ├── test                     # YAML scenario runner (+ Modbus/flash asserts)
+│   └── results
+│
+├── sup                          # plc-sup: supervision-pipeline integration tests
+│   └── test                     # OPC UA → Redis → TimescaleDB → REST verification
+│
+└── net                          # plc-net: live network monitoring (needs root)
+    ├── monitor                  # multi-protocol traffic dashboard
+    └── opcua                    # OPC UA binary dissector
 ```
 
 ### Plugin Architecture
-Plugins are discovered via entry points:
-```python
-# Each module registers via entry point:
+Subgroups are discovered at runtime via the `plc_tools.plugins` entry-point group
+(`plc_core.cli.discover_plugins`); discovery tolerates load failures, so a partial
+install still works:
+```toml
+# Each package registers its Click group, e.g.:
 # [project.entry-points."plc_tools.plugins"]
 # code = "plc_code.cli:code_group"
-# iol = "plc_iol.cli:iol_group"
+# iol  = "plc_iol.cli:iol_group"
+# sim  = "plc_sim.cli:sim_group"
+# sup  = "plc_sup.cli:sup_group"
+# net  = "plc_net.cli:net_group"
 ```
 
 ---
@@ -325,9 +367,14 @@ New features follow this pattern:
 
 | Future Feature | Package | Dependencies |
 |----------------|---------|--------------|
-| Cross-reference | `plc-xref` | core, scl, iol |
+| Cross-reference | `plc-xref` | core, code, iol |
 | Logic generation | `plc-gen` | core |
 | LADDER analysis | `plc-ladder` | core |
+
+Note: LADDER **execution** already exists inside `plc-code` (`executor/ladder/`, a
+fixed-point F-LAD interpreter that runs ladder blocks through the same harness as
+SCL). The planned `plc-ladder` package above is for static LADDER **analysis**,
+which is distinct and not yet started.
 
 ---
 
