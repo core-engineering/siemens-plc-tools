@@ -196,3 +196,29 @@ END_FUNCTION
     h2.set_inputs(v=1.0e309)  # +inf in IEEE-754 double
     h2.execute()
     assert h2.get_output("UsesIsFinite") == 0x8201
+
+
+# --------------------------------------------------------------------------- #
+# Two ``:=`` statements on one source line — both must be assigned
+# --------------------------------------------------------------------------- #
+def test_two_assignments_on_one_source_line_both_assign() -> None:
+    """``#a := 1; #b := 2;`` on a single line must assign BOTH outputs.
+
+    The parser emits one statement per ``;`` (each on its own line), so neither
+    assignment is silently dropped end to end.
+    """
+    scl = """{ S7_EditorMode := "SCL" }
+FUNCTION_BLOCK "TwoAssign"
+    VAR_OUTPUT
+        a : Int;
+        b : Int;
+    END_VAR
+    { S7_Language := "SCL" }
+    NETWORK
+        #a := 1; #b := 2;
+    END_NETWORK
+END_FUNCTION_BLOCK"""
+    harness = _harness(scl)
+    harness.execute()
+    assert harness.get_output("a") == 1
+    assert harness.get_output("b") == 2

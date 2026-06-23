@@ -357,3 +357,23 @@ class TestRealFileFixture:
         fb_idx = token_types.index(TokenType.FUNCTION_BLOCK)
         assert tokens[fb_idx + 1].type == TokenType.STRING
         assert "MotorStarter" in tokens[fb_idx + 1].value
+
+
+class TestIdentifierWithTrailingOf:
+    """Regression: an identifier ending in ``of`` must not be split.
+
+    A name like ``ComputeProfile1Dof`` must tokenise as ONE ``IDENTIFIER``, not be
+    cut into a shorter identifier plus an ``OF`` keyword. The array ``of`` clause is
+    recognised in the parser (by exact value match), never carved out by the lexer.
+    """
+
+    def test_identifier_ending_in_of_is_single_identifier(self) -> None:
+        tokens = [t for t in tokenize("ComputeProfile1Dof") if t.type != TokenType.EOF]
+        assert len(tokens) == 1
+        assert tokens[0].type == TokenType.IDENTIFIER
+        assert tokens[0].value == "ComputeProfile1Dof"
+
+    def test_array_of_clause_tokenises_of_as_plain_identifier(self) -> None:
+        values = [t.value for t in tokenize("a : Array[0..2] of Bool;") if t.type != TokenType.EOF]
+        assert "of" in values
+        assert "Bool" in values

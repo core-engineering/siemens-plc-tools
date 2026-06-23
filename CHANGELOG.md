@@ -15,13 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `call_named_block` for FUNCTION/FB sub-blocks), so shared constant DBs no longer
   need to be registered by hand. New public helper `load_data_block(path)`.
 
-### Known issues
-- **plc-code (parser/lexer)** — an identifier whose name ends in `of`
-  (e.g. `ComputeProfile1Dof`) is mis-tokenised: the trailing `of` is read as the
-  `OF` keyword (as in `Array[..] OF`), corrupting the statement. Workaround: avoid
-  a trailing `of`/`Dof` in block/variable names. Candidate fix: the lexer must not
-  split `OF` out of a longer identifier (respect word boundaries).
-
 ### Fixed
 - **plc-code (executor/transpiler)** — five SCL constructs that previously
   transpiled to broken Python (and forced downstream workarounds) now work:
@@ -45,15 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   multi-statement form (call into a temp dict, assign every `=>` output, then
   assign the return value). Statement-position calls (`"Foo"(out => #b);`) were
   already correct; pure return-value calls (no `=>`) are unchanged.
-
-### Known issues
-- **plc-code (parser/lexer)** — two `:=` assignments on a single source line:
-  only the first is translated, the second is **silently dropped**. Workaround:
-  one assignment statement per line.
-- **plc-code (executor)** — an `Array[..] of <UDT>` used as a **direct FC
-  parameter** does not resolve (`"<typeName>" is not defined`). Workaround: wrap
-  the array in a `STRUCT`/UDT and pass that (an array-of-UDT works as a struct
-  member, just not as a bare parameter).
+- **plc-code (parser/lexer/executor)** — the three items previously tracked under
+  *Known issues* are verified resolved and no longer reproduce; each is now locked
+  by a regression test:
+  - an identifier ending in `of` (e.g. `ComputeProfile1Dof`) tokenises as a single
+    `IDENTIFIER` — the array `of` clause is matched in the parser by exact value,
+    never carved out of a longer identifier by the lexer
+    (`test_lexer.py::TestIdentifierWithTrailingOf`);
+  - two `:=` statements on one source line both translate — the parser emits one
+    statement per `;`, so the second is not silently dropped end to end
+    (`test_limitation_fixes.py::test_two_assignments_on_one_source_line_both_assign`);
+  - an `Array[..] of <UDT>` passed as a direct FC parameter resolves
+    (`test_array_of_udt.py`).
 
 ## [0.1.0] - 2026-05-29
 
