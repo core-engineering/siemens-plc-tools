@@ -71,6 +71,7 @@ class ExpressionTranslator:
         default_factory=lambda: {
             "INT_TO_REAL": "float",
             "REAL_TO_INT": "int",
+            "REAL_TO_DINT": "int",
             "INT_TO_USINT": "lambda x: x & 0xFF",
             "INT_TO_UINT": "lambda x: x & 0xFFFF",
             "INT_TO_DINT": "int",
