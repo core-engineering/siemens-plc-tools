@@ -222,8 +222,11 @@ class ControlFlowTranslator:
         # CASE - ensure space after
         result = re.sub(r"\bCASE(?=[^\s])", "CASE ", result, flags=re.IGNORECASE)
 
-        # FOR - ensure space after (must come after OR handling)
-        result = re.sub(r"\bFOR(?=[^\s])", "FOR ", result, flags=re.IGNORECASE)
+        # FOR - ensure space after (must come after OR handling).
+        # Negative lookbehind (?<!") prevents matching "For..." inside quoted block
+        # names like "ForwardKinematicMdh": the " immediately before F is non-word
+        # (creating \b) but the block name must not be rewritten.
+        result = re.sub(r'(?<!")\bFOR(?=[^\s])', "FOR ", result, flags=re.IGNORECASE)
 
         # THEN - ensure space before
         result = re.sub(r"(?<=[^\s])THEN\b", " THEN", result, flags=re.IGNORECASE)
