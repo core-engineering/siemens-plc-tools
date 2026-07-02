@@ -71,6 +71,15 @@ class ControlFlowTranslator:
             if line.upper().startswith("REGION") or line.upper().startswith("END_REGION"):
                 continue
 
+            # Strip a trailing inline ``//`` comment.  TIA Portal glues an inline
+            # comment onto the code line (``IF #f THEN // note``), so a whole-line
+            # skip is not enough: an inline comment left as the first body token
+            # after ``THEN``/``ELSE`` would otherwise be captured as a body
+            # statement and leak into the generated Python as invalid syntax.
+            line = self._strip_inline_comment(line)
+            if not line:
+                continue
+
             # Normalize spacing around keywords that may have been stripped
             line = self._normalize_spacing(line)
 
@@ -105,7 +114,56 @@ class ControlFlowTranslator:
             lines.append(current)
             i += 1
 
-        return lines
+        # Split an inline nested control-flow header off the line that carries the
+        # enclosing keyword.  TIA Portal (and hand-written SCL) may place a nested
+        # ``IF``/``CASE``/``WHILE``/``FOR`` on the SAME physical line as the outer
+        # ``THEN``/``ELSE``/``DO`` (e.g. ``IF #a THEN IF #b THEN ... ;``).  The
+        # inline-body capture in :meth:`_translate_if_block` would otherwise grab
+        # the nested header WITHOUT its matching ``END_IF`` (which sits on a later
+        # line), silently dropping the whole nested statement and leaking a stray
+        # ``END_IF``.  Giving every nested header its own line routes it through the
+        # correct multi-line nested path instead.
+        expanded: list[str] = []
+        for line in lines:
+            split = self._INLINE_COMPOUND_SPLIT.sub(r"\1\n\2", line)
+            expanded.extend(part.strip() for part in split.split("\n") if part.strip())
+
+        return expanded
+
+    def _strip_inline_comment(self, line: str) -> str:
+        """Remove a trailing ``//`` line comment, respecting string literals.
+
+        A ``//`` inside a single- or double-quoted literal is left untouched; the
+        first ``//`` outside any quote truncates the line.
+
+        Parameters
+        ----------
+        line : str
+            A single, already-stripped source line.
+
+        Returns
+        -------
+        str
+            The line with any trailing inline comment removed (right-stripped).
+        """
+        in_squote = False
+        in_dquote = False
+        for idx in range(len(line) - 1):
+            ch = line[idx]
+            if ch == "'" and not in_dquote:
+                in_squote = not in_squote
+            elif ch == '"' and not in_squote:
+                in_dquote = not in_dquote
+            elif ch == "/" and line[idx + 1] == "/" and not in_squote and not in_dquote:
+                return line[:idx].rstrip()
+        return line
+
+    # A nested control-flow keyword directly following THEN/ELSE/DO on the same
+    # physical line starts a new statement and must be broken onto its own line.
+    _INLINE_COMPOUND_SPLIT = re.compile(
+        r"\b(THEN|ELSE|DO)\b\s+(IF|CASE|WHILE|FOR)\b",
+        re.IGNORECASE,
+    )
 
     # Operators that, at the end of a line, require a right-hand side on the next.
     _CONT_END = re.compile(r"(:=|[-+*/(,<>=])$")
