@@ -204,6 +204,60 @@ class TestInlineCommentDoesNotLeak:
         assert any("a//b" in line for line in result), f"String mangled: {result}"
 
 
+class TestSplitQuoteAwareness:
+    """_INLINE_COMPOUND_SPLIT must not corrupt string literals containing control keywords."""
+
+    def test_split_does_not_break_string_literal(self) -> None:
+        """A string literal containing a keyword pair must arrive as one intact line."""
+        for s in ("'PUMP DO WHILE RUN'", "'PRESS THEN IF READY'", "'ELSE IF x'"):
+            r = translate_control_flow(f"#msg := {s};")
+            assert r == [f"self.msg = {s}"], r
+
+    def test_split_does_not_break_string_in_if_body(self) -> None:
+        """String literal with control keywords inside an IF body must survive intact."""
+        scl = "IF #flag THEN\n#msg := 'PUMP DO WHILE RUN';\nEND_IF;"
+        result = translate_control_flow(scl)
+        assert any("self.msg = 'PUMP DO WHILE RUN'" in line for line in result), result
+
+    def test_split_applied_outside_string(self) -> None:
+        """A real keyword pair outside quotes must still be split (regression guard)."""
+        scl = "IF #a THEN IF #b THEN #out := 1;\nEND_IF;\nEND_IF;"
+        result = translate_control_flow(scl)
+        if_count = sum(1 for line in result if line.strip().startswith("if "))
+        assert if_count == 2, f"Expected 2 ifs, got: {result}"
+
+
+class TestSplitPinnedKeywordPairs:
+    """Pin keyword pairs beyond THEN IF that were working but untested."""
+
+    def test_then_case_split(self) -> None:
+        """THEN CASE glued on one line must produce correct IF + CASE output.
+
+        SCL CASE labels must appear alone on their own line (label_match
+        requires ``:\\s*$``), so the body lives on the next line.
+        """
+        scl = "IF #flag THEN CASE #x OF\n" "1:\n" "#out := 1;\n" "END_CASE;\n" "END_IF;"
+        result = translate_control_flow(scl)
+        assert any("if self.flag" in line for line in result), result
+        assert any("self.out = 1" in line for line in result), result
+        assert not any("END_CASE" in line for line in result), result
+
+    def test_do_while_nested_split(self) -> None:
+        """DO WHILE glued on one line — outer WHILE body must contain inner while."""
+        scl = (
+            "WHILE #a > 0 DO WHILE #b > 0 DO\n"
+            "#b := #b - 1;\n"
+            "END_WHILE;\n"
+            "#a := #a - 1;\n"
+            "END_WHILE;"
+        )
+        result = translate_control_flow(scl)
+        while_count = sum(1 for line in result if line.strip().startswith("while "))
+        assert while_count == 2, f"Expected 2 while loops, got: {result}"
+        assert any("self.b = self.b - 1" in line for line in result), result
+        assert any("self.a = self.a - 1" in line for line in result), result
+
+
 class TestPowerOperatorNotMangled:
     """Secondary bug (not reproducible; guarded): ``**`` must stay ``**``."""
 

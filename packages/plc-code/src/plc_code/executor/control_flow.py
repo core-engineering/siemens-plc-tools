@@ -125,7 +125,7 @@ class ControlFlowTranslator:
         # correct multi-line nested path instead.
         expanded: list[str] = []
         for line in lines:
-            split = self._INLINE_COMPOUND_SPLIT.sub(r"\1\n\2", line)
+            split = self._quote_aware_compound_split(line)
             expanded.extend(part.strip() for part in split.split("\n") if part.strip())
 
         return expanded
@@ -164,6 +164,61 @@ class ControlFlowTranslator:
         r"\b(THEN|ELSE|DO)\b\s+(IF|CASE|WHILE|FOR)\b",
         re.IGNORECASE,
     )
+
+    def _quote_aware_compound_split(self, line: str) -> str:
+        """Apply ``_INLINE_COMPOUND_SPLIT`` without corrupting string literals.
+
+        Scans ``line`` once to build a per-character "inside-quote" map
+        (mirroring ``_strip_inline_comment``'s logic, with SCL doubled-quote
+        escaping for ``''`` and ``""``), then passes a replacement *function*
+        to ``re.sub`` that inserts the newline split only when the match starts
+        outside any quoted context; matches whose start offset falls inside a
+        quote are returned verbatim.
+
+        Parameters
+        ----------
+        line : str
+            A preprocessed, stripped source line.
+
+        Returns
+        -------
+        str
+            The line with zero or more ``\\n`` splits inserted at compound
+            control-flow boundaries that lie outside string literals.
+        """
+        # Build a boolean array: inside[i] is True when character i is inside
+        # a single- or double-quoted string literal.
+        in_squote = False
+        in_dquote = False
+        inside: list[bool] = []
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if ch == "'" and not in_dquote:
+                if in_squote and i + 1 < len(line) and line[i + 1] == "'":
+                    # SCL doubled single-quote escape inside a string: '' → stays in string
+                    inside.append(True)
+                    inside.append(True)
+                    i += 2
+                    continue
+                in_squote = not in_squote
+            elif ch == '"' and not in_squote:
+                if in_dquote and i + 1 < len(line) and line[i + 1] == '"':
+                    # SCL doubled double-quote escape: "" → stays in string
+                    inside.append(True)
+                    inside.append(True)
+                    i += 2
+                    continue
+                in_dquote = not in_dquote
+            inside.append(in_squote or in_dquote)
+            i += 1
+
+        def _replace(m: re.Match[str]) -> str:
+            if m.start() < len(inside) and inside[m.start()]:
+                return m.group(0)  # match is inside a string literal — leave intact
+            return f"{m.group(1)}\n{m.group(2)}"
+
+        return self._INLINE_COMPOUND_SPLIT.sub(_replace, line)
 
     # Operators that, at the end of a line, require a right-hand side on the next.
     _CONT_END = re.compile(r"(:=|[-+*/(,<>=])$")
