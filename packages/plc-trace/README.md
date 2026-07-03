@@ -23,6 +23,14 @@ EFAT scenario.
 
 ## 2. Quickstart
 
+**Install the command:**
+
+```bash
+pip install plc-tools[trace]
+# or, within the monorepo workspace:
+uv sync --all-extras
+```
+
 1. **Author a UDT** with only flat scalar fields — `Bool`, `Int`, `DInt`,
    `UDInt`, `Real`, `LReal` (see [§7](#7-v1-limits) for why). Example
    (`typeDemoTrace.s7dcl`):
@@ -141,7 +149,7 @@ END_TYPE
 
 | Field | Type | Semantics |
 |---|---|---|
-| `start` | `Bool` | Rising edge arms the recorder: resets `writeIdx`, `sampleCount`, `cycleCounter`, `decCounter`, latches `cycleTimeMs := timeCycle * 1000.0`, sets `recording := TRUE`. Any low level (`FALSE`) stops recording (`recording := FALSE`); a fresh rising edge re-arms it (this is how one-shot mode "re-arms on next start edge"). |
+| `start` | `Bool` | Rising edge arms the recorder: resets `writeIdx`, `sampleCount`, `cycleCounter`, `decCounter`, `wrapped`, latches `cycleTimeMs := timeCycle * 1000.0`, sets `recording := TRUE`. Any low level (`FALSE`) stops recording (`recording := FALSE`); a fresh rising edge re-arms it (this is how one-shot mode "re-arms on next start edge"). |
 | `mode` | `Int` | `0` = **ring** (default): wraps at `depth`, keeps the newest `depth` samples, sets `wrapped := TRUE` on first wrap. `1` = **one-shot**: recording stops automatically (`recording := FALSE`) once `writeIdx` reaches `depth`; does not wrap. The FC does not clear `control.start` on auto-stop, so to re-arm, the client must lower `start` (release) and raise it again — a fresh rising edge. |
 | `decimation` | `UDInt` | Sample every k-th cycle; `0` or `1` both mean "every cycle". Writable mid-run: the FC reloads its internal down-counter (`decCounter`) from `control.decimation` each time a sample is taken, so a change takes effect at the **next decimation-counter reload**, not immediately. |
 
@@ -152,7 +160,7 @@ END_TYPE
 | `recording` | `Bool` | Whether the recorder is currently sampling. |
 | `wrapped` | `Bool` | Whether the ring has wrapped at least once (ring mode only; stays `FALSE` in one-shot). |
 | `writeIdx` | `DInt` | Next index to be written. |
-| `sampleCount` | `DInt` | Total samples recorded since the last start (does not exceed `depth`). |
+| `sampleCount` | `DInt` | Lifetime sample counter for the current recording. In ring mode it keeps counting past `depth` (buffer occupancy = `min(sampleCount, depth)`, or check `wrapped`); in one-shot mode it stops at `depth` because recording auto-stops. |
 | `cycleCounter` | `UDInt` | Plant cycle counter since the last start; increments every cycle while `recording` is `TRUE`, independent of decimation. |
 | `cycleTimeMs` | `Real` | Plant cycle time captured at start (`timeCycle * 1000.0`), in milliseconds. |
 | `depth` | `DInt` | Ring depth, fixed at scaffold time (written as the DB's initial value). |
