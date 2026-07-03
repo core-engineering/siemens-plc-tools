@@ -53,6 +53,11 @@ sup = [
 net = [
     "plc-net>=0.1.0",
 ]
+trace = [
+    "plc-core>=0.1.0",
+    "plc-code>=0.1.0",
+    "plc-trace>=0.1.0",
+]
 all = [
     "plc-core>=0.1.0",
     "plc-code[web]>=0.1.0",
@@ -61,6 +66,7 @@ all = [
     "plc-sim[web]>=0.1.0",
     "plc-sup>=0.1.0",
     "plc-net>=0.1.0",
+    "plc-trace>=0.1.0",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -111,6 +117,7 @@ members = [
     "packages/plc-sim",
     "packages/plc-sup",
     "packages/plc-net",
+    "packages/plc-trace",
 ]
 
 [tool.uv.sources]
@@ -121,6 +128,7 @@ plc-modbus = { workspace = true }
 plc-sim = { workspace = true }
 plc-sup = { workspace = true }
 plc-net = { workspace = true }
+plc-trace = { workspace = true }
 
 [tool.black]
 line-length = 110
@@ -150,7 +158,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 # importlib mode avoids the "duplicate tests package" collision when running
 # tests across multiple workspace packages from the repo root.
-addopts = "--import-mode=importlib --cov=src --cov=packages/plc-core/src --cov=packages/plc-code/src --cov=packages/plc-iol/src --cov=packages/plc-modbus/src --cov=packages/plc-sim/src --cov-report=term-missing --cov-report=html"
+addopts = "--import-mode=importlib --cov=src --cov=packages/plc-core/src --cov=packages/plc-code/src --cov=packages/plc-iol/src --cov=packages/plc-modbus/src --cov=packages/plc-sim/src --cov=packages/plc-trace/src --cov-report=term-missing --cov-report=html"
 # Required by async tests in plc-modbus and plc-sim when running from repo root.
 asyncio_mode = "auto"
 
@@ -159,7 +167,7 @@ python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
-mypy_path = "src:packages/plc-core/src:packages/plc-code/src:packages/plc-iol/src:packages/plc-modbus/src:packages/plc-sim/src:packages/plc-sup/src"
+mypy_path = "src:packages/plc-core/src:packages/plc-code/src:packages/plc-iol/src:packages/plc-modbus/src:packages/plc-sim/src:packages/plc-sup/src:packages/plc-trace/src"
 explicit_package_bases = true
 # Each package has its own tests/ directory; mypy collides on the duplicate
 # top-level "tests" module. test-cases/ at the repo root holds pytest-based

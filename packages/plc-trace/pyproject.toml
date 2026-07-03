@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "plc-trace"
+version = "0.1.0"
+description = "Cycle-granular on-PLC trace recorder: SCL scaffolding + OPC UA retrieval client"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Camille Martin", email = "cma@core-engineering.fr" }]
+keywords = ["plc", "trace", "datalogging", "opcua", "tia-portal", "scl"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "plc-core[opcua]>=0.1.0",
+    "plc-code>=0.1.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0.0",
+]
+
+[project.entry-points."plc_tools.plugins"]
+trace = "plc_trace.cli:trace_group"
+
+[project.urls]
+Homepage = "https://github.com/core-engineering/siemens-plc-tools"
+Repository = "https://github.com/core-engineering/siemens-plc-tools"
+Issues = "https://github.com/core-engineering/siemens-plc-tools/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/plc_trace"]
+
+[tool.uv.sources]
+plc-core = { workspace = true }
+plc-code = { workspace = true }

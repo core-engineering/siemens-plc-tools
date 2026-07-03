@@ -32,7 +32,7 @@ jobs:
         run: |
           # Run per package (a repo-root glob collides on duplicate tests/conftest.py).
           # Tolerate pytest exit code 5 ("no tests collected") for packages without a suite yet.
-          for p in plc-core plc-code plc-iol plc-modbus plc-sim plc-sup; do
+          for p in plc-core plc-code plc-iol plc-modbus plc-sim plc-sup plc-trace; do
             echo "=== $p ==="
             (cd packages/$p && uv run pytest -q) || { code=$?; [ "$code" -eq 5 ] || exit "$code"; }
           done
