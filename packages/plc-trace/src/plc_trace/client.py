@@ -46,8 +46,10 @@ class TraceStatus:
     write_idx : int
         Next index to be written.
     sample_count : int
-        Total samples recorded since the last start (saturates at ``depth``
-        once wrapped).
+        Lifetime sample counter for the current recording. In ring mode it
+        keeps counting past ``depth`` (buffer occupancy = ``min(sample_count,
+        depth)``, or check ``wrapped``); in one-shot mode it stops at
+        ``depth`` because recording auto-stops.
     cycle_counter : int
         Plant cycle counter since the last start.
     cycle_time_ms : float
@@ -76,8 +78,10 @@ class TraceRecording:
     sample_cycles : list[int]
         Plant cycle counter at each sample, oldest-first.
     t_rel_s : list[float]
-        Time relative to the first sample in this fetch, in seconds
-        (``sample_cycles * cycle_time_ms / 1000``).
+        Time relative to the recording start edge (cycle 0), in seconds
+        (``sample_cycles * cycle_time_ms / 1000``). In a wrapped fetch the
+        first row's ``t_rel_s`` is not 0 — it reflects how far the oldest
+        retained sample is from the start edge.
     meta : dict[str, Any]
         Run metadata: ``db_path``, ``mode``, ``decimation``, ``wrapped``,
         ``sample_count``, ``depth``, ``cycle_time_ms``, ``started_at_iso``,

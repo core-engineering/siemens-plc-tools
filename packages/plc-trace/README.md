@@ -79,9 +79,10 @@ uv sync --all-extras
 
 5. **Expose the `TraceData` DB over OPC UA**: in TIA Portal, *Project tree →
    OPC UA communication → Server interfaces*, add a namespace node mapping
-   to the `TraceData` DB (entire DB, Read/Write — the client both writes
-   `control.*` and reads `status.*` plus the sample arrays). Download the
-   OPC UA configuration to the device/PLCSIM instance.
+   to the `TraceData` DB (entire DB): `control` sub-struct (`start`, `mode`,
+   `decimation`) Read/Write; everything else (`status`, `sampleCycles`, the
+   sample field arrays) Read only — the client only ever writes `control.*`.
+   Download the OPC UA configuration to the device/PLCSIM instance.
 
 6. **Wire it into `plc.yaml`** — add a `sim.trace:` block and list the DB
    under `sim.namespaces`:

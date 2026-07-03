@@ -123,8 +123,9 @@ plc-tools (meta-package, optional extras)
     └── [all]   → everything
 ```
 
-The only cross-peripheral coupling is `plc-sim → plc-modbus` (declared) and an
-optional runtime import of `plc_code.web` inside `plc sim web` (degrades if absent).
+The only cross-peripheral coupling is `plc-sim → plc-modbus` (declared) and
+optional runtime imports of `plc_code.web` inside `plc sim web` and
+`plc_trace` inside `plc sim test` (both try/except, degrade if absent).
 
 ---
 
