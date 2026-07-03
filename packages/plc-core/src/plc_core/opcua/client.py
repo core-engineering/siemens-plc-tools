@@ -499,6 +499,49 @@ class OpcUaClient:
         """
         return [await self.read_value(nid) for nid in node_ids]
 
+    async def read_array_range(self, node_id: str, start_index: int, end_index: int) -> list[Any]:
+        """Read a slice of an array variable using an OPC UA IndexRange.
+
+        Parameters
+        ----------
+        node_id : str
+            NodeId string of the array variable.
+        start_index : int
+            First element index (inclusive).
+        end_index : int
+            Last element index (inclusive).
+
+        Returns
+        -------
+        list[Any]
+            The requested slice.
+
+        Raises
+        ------
+        RuntimeError
+            If not connected, or the server reports a bad status code.
+        """
+        if not self._client:
+            raise RuntimeError("Not connected to OPC UA server")
+
+        index_range = str(start_index) if start_index == end_index else f"{start_index}:{end_index}"
+        rv = ua.ReadValueId(
+            NodeId=ua.NodeId.from_string(node_id),
+            AttributeId=ua.AttributeIds.Value,
+            IndexRange=index_range,
+        )
+        params = ua.ReadParameters(NodesToRead=[rv])
+        results = await self._client.uaclient.read(params)
+        dv = results[0]
+        if dv.StatusCode is not None and not dv.StatusCode.is_good():
+            raise RuntimeError(f"Array range read failed for {node_id}[{index_range}]: {dv.StatusCode}")
+        value = dv.Value.Value if dv.Value else None
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return [value]
+        return list(value)
+
     async def write_value(
         self,
         node_id: str,
