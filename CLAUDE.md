@@ -25,6 +25,7 @@ PLC Tools is a monorepo containing packages for:
 | plc-sim | Alpha | OPC UA simulation + live-PLC scenario runner + web UI |
 | plc-sup | Experimental | supervision-pipeline integration tests (no unit tests yet) |
 | plc-net | Experimental | network / OPC UA monitoring (no unit tests yet) |
+| plc-trace | Beta | cycle-granular on-PLC trace recorder: UDT-first SCL scaffold generator, OPC UA control/fetch client, CLI + scenario steps |
 
 ---
 
@@ -107,17 +108,19 @@ plc-core (standalone)
     ├── plc-iol    (→ plc-core)
     ├── plc-modbus (→ plc-core)
     ├── plc-sim    (→ plc-core[opcua] + plc-modbus)
-    └── plc-sup    (→ plc-core[opcua])
+    ├── plc-sup    (→ plc-core[opcua])
+    └── plc-trace  (→ plc-core[opcua] + plc-code)
 plc-net (standalone — no internal deps)
 
 plc-tools (meta-package, optional extras)
-    ├── [core] → plc-core
-    ├── [code] → plc-core + plc-code
-    ├── [iol]  → plc-core + plc-iol
-    ├── [sim]  → plc-core + plc-modbus + plc-sim
-    ├── [sup]  → plc-core + plc-sup
-    ├── [net]  → plc-net
-    └── [all]  → everything
+    ├── [core]  → plc-core
+    ├── [code]  → plc-core + plc-code
+    ├── [iol]   → plc-core + plc-iol
+    ├── [sim]   → plc-core + plc-modbus + plc-sim
+    ├── [sup]   → plc-core + plc-sup
+    ├── [net]   → plc-net
+    ├── [trace] → plc-core + plc-code + plc-trace
+    └── [all]   → everything
 ```
 
 The only cross-peripheral coupling is `plc-sim → plc-modbus` (declared) and an
@@ -162,9 +165,16 @@ plc                              # Root command group
 ├── sup                          # plc-sup: supervision-pipeline integration tests
 │   └── test                     # OPC UA → Redis → TimescaleDB → REST verification
 │
-└── net                          # plc-net: live network monitoring (needs root)
-    ├── monitor                  # multi-protocol traffic dashboard
-    └── opcua                    # OPC UA binary dissector
+├── net                          # plc-net: live network monitoring (needs root)
+│   ├── monitor                  # multi-protocol traffic dashboard
+│   └── opcua                    # OPC UA binary dissector
+│
+└── trace                        # plc-trace: cycle-granular on-PLC trace recorder
+    ├── scaffold --udt --depth   # Generate trace UDT + instance DB + recorder FC
+    ├── status                   # Show current recorder status
+    ├── start [--mode --decimation]
+    ├── stop
+    └── fetch [-o]                # Fetch recording, save as CSV + JSON metadata
 ```
 
 ### Plugin Architecture
