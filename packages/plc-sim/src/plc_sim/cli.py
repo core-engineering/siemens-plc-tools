@@ -668,6 +668,31 @@ def test(
                 "assert_flash",
                 lambda idx, step, t0: execute_assert_flash(runner, idx, step, t0),
             )
+
+            # Optional trace_* steps (plc-trace package). Soft dependency: plc-sim
+            # has no hard import on plc-trace, so a plc-trace-less install just
+            # leaves trace_start/trace_stop/trace_fetch as unknown step types.
+            try:
+                from plc_trace.config import load_trace_config
+                from plc_trace.steps import register_trace_steps
+            except ImportError:
+                pass
+            else:
+                if config.config_path is not None:
+                    trace_config, _trace_sim_raw = load_trace_config(config.config_path)
+                    register_trace_steps(
+                        runner,
+                        trace_config,
+                        output_dir=project_root / trace_config.output_dir,
+                        # ScenarioRunner has no "current scenario" hook reachable from
+                        # here without restructuring the runner (run_suite/run_scenario
+                        # don't expose which scenario is executing to registered step
+                        # executors), so trace_fetch always falls back to its
+                        # timestamped filename in this wiring — see the
+                        # TraceFetchStep docstring in plc_trace.steps.
+                        scenario_name_provider=lambda: "",
+                    )
+
             suite = await runner.run_suite(scenarios, filter_pattern)
 
             # Print summary
