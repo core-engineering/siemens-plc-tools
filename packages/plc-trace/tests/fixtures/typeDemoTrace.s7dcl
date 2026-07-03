@@ -1,0 +1,8 @@
+TYPE
+    typeDemoTrace : STRUCT
+        posX : Real;
+        speedY : LReal;
+        counter : DInt;
+        flag : Bool;
+    END_STRUCT;
+END_TYPE
