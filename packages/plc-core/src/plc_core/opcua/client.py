@@ -520,6 +520,18 @@ class OpcUaClient:
         ------
         RuntimeError
             If not connected, or the server reports a bad status code.
+
+        Notes
+        -----
+        The bundled asyncua in-process ``Server`` used by this package's test
+        suite does not implement ``ReadValueId.IndexRange`` — it ignores the
+        field and always returns the full array. The unit tests patch the
+        server's read path to emulate spec-compliant IndexRange slicing (and
+        bad-status responses) so this method's request/response handling is
+        still exercised end-to-end, but that emulation is not a substitute
+        for a real server. IndexRange behaviour against a genuine
+        spec-compliant OPC UA server (S7-1500 / PLCSIM Advanced) is first
+        validated at commissioning.
         """
         if not self._client:
             raise RuntimeError("Not connected to OPC UA server")

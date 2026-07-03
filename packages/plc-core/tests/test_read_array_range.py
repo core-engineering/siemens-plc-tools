@@ -41,16 +41,25 @@ def _sliced_data_value(data_value: ua.DataValue, index_range: str) -> ua.DataVal
     """Return a *new* DataValue sliced to ``index_range``.
 
     ``read_attribute_value`` returns the live stored object, not a copy —
-    mutating it in place would permanently shrink the node's value.
+    mutating it in place would permanently shrink the node's value. An
+    out-of-range request (either bound past the end of the array) mimics a
+    spec-compliant server's ``BadIndexRangeNoData`` response, letting tests
+    exercise the client's bad-StatusCode branch end-to-end.
     """
     if data_value.Value is None or not isinstance(data_value.Value.Value, list):
         return data_value
     values = data_value.Value.Value
     if ":" in index_range:
         lo_s, hi_s = index_range.split(":")
-        sliced = values[int(lo_s) : int(hi_s) + 1]
+        lo, hi = int(lo_s), int(hi_s)
+        if lo >= len(values) or hi >= len(values):
+            return ua.DataValue(StatusCode=ua.StatusCode(ua.StatusCodes.BadIndexRangeNoData))
+        sliced = values[lo : hi + 1]
     else:
-        sliced = values[int(index_range)]
+        idx = int(index_range)
+        if idx >= len(values):
+            return ua.DataValue(StatusCode=ua.StatusCode(ua.StatusCodes.BadIndexRangeNoData))
+        sliced = values[idx]
     new_variant = ua.Variant(sliced, data_value.Value.VariantType)
     return ua.DataValue(
         Value=new_variant,
@@ -95,6 +104,18 @@ async def test_read_array_range_full_span(server_with_array):
     try:
         full = await client.read_array_range(node_id, 0, 99)
         assert full == [float(i) for i in range(100)]
+    finally:
+        await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_read_array_range_bad_status_raises(server_with_array):
+    node_id = server_with_array
+    client = OpcUaClient(OpcUaConfig(endpoint=ENDPOINT))
+    await client.connect()
+    try:
+        with pytest.raises(RuntimeError, match="Array range read failed"):
+            await client.read_array_range(node_id, 100, 105)
     finally:
         await client.disconnect()
 

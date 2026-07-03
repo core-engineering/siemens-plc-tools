@@ -177,6 +177,15 @@ async def test_stop_clears_start_and_returns_status(trace_server):
 
 
 @pytest.mark.asyncio
+async def test_fetch_raises_on_empty_buffer(trace_server):
+    client, _nodes, resolve_map = trace_server
+    tc = _make_client(client, resolve_map)
+
+    with pytest.raises(RuntimeError, match="empty"):
+        await tc.fetch()
+
+
+@pytest.mark.asyncio
 async def test_fetch_linear(trace_server):
     client, nodes, resolve_map = trace_server
     tc = _make_client(client, resolve_map, fetch_chunk=2)
