@@ -60,7 +60,11 @@ async def _connect_and_resolve(opcua_config: OpcUaConfig, cache_dir: Path) -> tu
         raise RuntimeError(f"Connection failed: {info.error_message}")
 
     resolver = TagResolver(client, cache_dir=cache_dir)
-    await resolver.ensure_loaded()
+    try:
+        await resolver.ensure_loaded()
+    except Exception:
+        await client.disconnect()
+        raise
     return client, resolver
 
 
@@ -68,7 +72,7 @@ def _run_cli(coro: Coroutine[Any, Any, None]) -> None:
     """Run a CLI async body, turning connection/protocol errors into SystemExit(1)."""
     try:
         _run(coro)
-    except (RuntimeError, ValueError, TimeoutError, FileNotFoundError) as e:
+    except Exception as e:
         console.print(f"[red]{e}[/red]")
         raise SystemExit(1) from e
 
