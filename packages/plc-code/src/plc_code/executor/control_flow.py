@@ -1149,6 +1149,13 @@ class ControlFlowTranslator:
         if normalized.strip().rstrip(";").strip().upper() == "RETURN":
             return ["return"]
 
+        # Handle EXIT statement (SCL's loop-break, used inside FOR/WHILE/REPEAT).
+        # Falling through to the generic expression path below would emit the
+        # bare word "EXIT" as a standalone Python statement, raising a NameError
+        # at execute() time the first time the branch is actually taken.
+        if normalized.strip().rstrip(";").strip().upper() == "EXIT":
+            return ["break"]
+
         # Handle quoted-name block call: "BlockName"(params...)
         # Must be checked before assignment detection since these lines start with "
         named_block_result = self._translate_named_block_call(normalized)
