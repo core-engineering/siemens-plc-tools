@@ -77,6 +77,7 @@ class ExpressionTranslator:
             "INT_TO_DINT": "int",
             "DINT_TO_INT": "int",
             "UINT_TO_UDINT": "int",
+            "UDINT_TO_INT": "int",
             "DINT_TO_REAL": "float",
             "BOOL_TO_INT": "int",
             # LReal / Real conversions — in Python float covers both
