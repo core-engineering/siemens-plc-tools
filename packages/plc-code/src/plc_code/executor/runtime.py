@@ -174,8 +174,15 @@ class _AutoStruct:
 
         result: dict = {}
 
+        # Values may themselves be plain Python lists holding _AutoStruct
+        # elements (e.g. a VAR_IN_OUT array-of-UDT member such as
+        # ``buffer.records : ARRAY[..] of typeSoeRecord`` whose slots get
+        # replaced with _AutoStruct instances the first time SCL code writes
+        # a field into one of them). Recurse through _auto_struct_to_dict so
+        # those elements are converted too, not just direct _AutoStruct
+        # attribute values.
         for k, v in attrs.items():
-            result[k] = v.to_dict() if isinstance(v, _AutoStruct) else v
+            result[k] = _auto_struct_to_dict(v)
 
         # If there are indexed items, merge them in as their own dict
         # (they come from patterns like  obj.someList[1].field)
@@ -185,7 +192,7 @@ class _AutoStruct:
         if items:
             converted_items: dict = {}
             for k, v in items.items():
-                converted_items[k] = v.to_dict() if isinstance(v, _AutoStruct) else v
+                converted_items[k] = _auto_struct_to_dict(v)
             # If there are ONLY items (no attrs), return the items dict directly
             if not result:
                 return converted_items

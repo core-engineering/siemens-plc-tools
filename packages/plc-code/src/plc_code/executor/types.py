@@ -48,6 +48,7 @@ class SCLType(Enum):
     DATE = "Date"
     TIME_OF_DAY = "Time_of_day"
     DATE_AND_TIME = "Date_and_time"
+    LDT = "LDT"  # Long Date and Time: nanoseconds since epoch, stored as ULInt
 
     # Timer types
     TON_TIME = "TON_TIME"
@@ -157,6 +158,13 @@ TYPE_MAP: dict[str, TypeInfo] = {
     "Date": TypeInfo(SCLType.DATE, int, lambda: 0, "int"),
     "Time_of_day": TypeInfo(SCLType.TIME_OF_DAY, float, lambda: 0.0, "float"),
     "Date_and_time": TypeInfo(SCLType.DATE_AND_TIME, float, lambda: 0.0, "float"),
+    # LDT (Long Date and Time): a 64-bit unsigned nanosecond count since epoch,
+    # the same representation used for the on-PLC S7-1500 clock. Mapped to a
+    # plain int so timestamps round-trip losslessly through set/get and compare
+    # exactly, and so the generated type hint is a real name (an unmapped scalar
+    # type previously fell through to a bare, unquoted type_hint equal to its own
+    # SCL name, which raised NameError at class-body exec time).
+    "LDT": TypeInfo(SCLType.LDT, int, lambda: 0, "int"),
     # Void
     "Void": TypeInfo(SCLType.VOID, type(None), lambda: None, "None"),
 }
