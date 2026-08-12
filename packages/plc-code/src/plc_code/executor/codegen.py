@@ -7,6 +7,8 @@ constructs, including expression translation and statement generation.
 import re
 from dataclasses import dataclass, field
 
+from plc_code.executor.types import parse_time_literal
+
 
 @dataclass
 class CodeGenContext:
@@ -139,6 +141,11 @@ class ExpressionTranslator:
         # otherwise the ``#`` of ``16#8201`` is mistaken for an instance-variable
         # prefix and ``#8201`` becomes ``self.8201``.
         result = self._translate_hex_literals(result)
+
+        # Translate SCL duration literals (T#5s -> 5.0) for the same reason: the ``#``
+        # of ``T#5s`` would otherwise be taken for an instance-variable prefix and
+        # ``T#0s`` would become ``T self.0 s``, which is not valid Python.
+        result = self._translate_time_literals(result)
 
         # Replace instance variables (#var -> self.var)
         result = self.INSTANCE_VAR_PATTERN.sub(r"self.\1", result)
@@ -307,6 +314,37 @@ class ExpressionTranslator:
         return re.sub(
             r"\b16\s*#\s*([0-9A-Fa-f]+)\b",
             lambda m: hex(int(m.group(1), 16)),
+            expr,
+        )
+
+    # A duration literal: a TIME prefix, ``#``, then one or more ``<number><unit>``
+    # components.  Region-content reconstruction spaces the tokens out, so
+    # ``T#150ms`` also arrives as ``T # 150 ms`` and ``T#1h30m`` as ``T # 1 h30m``.
+    _TIME_LITERAL_PATTERN = re.compile(
+        r"\b(?:LTIME|TIME|LT|T)\s*#\s*((?:\d+\s*(?:ms|s|m|h|d)\s*)+)",
+        re.IGNORECASE,
+    )
+
+    def _translate_time_literals(self, expr: str) -> str:
+        """Translate SCL duration literals (T#5s) to seconds as a float.
+
+        The harness stores a ``Time`` value as a float number of seconds, which is
+        what ``parse_time_literal`` returns, so the literal is replaced by its value.
+        Date and time-of-day literals (``D#``, ``TOD#``, ``DT#``) are not durations
+        and are left untouched.
+
+        Parameters
+        ----------
+        expr : str
+            Expression potentially containing SCL duration literals.
+
+        Returns
+        -------
+        str
+            Expression with duration literals replaced by their value in seconds.
+        """
+        return self._TIME_LITERAL_PATTERN.sub(
+            lambda m: repr(parse_time_literal("T#" + re.sub(r"\s+", "", m.group(1)))),
             expr,
         )
 
