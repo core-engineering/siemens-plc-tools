@@ -323,23 +323,29 @@ class ControlFlowTranslator:
         result = re.sub(r"(\w{2,})(AND)(THEN|DO|OF)\b", r"\1 \2 \3", result, flags=re.IGNORECASE)
         result = re.sub(r"(\w{2,})(OR)(THEN|DO|OF)\b", r"\1 \2 \3", result, flags=re.IGNORECASE)
 
-        # IF - ensure space after
-        result = re.sub(r"\bIF(?=[^\s])", "IF ", result, flags=re.IGNORECASE)
+        # IF/ELSIF/WHILE/CASE/FOR - ensure space after.
+        # The lookahead excludes word characters: a keyword glued to letters or
+        # digits is the HEAD of an identifier, not a keyword.  ``#forcePrimaryCondition``
+        # would otherwise become ``#FOR cePrimaryCondition`` — the ``#`` supplies the
+        # left word boundary — silently renaming the variable.  This mirrors the
+        # DO/OF/TO/BY rules below, which exclude a letter on the other side.
+        # Only a non-word, non-space neighbour (``#``, ``(``, a quote) is a real glue.
+        result = re.sub(r"\bIF(?![\s\w])", "IF ", result, flags=re.IGNORECASE)
 
         # ELSIF - ensure space after
-        result = re.sub(r"\bELSIF(?=[^\s])", "ELSIF ", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bELSIF(?![\s\w])", "ELSIF ", result, flags=re.IGNORECASE)
 
         # WHILE - ensure space after
-        result = re.sub(r"\bWHILE(?=[^\s])", "WHILE ", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bWHILE(?![\s\w])", "WHILE ", result, flags=re.IGNORECASE)
 
         # CASE - ensure space after
-        result = re.sub(r"\bCASE(?=[^\s])", "CASE ", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bCASE(?![\s\w])", "CASE ", result, flags=re.IGNORECASE)
 
         # FOR - ensure space after (must come after OR handling).
         # Negative lookbehind (?<!") prevents matching "For..." inside quoted block
         # names like "ForwardKinematicMdh": the " immediately before F is non-word
         # (creating \b) but the block name must not be rewritten.
-        result = re.sub(r'(?<!")\bFOR(?=[^\s])', "FOR ", result, flags=re.IGNORECASE)
+        result = re.sub(r'(?<!")\bFOR(?![\s\w])', "FOR ", result, flags=re.IGNORECASE)
 
         # THEN - ensure space before
         result = re.sub(r"(?<=[^\s])THEN\b", " THEN", result, flags=re.IGNORECASE)
