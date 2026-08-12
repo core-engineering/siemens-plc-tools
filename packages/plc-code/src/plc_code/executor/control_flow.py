@@ -323,23 +323,29 @@ class ControlFlowTranslator:
         result = re.sub(r"(\w{2,})(AND)(THEN|DO|OF)\b", r"\1 \2 \3", result, flags=re.IGNORECASE)
         result = re.sub(r"(\w{2,})(OR)(THEN|DO|OF)\b", r"\1 \2 \3", result, flags=re.IGNORECASE)
 
-        # IF - ensure space after
-        result = re.sub(r"\bIF(?=[^\s])", "IF ", result, flags=re.IGNORECASE)
+        # IF/ELSIF/WHILE/CASE/FOR - ensure space after.
+        # The lookahead excludes word characters: a keyword glued to letters or
+        # digits is the HEAD of an identifier, not a keyword.  ``#forcePrimaryCondition``
+        # would otherwise become ``#FOR cePrimaryCondition`` — the ``#`` supplies the
+        # left word boundary — silently renaming the variable.  This mirrors the
+        # DO/OF/TO/BY rules below, which exclude a letter on the other side.
+        # Only a non-word, non-space neighbour (``#``, ``(``, a quote) is a real glue.
+        result = re.sub(r"\bIF(?![\s\w])", "IF ", result, flags=re.IGNORECASE)
 
         # ELSIF - ensure space after
-        result = re.sub(r"\bELSIF(?=[^\s])", "ELSIF ", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bELSIF(?![\s\w])", "ELSIF ", result, flags=re.IGNORECASE)
 
         # WHILE - ensure space after
-        result = re.sub(r"\bWHILE(?=[^\s])", "WHILE ", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bWHILE(?![\s\w])", "WHILE ", result, flags=re.IGNORECASE)
 
         # CASE - ensure space after
-        result = re.sub(r"\bCASE(?=[^\s])", "CASE ", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bCASE(?![\s\w])", "CASE ", result, flags=re.IGNORECASE)
 
         # FOR - ensure space after (must come after OR handling).
         # Negative lookbehind (?<!") prevents matching "For..." inside quoted block
         # names like "ForwardKinematicMdh": the " immediately before F is non-word
         # (creating \b) but the block name must not be rewritten.
-        result = re.sub(r'(?<!")\bFOR(?=[^\s])', "FOR ", result, flags=re.IGNORECASE)
+        result = re.sub(r'(?<!")\bFOR(?![\s\w])', "FOR ", result, flags=re.IGNORECASE)
 
         # THEN - ensure space before
         result = re.sub(r"(?<=[^\s])THEN\b", " THEN", result, flags=re.IGNORECASE)
@@ -719,6 +725,7 @@ class ControlFlowTranslator:
         case_var = ""
         current_values: list[str] = []
         body_lines: list[str] = []
+        current_is_default = False
         is_first = True
         depth = 0
 
@@ -746,16 +753,30 @@ class ControlFlowTranslator:
             #   "USER_FREEWHEEL":
             #   1, 2, 3:
             #   ELSE: (for default case)
-            label_match = re.match(r'^\s*(#\w+|"\w+"|[\d,\s]+|ELSE)\s*:\s*$', line, re.IGNORECASE)
+            # Region-content reconstruction separates the tokens, so the same labels
+            # also arrive as ``# NO_ALARM :`` — the optional spaces are required or
+            # every symbolic branch is silently swallowed as a body line.
+            label_match = re.match(
+                r'^\s*(#\s*\w+(?:\s*,\s*#\s*\w+)*|"\w+"|[\d,\s]+|ELSE)\s*:\s*$', line, re.IGNORECASE
+            )
             if label_match and depth == 1 and not upper.rstrip("; ") == "END_CASE":
                 # Output previous case if any
                 if current_values and body_lines:
-                    self._emit_case_branch(result, case_var, current_values, body_lines, is_first)
+                    self._emit_case_branch(
+                        result, case_var, current_values, body_lines, is_first, current_is_default
+                    )
                     is_first = False
 
-                # Parse new case values
+                # Parse new case values.  ``ELSE`` is the default branch: it carries no
+                # value to compare against and must become a Python ``else``.
                 values_str = label_match.group(1)
-                current_values = [self.expr_translator.translate(v.strip()) for v in values_str.split(",")]
+                current_is_default = values_str.strip().upper() == "ELSE"
+                if current_is_default:
+                    current_values = [values_str.strip()]
+                else:
+                    current_values = [
+                        self.expr_translator.translate(v.strip()) for v in values_str.split(",")
+                    ]
                 body_lines = []
                 continue
 
@@ -765,7 +786,9 @@ class ControlFlowTranslator:
                 if depth == 0:
                     # Output final case
                     if current_values and body_lines:
-                        self._emit_case_branch(result, case_var, current_values, body_lines, is_first)
+                        self._emit_case_branch(
+                            result, case_var, current_values, body_lines, is_first, current_is_default
+                        )
                     break
                 else:
                     body_lines.append(line)
@@ -783,8 +806,9 @@ class ControlFlowTranslator:
         values: list[str],
         body_lines: list[str],
         is_first: bool,
+        is_default: bool = False,
     ) -> None:
-        """Emit a CASE branch as Python if/elif.
+        """Emit a CASE branch as Python if/elif/else.
 
         Parameters
         ----------
@@ -793,20 +817,27 @@ class ControlFlowTranslator:
         case_var : str
             Variable being switched on.
         values : list[str]
-            Values for this branch.
+            Values for this branch.  Ignored when ``is_default`` is True.
         body_lines : list[str]
             Body lines for this branch.
         is_first : bool
             Whether this is the first branch.
+        is_default : bool
+            Whether this is the ``ELSE`` (default) branch.  A default branch has no
+            value to compare against; it becomes a Python ``else``, or ``if True``
+            when it is also the first branch (a CASE whose only label is ELSE).
         """
-        keyword = "if" if is_first else "elif"
-
-        if len(values) == 1:
-            condition = f"{case_var} == {values[0]}"
+        if is_default:
+            result.append("if True:" if is_first else "else:")
         else:
-            condition = f"{case_var} in ({', '.join(values)})"
+            keyword = "if" if is_first else "elif"
 
-        result.append(f"{keyword} {condition}:")
+            if len(values) == 1:
+                condition = f"{case_var} == {values[0]}"
+            else:
+                condition = f"{case_var} in ({', '.join(values)})"
+
+            result.append(f"{keyword} {condition}:")
         body = self._translate_statements(body_lines)
         if body:
             result.extend(["    " + ln for ln in body])
@@ -1148,6 +1179,13 @@ class ControlFlowTranslator:
         # Handle RETURN statement
         if normalized.strip().rstrip(";").strip().upper() == "RETURN":
             return ["return"]
+
+        # Handle EXIT statement (SCL's loop-break, used inside FOR/WHILE/REPEAT).
+        # Falling through to the generic expression path below would emit the
+        # bare word "EXIT" as a standalone Python statement, raising a NameError
+        # at execute() time the first time the branch is actually taken.
+        if normalized.strip().rstrip(";").strip().upper() == "EXIT":
+            return ["break"]
 
         # Handle quoted-name block call: "BlockName"(params...)
         # Must be checked before assignment detection since these lines start with "
