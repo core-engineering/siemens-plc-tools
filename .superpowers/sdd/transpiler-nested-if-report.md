@@ -167,3 +167,14 @@ black+ruff+mypy all clean, project-E 35 passed.
   caught. The legacy sibling blocks `CpmsSensorInput.s7dcl` /
   `AutomaticTrajectoryPlan.s7dcl` are not harnessed here, but their `**` usage would
   transpile correctly through this engine.
+
+## Controller closure (2026-07-02)
+- Adversarial review found a Critical in the first fix (split regex not quote-aware; string
+  literals containing THEN IF/DO WHILE/ELSE IF corrupted). Fixed in d119b8d
+  (_quote_aware_compound_split, inside[] state machine); re-review verdict: RESOLVED
+  (original live repros + doubled-quote parity + mixed unquoted/quoted case all correct).
+- main @ d119b8d pushed. plc-code suite 938 passed; project-E cross-check 35 passed.
+- KNOWN PRE-EXISTING ISSUE (follow-up, not a blocker): _normalize_spacing
+  (control_flow.py:~297) is also quote-unaware — inserts a space inside string literals
+  containing keywords like DO (alters string content, e.g. 'DO WHILE loop' -> ' DO WHILE loop').
+  Same class; fix by reusing the inside[] scan if it ever matters for HMI text.
