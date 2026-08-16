@@ -164,6 +164,48 @@ def test_case_with_else_arm_well_formed_has_no_false_positive() -> None:
     assert not verify_no_silent_loss(tokens, result)
 
 
+# A present-but-empty ELSE/default arm used to be indistinguishable, by
+# content alone, from ELSE being absent entirely — and after round 1 that
+# ambiguity was resolved by assuming "absent," so any of these four
+# genuinely well-formed inputs false-positived. round 2's fix attributes the
+# ELSE keyword (and its tolerated bare colon) as a separator span at the
+# point it's actually consumed, in _parse_if/_parse_case/_consume_colon, so
+# the width arithmetic no longer needs to guess.
+EMPTY_ELSE_ARM_SOURCES = [
+    "CASE #a OF 1: #b := 1; ELSE ; END_CASE;",
+    "CASE #a OF 1: #b := 1; ELSE END_CASE;",
+    "IF #a THEN #b := 1; ELSE ; END_IF;",
+    "IF #a THEN #b := 1; ELSE END_IF;",
+    # The tolerated bare-colon spelling of an empty default arm.
+    "CASE #a OF 1: #b := 1; ELSE: END_CASE;",
+]
+
+
+@pytest.mark.parametrize("source", EMPTY_ELSE_ARM_SOURCES, ids=range(len(EMPTY_ELSE_ARM_SOURCES)))
+def test_present_but_empty_else_arm_has_no_false_positive(source: str) -> None:
+    tokens = [t for t in tokenize(source) if t.type is not TokenType.EOF]
+    result = parse_statements(tokens)
+    problems = verify_no_silent_loss(tokens, result)
+    assert not problems, "\n".join(problems)
+
+
+def test_critical_repro_is_still_reported_after_the_empty_else_fix() -> None:
+    """The regression this round risks: loosening the brackets back out.
+
+    Reconfirms round 1's fix (the stray END_WHILE inside an ELSE-less CASE
+    branch) is still caught now that ELSE/default-arm emptiness no longer
+    drives any bracket slack at all.
+    """
+    tokens = [
+        t for t in tokenize("CASE #a OF 1: #b := 1; END_WHILE; END_CASE;") if t.type is not TokenType.EOF
+    ]
+    result = parse_statements(tokens)
+    assert not result.errors
+    problems = verify_no_silent_loss(tokens, result)
+    assert problems, "the dropped END_WHILE should still be reported"
+    assert any("unattributed" in p for p in problems)
+
+
 def _load_scratch_parser(module_name: str, source_text: str) -> object:
     """Load a scratch copy of ``statement_parser`` with its source text swapped in.
 

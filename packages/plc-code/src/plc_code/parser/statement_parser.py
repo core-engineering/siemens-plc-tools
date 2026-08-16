@@ -375,7 +375,9 @@ class StatementParser:
 
         else_body: list[Statement] = []
         if self._keyword_ahead() == "ELSE":
+            position = self._stream.position()
             self._stream.advance()
+            self._result.separator_spans.append((position, position + 1))
             else_body = self._parse_body("END_IF")
 
         self._expect_keyword("END_IF")
@@ -428,7 +430,9 @@ class StatementParser:
             branches.append(CaseBranch(values=values, body=body))
 
         if self._keyword_ahead() == "ELSE":
+            position = self._stream.position()
             self._stream.advance()
+            self._result.separator_spans.append((position, position + 1))
             self._consume_colon()  # `ELSE:` is tolerated; SCL writes it bare
             default = self._parse_body("END_CASE")
 
@@ -635,10 +639,14 @@ class StatementParser:
 
         Used only for the CASE default arm, where SCL's own grammar writes a
         bare ``ELSE`` but a stray ``ELSE:`` is harmless and not worth an
-        error.
+        error. When present, the colon is recorded as a separator span (like
+        the ``ELSE`` keyword right before it) so it is accounted for whether
+        or not the arm turns out to hold any statements.
         """
         if self._stream.match(TokenType.COLON):
+            position = self._stream.position()
             self._stream.advance()
+            self._result.separator_spans.append((position, position + 1))
 
     def _parse_arguments(self) -> list[Argument]:
         """Read `name := value` / `name => value` pairs up to the closing paren.
@@ -937,15 +945,13 @@ def _content_width(statement: Statement) -> tuple[int, int]:
         elo, ehi = _body_width(statement.else_body)
         lo += elo
         hi += ehi
-        if statement.else_body:
-            # A non-empty else_body proves ELSE was present: earn the keyword.
-            lo += 1
-            hi += 1
-        # An empty else_body means ELSE was absent — nothing else parses an
-        # empty arm as anything but absent, so no slack is earned here. Do
-        # not widen this to tolerate an "ELSE with nothing in it" source: that
-        # ambiguity is exactly the kind of unearned margin that hides a
-        # dropped token (see verify_no_silent_loss's Case sibling below).
+        # No slack is added here for the ELSE keyword itself, present or not:
+        # _parse_if records it as a separator span at the point it consumes
+        # it (see the ELSE branch above), so verify_no_silent_loss credits it
+        # to this statement directly instead of this function having to guess
+        # whether an empty else_body means "absent" or "present but empty" —
+        # the ambiguity that hid a dropped token behind unearned slack before
+        # this was tracked at the source.
         return lo + 1, hi + 2  # END_IF [';']
 
     if isinstance(statement, Case):
@@ -963,15 +969,10 @@ def _content_width(statement: Statement) -> tuple[int, int]:
         dlo, dhi = _body_width(statement.default)
         lo += dlo
         hi += dhi
-        if statement.default:
-            # A non-empty default proves ELSE was present: earn the keyword,
-            # plus the bare-colon tolerance SCL allows there (_consume_colon).
-            lo += 1
-            hi += 2
-        # An empty default means ELSE was absent — same reasoning as If's
-        # else_body above. Widening this back to "maybe ELSE, maybe not" is
-        # exactly the unconditional slack that let a stray block-ender inside
-        # a branch body hide behind an ELSE-less CASE's own tolerance.
+        # As with If above: the ELSE keyword and its tolerated bare colon are
+        # each recorded as their own separator span where they're actually
+        # consumed (_parse_case, _consume_colon), so this function adds no
+        # slack for them — present or absent, empty arm or not.
         return lo + 1, hi + 2  # END_CASE [';']
 
     if isinstance(statement, For):
@@ -1066,13 +1067,21 @@ def verify_no_silent_loss(tokens: list[Token], result: ParseResult) -> list[str]
 
     for statement, (start, end) in zip(result.statements, result.statement_spans, strict=True):
         lo, hi = _content_width(statement)
-        nested = result.error_spans + result.unattributed_spans
+        # Every token this statement's span covers beyond its own fields must
+        # be one the parser explicitly recorded consuming on purpose: a
+        # nested error, a nested unattributed skip, or a nested separator
+        # (a bare ';', an ELSE keyword, or its tolerated bare colon — see
+        # _parse_if/_parse_case/_consume_colon). Each is exactly one token
+        # per occurrence and individually verified at its own recording
+        # site, so crediting them here cannot absorb an unrelated loss the
+        # way blanket bracket slack could.
+        nested = result.error_spans + result.unattributed_spans + result.separator_spans
         extra_tokens = sum(e - s for s, e in nested if start <= s and e <= end)
         actual = end - start
         if not (lo + extra_tokens <= actual <= hi + extra_tokens):
             problems.append(
                 f"{type(statement).__name__} at line {statement.line} spans {actual} token(s); "
-                f"its content (plus {extra_tokens} error/unattributed token(s) inside it) implies "
+                f"its content (plus {extra_tokens} accounted token(s) inside it) implies "
                 f"{lo + extra_tokens}-{hi + extra_tokens}"
             )
 
