@@ -31,9 +31,7 @@ class EvalContext:
         if operand.startswith("#"):
             return getattr(self.instance, operand[1:])
         if operand.startswith("T#"):
-            raise ValueError(
-                f"TIME literal {operand!r} is not supported by the ladder interpreter yet"
-            )
+            raise ValueError(f"TIME literal {operand!r} is not supported by the ladder interpreter yet")
         if operand in ("True", "TRUE", "true"):
             return True
         if operand in ("False", "FALSE", "false"):

@@ -710,9 +710,7 @@ class SCLParser:
                 and self._peek().type == TokenType.LPAREN
             ):
                 label_elem = self._parse_ladder_call()
-                network.rungs_raw.append(
-                    {"open_wire": "", "elements": [label_elem], "close_wire": None}
-                )
+                network.rungs_raw.append({"open_wire": "", "elements": [label_elem], "close_wire": None})
                 network.ladder_elements.append(label_elem)
 
             # Other content

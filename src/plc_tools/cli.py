@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import click
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    pass
 
 from plc_tools import __version__
 

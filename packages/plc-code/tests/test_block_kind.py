@@ -1,4 +1,5 @@
 """Tests for PLCRuntime.block_kind — classify a block name by its declared kind."""
+
 from pathlib import Path
 
 from plc_code.executor.runtime import PLCRuntime

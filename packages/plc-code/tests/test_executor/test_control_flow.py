@@ -89,17 +89,14 @@ class TestIfTranslation:
         assert any("self.Sign = 0.0" in line for line in result), f"ELSE body missing in {result}"
 
         # The literal keyword 'ELSE' must not appear as a Python expression
-        assert not any(line.strip().startswith("ELSE ") for line in result), (
-            f"Raw ELSE keyword found in generated Python: {result}"
-        )
+        assert not any(
+            line.strip().startswith("ELSE ") for line in result
+        ), f"Raw ELSE keyword found in generated Python: {result}"
 
         # elif branch body must be indented under elif, not elsewhere
-        result_combined = "\n".join(result)
-        elif_idx = next(i for i, l in enumerate(result) if "elif" in l)
+        elif_idx = next(i for i, line in enumerate(result) if "elif" in line)
         # The line immediately after elif must contain the ELSIF body
-        assert "self.Sign = 1.0" in result[elif_idx + 1], (
-            f"ELSIF body not directly under elif: {result}"
-        )
+        assert "self.Sign = 1.0" in result[elif_idx + 1], f"ELSIF body not directly under elif: {result}"
 
     def test_if_with_and_or(self) -> None:
         """Test IF with AND/OR operators."""
@@ -450,12 +447,7 @@ class TestMultiLineAssignments:
 
     def test_continuation_line_inside_for_loop(self) -> None:
         """Multi-line assignment inside FOR loop must work correctly."""
-        scl = (
-            "FOR # i := 0 TO 2 DO \n"
-            "# arr [ # i ] := \n"
-            "# arr [ # i ] * 2.0 ; \n"
-            "END_FOR ;"
-        )
+        scl = "FOR # i := 0 TO 2 DO \n" "# arr [ # i ] := \n" "# arr [ # i ] * 2.0 ; \n" "END_FOR ;"
         result = translate_control_flow(scl)
         # Result must be a for loop with a body assignment (not empty body)
         combined = "\n".join(result)
@@ -494,12 +486,10 @@ class TestIdentifierSafeKeywordSpacing:
         result = translate_control_flow(scl)
 
         combined = " ".join(result)
-        assert "triggerGoto" in combined, (
-            f"Identifier 'triggerGoto' was mangled: {result}"
-        )
-        assert "triggerGo" not in combined.replace("triggerGoto", ""), (
-            f"'TO' was spuriously inserted into 'triggerGoto': {result}"
-        )
+        assert "triggerGoto" in combined, f"Identifier 'triggerGoto' was mangled: {result}"
+        assert "triggerGo" not in combined.replace(
+            "triggerGoto", ""
+        ), f"'TO' was spuriously inserted into 'triggerGoto': {result}"
 
     def test_identifier_ending_in_by_is_not_split(self) -> None:
         """'autoBy' must not become 'auto BY'."""
@@ -559,13 +549,9 @@ class TestIdentifierSafeKeywordSpacing:
 
         combined = " ".join(result)
         # The FOR loop must have been parsed (range produced)
-        assert "for self.i in range(" in combined, (
-            f"FOR loop not translated (glued 0TO not spaced): {result}"
-        )
+        assert "for self.i in range(" in combined, f"FOR loop not translated (glued 0TO not spaced): {result}"
         # The loop body assignment must be present
-        assert "self.x = self.i" in combined, (
-            f"FOR loop body missing: {result}"
-        )
+        assert "self.x = self.i" in combined, f"FOR loop body missing: {result}"
 
     def test_glued_to_after_bracket_is_spaced(self) -> None:
         """A ``]TO`` form (array-element upper bound) must get a space.
@@ -577,12 +563,6 @@ class TestIdentifierSafeKeywordSpacing:
         result = translate_control_flow(scl)
 
         combined = " ".join(result)
-        assert "for self.i in range(" in combined, (
-            f"FOR loop not translated (glued ]TO not spaced): {result}"
-        )
-        assert "self.arr[0]" in combined, (
-            f"Lower bound missing: {result}"
-        )
-        assert "self.x = self.i" in combined, (
-            f"FOR loop body missing: {result}"
-        )
+        assert "for self.i in range(" in combined, f"FOR loop not translated (glued ]TO not spaced): {result}"
+        assert "self.arr[0]" in combined, f"Lower bound missing: {result}"
+        assert "self.x = self.i" in combined, f"FOR loop body missing: {result}"

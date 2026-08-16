@@ -468,9 +468,7 @@ def _parse_capture(raw: dict[str, Any]) -> CaptureStep:
     duration_s = parse_duration(raw.get("duration", "0s"))
     until_path = until.get("path", "")
     if duration_s <= 0 and not until_path:
-        raise ValueError(
-            "capture step requires either a positive 'duration' or an 'until' condition"
-        )
+        raise ValueError("capture step requires either a positive 'duration' or an 'until' condition")
     return CaptureStep(
         description=raw.get("description", ""),
         paths=list(raw["paths"]),

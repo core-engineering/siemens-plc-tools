@@ -155,9 +155,9 @@ def _is_block_call(name: str) -> bool:
     user-block call looks like a bare identifier. Anything that is not a known
     contact/coil/box/compare instruction is treated as a sub-block call.
     """
-    return name not in (
-        {"Contact", "I_Contact", "Coil", "JumpCoil"} | _BOX_OPS
-    ) and not _COMPARE_RE.match(name)
+    return name not in ({"Contact", "I_Contact", "Coil", "JumpCoil"} | _BOX_OPS) and not _COMPARE_RE.match(
+        name
+    )
 
 
 def _build_network_rungs(raw_rungs: list[dict[str, object]]) -> list[Rung | LabelRung]:

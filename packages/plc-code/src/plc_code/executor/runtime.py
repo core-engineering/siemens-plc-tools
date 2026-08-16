@@ -25,9 +25,7 @@ _DB_ARRAY_DECL_RE = re.compile(
 
 # Matches an array element initialiser:
 #   NAME[idx] := value;
-_DB_ARRAY_ELEM_RE = re.compile(
-    r"^\s*([A-Za-z_]\w*)\s*\[\s*(-?\d+)\s*\]\s*:=\s*([^;]+);", re.MULTILINE
-)
+_DB_ARRAY_ELEM_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*\[\s*(-?\d+)\s*\]\s*:=\s*([^;]+);", re.MULTILINE)
 
 
 def _convert_db_literal(raw: str) -> Any:
@@ -68,9 +66,7 @@ def load_data_block(path: str | Path) -> SimpleNamespace:
         Namespace exposing each scalar constant and array member as an attribute.
     """
     text = Path(path).read_text(encoding="utf-8-sig")
-    members: dict[str, Any] = {
-        name: _convert_db_literal(raw) for name, raw in _DB_CONST_RE.findall(text)
-    }
+    members: dict[str, Any] = {name: _convert_db_literal(raw) for name, raw in _DB_CONST_RE.findall(text)}
 
     # Array members: the declaration gives the (0-based) size, the element
     # initialisers give the values. Missing elements default to 0.
@@ -524,8 +520,7 @@ class PLCRuntime:
             if name in self._fb_instantiating:
                 chain = ", ".join(sorted(self._fb_instantiating))
                 raise ValueError(
-                    f"circular FB nesting: '{name}' is already being instantiated "
-                    f"(in-progress: {chain})"
+                    f"circular FB nesting: '{name}' is already being instantiated " f"(in-progress: {chain})"
                 )
             self._fb_instantiating.add(name)
             try:

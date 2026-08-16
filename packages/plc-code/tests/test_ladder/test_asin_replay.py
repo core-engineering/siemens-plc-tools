@@ -22,9 +22,9 @@ def _make_harness() -> FBTestHarness:
     h = create_harness(FIX / "SinCalculation.s7dcl")
     # Touch the auto-loaded DB so a load failure fails loudly here, not as a
     # silently-wrong replay (indices 0..901 -> 902 cells).
-    assert len(h.runtime.global_dbs["DataSafetyKinematics"].LutSinQ14) == 902, (
-        "DataSafetyKinematics.LutSinQ14 did not auto-load with 902 entries"
-    )
+    assert (
+        len(h.runtime.global_dbs["DataSafetyKinematics"].LutSinQ14) == 902
+    ), "DataSafetyKinematics.LutSinQ14 did not auto-load with 902 entries"
     return h
 
 
@@ -66,6 +66,4 @@ def test_full_18001_vectors_bit_exact() -> None:
         if got_result != expected or got_fault != fault:
             mismatches.append((angle, got_result, expected, got_fault, fault))
     assert n == 18001, f"expected 18001 vectors, replayed {n}"
-    assert not mismatches, (
-        f"bit-exact mismatches (first 10 of {len(mismatches)}): {mismatches[:10]}"
-    )
+    assert not mismatches, f"bit-exact mismatches (first 10 of {len(mismatches)}): {mismatches[:10]}"

@@ -91,7 +91,9 @@ class TestExtractCategories:
 
     def test_numbered_path(self) -> None:
         """Test TIA Portal numbered path format - full names preserved."""
-        category, subcategory = _extract_categories(Path("100 - Process/120 - Physical Interfaces/MotorStarter.s7dcl"))
+        category, subcategory = _extract_categories(
+            Path("100 - Process/120 - Physical Interfaces/MotorStarter.s7dcl")
+        )
 
         assert category == "100 - Process"
         assert subcategory == "120 - Physical Interfaces"

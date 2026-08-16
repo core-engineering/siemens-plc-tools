@@ -378,9 +378,9 @@ class TestArray2DTranspiler:
         for i in range(4):
             for j in range(4):
                 expected = float(i * 4 + j + 1)
-                assert instance.transform[i][j] == expected, (
-                    f"transform[{i}][{j}]: expected {expected}, got {instance.transform[i][j]}"
-                )
+                assert (
+                    instance.transform[i][j] == expected
+                ), f"transform[{i}][{j}]: expected {expected}, got {instance.transform[i][j]}"
 
 
 class TestUDTStructSupport:
@@ -396,10 +396,7 @@ class TestUDTStructSupport:
 
     def _make_udt_block(self) -> Block:
         """Block with UDT input and output: reads from input struct, writes to output struct."""
-        scl_body = (
-            "#outStruct.fieldA := #inStruct.x;\n"
-            "#outStruct.fieldB := #inStruct.y + 1.0;\n"
-        )
+        scl_body = "#outStruct.fieldA := #inStruct.x;\n" "#outStruct.fieldB := #inStruct.y + 1.0;\n"
         return Block(
             name="CopyUDT",
             block_type="FUNCTION",
@@ -457,8 +454,7 @@ class TestUDTStructSupport:
         block = self._make_udt_block()
         result = compile_block(block)
         assert result.success, (
-            f"Compile error: {result.compile_error}\n"
-            f"Code:\n{result.transpile_result.python_code}"
+            f"Compile error: {result.compile_error}\n" f"Code:\n{result.transpile_result.python_code}"
         )
 
     def test_udt_input_dict_attribute_access_works(self) -> None:
@@ -497,8 +493,7 @@ class TestUDTStructSupport:
         block = self._make_nested_indexed_block()
         result = compile_block(block)
         assert result.success, (
-            f"Compile error: {result.compile_error}\n"
-            f"Code:\n{result.transpile_result.python_code}"
+            f"Compile error: {result.compile_error}\n" f"Code:\n{result.transpile_result.python_code}"
         )
 
         from plc_code.executor.harness import FBTestHarness

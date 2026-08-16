@@ -4,10 +4,6 @@ These tests verify that all packages work together correctly
 and the plugin system functions as expected.
 """
 
-import pytest
-
-from plc_tools import __version__
-
 
 class TestPackageImports:
     """Test that all packages can be imported."""
@@ -21,9 +17,6 @@ class TestPackageImports:
     def test_plc_core_import(self) -> None:
         """Test plc_core package import."""
         from plc_core import __version__
-        from plc_core.config import BaseConfig, find_config_file
-        from plc_core.models import DataType, IOCategory, PLCAddress
-        from plc_core.reporting import Finding, Report, Severity
 
         assert __version__ == "0.3.0"
 
@@ -62,7 +55,7 @@ class TestPluginDiscovery:
         from plc_tools.cli import discover_plugins
 
         plugins = discover_plugins()
-        for name, group in plugins.items():
+        for group in plugins.values():
             assert isinstance(group, click.Group)
 
 
@@ -109,7 +102,7 @@ class TestCLI:
         """Test main CLI can be invoked."""
         from click.testing import CliRunner
 
-        from plc_tools.cli import cli, _load_plugins
+        from plc_tools.cli import _load_plugins, cli
 
         _load_plugins()
         runner = CliRunner()
@@ -121,7 +114,7 @@ class TestCLI:
         """Test code subcommand is available."""
         from click.testing import CliRunner
 
-        from plc_tools.cli import cli, _load_plugins
+        from plc_tools.cli import _load_plugins, cli
 
         _load_plugins()
         runner = CliRunner()
@@ -133,7 +126,7 @@ class TestCLI:
         """Test iol subcommand is available."""
         from click.testing import CliRunner
 
-        from plc_tools.cli import cli, _load_plugins
+        from plc_tools.cli import _load_plugins, cli
 
         _load_plugins()
         runner = CliRunner()

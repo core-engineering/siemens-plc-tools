@@ -53,8 +53,15 @@ def test_rd_array_di_in_and_out_of_bounds() -> None:
     rt = FakeRuntime({"DataSafetyKinematics": DB()})
     inst: Any = FakeInstance(idx=2, val=0, err=False)
     c = EvalContext(instance=inst, runtime=rt)
-    cb = CallBox("RD_ARRAY_DI", (("ARRAY", ":=", '"DataSafetyKinematics".LutSinQ14'),
-                                 ("INDEX", ":=", "#idx"), ("OUT", "=>", "#val"), ("ERROR", "=>", "#err")))
+    cb = CallBox(
+        "RD_ARRAY_DI",
+        (
+            ("ARRAY", ":=", '"DataSafetyKinematics".LutSinQ14'),
+            ("INDEX", ":=", "#idx"),
+            ("OUT", "=>", "#val"),
+            ("ERROR", "=>", "#err"),
+        ),
+    )
     run_callbox(cb, c)
     assert inst.val == 57 and inst.err is False
     inst.idx = 99

@@ -1,5 +1,6 @@
 """A parent FB nesting a stateful child FB: the child's VAR state must persist
 across the parent's execute() cycles (same member instance, not fresh)."""
+
 from pathlib import Path
 
 from plc_code.executor import create_harness
@@ -15,10 +16,10 @@ def _h():
 
 def test_nested_child_state_persists_across_cycles():
     h = _h()
-    for _ in range(5):              # add 2.0 five times
+    for _ in range(5):  # add 2.0 five times
         h.set_inputs(step=2.0)
         h.execute()
-    assert h.get_output("sum") == 10.0   # accumulation proves same instance persists
+    assert h.get_output("sum") == 10.0  # accumulation proves same instance persists
 
 
 def test_nested_child_output_binds_each_cycle():
@@ -46,7 +47,7 @@ def test_nested_udt_input_copy_in_change_detection():
     ``prevCfg.target`` and no change was ever detected.
     """
     h = _h_udt()
-    for tgt in (1.0, 1.0, 2.0, 2.0, 5.0):   # 2 transitions after 1st cycle: 1->2, 2->5
+    for tgt in (1.0, 1.0, 2.0, 2.0, 5.0):  # 2 transitions after 1st cycle: 1->2, 2->5
         h.set_inputs(target=tgt)
         h.execute()
     assert h.get_output("changes") == 2

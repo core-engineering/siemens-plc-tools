@@ -194,9 +194,7 @@ class SCLTranspiler:
             self._emit("from typing import Any")
             self._emit("")
             runtime_imports.append("_AutoStruct")
-        self._emit(
-            "from plc_code.executor.runtime import " + ", ".join(sorted(runtime_imports))
-        )
+        self._emit("from plc_code.executor.runtime import " + ", ".join(sorted(runtime_imports)))
 
         # Check if we need timer imports
         timer_types = set()

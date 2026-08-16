@@ -80,12 +80,8 @@ def compile_ladder_block(block: Block, **_: Any) -> CompileResult:
     )
     source = "\n".join(lines)
 
-    runtime_mod = __import__(
-        "plc_code.executor.runtime", fromlist=["PLCRuntime", "_AutoStruct"]
-    )
-    interpreter_mod = __import__(
-        "plc_code.executor.ladder.interpreter", fromlist=["LadderInterpreter"]
-    )
+    runtime_mod = __import__("plc_code.executor.runtime", fromlist=["PLCRuntime", "_AutoStruct"])
+    interpreter_mod = __import__("plc_code.executor.ladder.interpreter", fromlist=["LadderInterpreter"])
     compile_globals: dict[str, Any] = {
         "dataclass": __import__("dataclasses").dataclass,
         "field": __import__("dataclasses").field,
@@ -110,9 +106,7 @@ def compile_ladder_block(block: Block, **_: Any) -> CompileResult:
                 success=False,
                 fb_class=None,
                 transpile_result=transpile_result,
-                compile_error=(
-                    f"Class '{block.name}' not found after ladder compilation"
-                ),
+                compile_error=(f"Class '{block.name}' not found after ladder compilation"),
             )
         return CompileResult(
             success=True,

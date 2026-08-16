@@ -25,9 +25,7 @@ def test_construct_unconditional_box() -> None:
 
 
 def test_callbox_and_compare_and_jump() -> None:
-    cb = CallBox(
-        name="ABS", params=(("x", ":=", "#angle"), ("y", "=>", "#angleAbs"))
-    )
+    cb = CallBox(name="ABS", params=(("x", ":=", "#angle"), ("y", "=>", "#angleAbs")))
     cmp = CompareContact(op="GT", in1="#angle", in2="900")
     jump = JumpCoil("END")
     prog = LadderProgram(

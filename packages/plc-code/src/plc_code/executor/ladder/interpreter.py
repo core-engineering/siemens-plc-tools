@@ -24,9 +24,7 @@ from plc_code.parser.ladder_ast import (
 class LadderInterpreter:
     def __init__(self, program: LadderProgram) -> None:
         self._program = program
-        self._labels = {
-            r.name: i for i, r in enumerate(program.rungs) if isinstance(r, LabelRung)
-        }
+        self._labels = {r.name: i for i, r in enumerate(program.rungs) if isinstance(r, LabelRung)}
 
     def run(self, instance: Any, runtime: Any) -> None:
         ctx = EvalContext(instance=instance, runtime=runtime)

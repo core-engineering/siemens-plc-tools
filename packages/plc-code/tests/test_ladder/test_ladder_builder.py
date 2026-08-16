@@ -33,8 +33,12 @@ def test_sin_domain_check_is_parallel_or() -> None:
     block = parse_scl_file(FIX / "SinCalculation.s7dcl")
     prog = build_ladder_program(block)
     # the first coil-bearing rung writes #isOutOfDomain, gated by an OR of two compare contacts
-    coil_rungs = [r for r in prog.rungs if isinstance(r, Rung)
-                  and any(isinstance(a, Coil) and a.operand == "#isOutOfDomain" for a in r.actions)]
+    coil_rungs = [
+        r
+        for r in prog.rungs
+        if isinstance(r, Rung)
+        and any(isinstance(a, Coil) and a.operand == "#isOutOfDomain" for a in r.actions)
+    ]
     assert coil_rungs, "expected a coil writing #isOutOfDomain"
     rung = coil_rungs[0]
     # one rail term that ORs two compare contacts (GT 900, LT -900)
