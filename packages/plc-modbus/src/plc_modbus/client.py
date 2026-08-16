@@ -211,21 +211,71 @@ class ModbusClient:
         For ``HOLDING:N/B`` / ``INPUT:N/B`` returns a bool.
         Otherwise the register is decoded via :func:`decode_value`.
         """
-        addr = parse_register_address(spec)
-        if addr.area == _AREA_COIL:
-            return (await self.read_coils(addr.address, 1))[0]
-        if addr.area == _AREA_DISCRETE:
-            return (await self.read_discrete_inputs(addr.address, 1))[0]
+        block = await self.read_register_block(spec, 1, dtype)
+        return next(iter(block.values()))
 
-        regs = (
-            await self.read_holding_registers(addr.address, 1)
-            if addr.area == _AREA_HOLDING
-            else await self.read_input_registers(addr.address, 1)
-        )
-        word = regs[0]
+    async def read_register_block(self, spec: str, count: int = 1, dtype: str = "uint16") -> dict[str, Any]:
+        """Read ``count`` consecutive values starting at ``spec``, keyed by address.
+
+        Returns an insertion-ordered mapping of each register's own spec to its
+        decoded value — ``{"HOLDING:10": 42, "HOLDING:11": 99}`` — rather than a
+        bare list. The keys are rebuilt from the *parsed* address, which is what
+        lets a caller that cannot parse a register spec itself (plc-core must not
+        import plc-modbus) still report which address produced which value.
+
+        Parameters
+        ----------
+        spec : str
+            Starting address, ``"AREA:ADDRESS"`` or ``"AREA:ADDRESS/BIT"``.
+        count : int
+            How many consecutive registers/coils to read. Must be >= 1, and
+            must be 1 for a ``/BIT`` spec.
+        dtype : str
+            Decoding applied to every whole register read; ignored for
+            ``COIL``/``DISCRETE`` and for a ``/BIT`` spec, which are bools.
+
+        Raises
+        ------
+        ValueError
+            If ``count`` is below 1, or above 1 for a ``/BIT`` spec.
+        ModbusReadError
+            If the server returns fewer values than requested.
+        """
+        if count < 1:
+            raise ValueError(f"count must be at least 1, got {count} for {spec!r}")
+
+        addr = parse_register_address(spec)
+        if addr.bit is not None and count > 1:
+            raise ValueError(
+                f"Cannot read {count} registers from the bit spec {spec!r}: "
+                "'AREA:ADDRESS/BIT' selects one bit of one word, so a range has no "
+                "meaning. Drop the '/BIT' suffix to read consecutive whole registers."
+            )
+
+        values: list[Any]
+        if addr.area == _AREA_COIL:
+            values = list(await self.read_coils(addr.address, count))
+        elif addr.area == _AREA_DISCRETE:
+            values = list(await self.read_discrete_inputs(addr.address, count))
+        else:
+            regs = (
+                await self.read_holding_registers(addr.address, count)
+                if addr.area == _AREA_HOLDING
+                else await self.read_input_registers(addr.address, count)
+            )
+            if addr.bit is not None:
+                values = [bool((regs[0] >> addr.bit) & 0x1)] if regs else []
+            else:
+                values = [decode_value(word, dtype) for word in regs]
+
+        if len(values) != count:
+            raise ModbusReadError(f"Read of {count} value(s) from {spec!r} returned {len(values)}")
+
         if addr.bit is not None:
-            return bool((word >> addr.bit) & 0x1)
-        return decode_value(word, dtype)
+            keys = [f"{addr.area}:{addr.address}/{addr.bit}"]
+        else:
+            keys = [f"{addr.area}:{addr.address + offset}" for offset in range(count)]
+        return dict(zip(keys, values, strict=True))
 
     async def _read(self, method: str, address: int, count: int) -> list[int]:
         if self._client is None:

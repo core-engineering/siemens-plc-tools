@@ -213,3 +213,103 @@ class TestReadRegisterAt:
         async with ModbusClient(ModbusConfig(host="x")) as mb:
             mb._client.discrete[10] = [False]
             assert await mb.read_register_at("DISCRETE:10") is False
+
+
+class TestReadRegisterBlock:
+    """Consecutive reads from one spec, keyed by each register's own spec.
+
+    The mapping shape is what makes this usable from plc-core: the runner
+    cannot parse a register spec (plc-core must not import plc-modbus), so the
+    client is what names the addresses it read.
+    """
+
+    async def test_holding_block_is_keyed_by_spec(self, fake_client_class: Any) -> None:
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            mb._client.holding[10] = [42, 99, 7]
+            assert await mb.read_register_block("HOLDING:10", 3) == {
+                "HOLDING:10": 42,
+                "HOLDING:11": 99,
+                "HOLDING:12": 7,
+            }
+
+    async def test_block_issues_a_single_read(self, fake_client_class: Any) -> None:
+        """One request for the whole range, not one per register."""
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            mb._client.holding[0] = [1, 2, 3, 4, 5]
+            await mb.read_register_block("HOLDING:0", 5)
+            assert mb._client.last_call == (
+                "read_holding_registers",
+                {"address": 0, "count": 5, "device_id": 1},
+            )
+
+    async def test_dtype_applies_to_every_register(self, fake_client_class: Any) -> None:
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            mb._client.holding[0] = [0xFFFF, 0x0001, 0x8000]
+            assert await mb.read_register_block("HOLDING:0", 3, dtype="int16") == {
+                "HOLDING:0": -1,
+                "HOLDING:1": 1,
+                "HOLDING:2": -32768,
+            }
+
+    async def test_input_block(self, fake_client_class: Any) -> None:
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            mb._client.input[5] = [777, 888]
+            assert await mb.read_register_block("INPUT:5", 2) == {
+                "INPUT:5": 777,
+                "INPUT:6": 888,
+            }
+
+    async def test_coil_block(self, fake_client_class: Any) -> None:
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            mb._client.coils[3] = [True, False, True]
+            assert await mb.read_register_block("COIL:3", 3) == {
+                "COIL:3": True,
+                "COIL:4": False,
+                "COIL:5": True,
+            }
+
+    async def test_discrete_block(self, fake_client_class: Any) -> None:
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            mb._client.discrete[0] = [False, True]
+            assert await mb.read_register_block("DISCRETE:0", 2) == {
+                "DISCRETE:0": False,
+                "DISCRETE:1": True,
+            }
+
+    async def test_default_count_is_one(self, fake_client_class: Any) -> None:
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            mb._client.holding[42] = [12345]
+            assert await mb.read_register_block("HOLDING:42") == {"HOLDING:42": 12345}
+
+    async def test_single_bit_spec_keeps_the_bit_in_its_key(self, fake_client_class: Any) -> None:
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            mb._client.holding[0] = [0b0100_0000]
+            assert await mb.read_register_block("HOLDING:0/6") == {"HOLDING:0/6": True}
+
+    async def test_keys_are_rebuilt_from_the_parsed_address(self, fake_client_class: Any) -> None:
+        """Keys come from the parsed address, not from the caller's string."""
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            mb._client.holding[1] = [5, 6]
+            assert await mb.read_register_block("  HOLDING:1  ", 2) == {
+                "HOLDING:1": 5,
+                "HOLDING:2": 6,
+            }
+
+    async def test_bit_spec_with_count_above_one_is_rejected(self, fake_client_class: Any) -> None:
+        """``HOLDING:5/3`` x 20 has no defined meaning — refuse it, don't guess."""
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            with pytest.raises(ValueError, match="bit"):
+                await mb.read_register_block("HOLDING:5/3", 20)
+
+    @pytest.mark.parametrize("count", [0, -1])
+    async def test_non_positive_count_is_rejected(self, fake_client_class: Any, count: int) -> None:
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            with pytest.raises(ValueError, match="count"):
+                await mb.read_register_block("HOLDING:0", count)
+
+    async def test_short_response_is_an_error(self, fake_client_class: Any) -> None:
+        """Fewer registers back than asked for must not be silently truncated."""
+        async with ModbusClient(ModbusConfig(host="x")) as mb:
+            mb._client.holding[0] = [1, 2]  # only 2 available
+            with pytest.raises(ModbusReadError, match="returned 2"):
+                await mb.read_register_block("HOLDING:0", 5)

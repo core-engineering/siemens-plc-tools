@@ -625,8 +625,16 @@ class ScenarioRunner:
         if self._modbus_client is None:
             return self._modbus_unavailable_result(index, "modbus_read", step.description, t0)
 
+        # Always the block call, even for the count=1 default: a single code path
+        # is what keeps `count` from being dropped again. The client returns one
+        # entry per register, keyed by that register's own spec, so a range shows
+        # up in the report as HOLDING:10, HOLDING:11, ... rather than one opaque
+        # list under the starting address. plc-core cannot build those keys
+        # itself — it must not import plc-modbus to parse the spec.
         try:
-            value = await self._modbus_client.read_register_at(step.register, dtype=step.dtype)
+            values = await self._modbus_client.read_register_block(
+                step.register, step.count, dtype=step.dtype
+            )
         except Exception as e:
             return StepResult(
                 step_index=index,
@@ -637,13 +645,18 @@ class ScenarioRunner:
                 error_message=f"{type(e).__name__}: {e}",
             )
 
+        default_description = (
+            f"Modbus read {step.register}"
+            if step.count == 1
+            else f"Modbus read {step.count} registers from {step.register}"
+        )
         return StepResult(
             step_index=index,
             step_type="modbus_read",
-            description=step.description or f"Modbus read {step.register}",
+            description=step.description or default_description,
             outcome=Outcome.PASSED,
             duration_s=time.monotonic() - t0,
-            actual_values={step.register: value},
+            actual_values=dict(values),
         )
 
     async def _execute_modbus_assert(self, index: int, step: ModbusAssertStep, t0: float) -> StepResult:

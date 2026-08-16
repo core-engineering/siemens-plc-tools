@@ -1,8 +1,9 @@
 """Tests for the Modbus step parsers and runner executors.
 
 The runner executors are exercised against a small mock that mimics the
-``ModbusClient`` surface (only ``read_register_at`` is needed). This keeps
-plc-core decoupled from plc-modbus.
+``ModbusClient`` surface (``read_register_at`` for the assert/wait steps,
+``read_register_block`` for ``modbus_read``). This keeps plc-core decoupled
+from plc-modbus.
 """
 
 from __future__ import annotations
@@ -53,6 +54,16 @@ class TestModbusReadParser:
     def test_missing_register_raises(self) -> None:
         with pytest.raises(ValueError, match="modbus_read step requires a 'register'"):
             _parse_step({"step": "modbus_read"})
+
+    @pytest.mark.parametrize("count", [0, -1])
+    def test_non_positive_count_raises(self, count: int) -> None:
+        """Caught at parse time, before any network round-trip."""
+        with pytest.raises(ValueError, match="'count'"):
+            _parse_step({"step": "modbus_read", "register": "HOLDING:0", "count": count})
+
+    def test_non_integer_count_raises(self) -> None:
+        with pytest.raises(ValueError, match="'count'"):
+            _parse_step({"step": "modbus_read", "register": "HOLDING:0", "count": "many"})
 
 
 class TestModbusAssertParser:
@@ -132,7 +143,7 @@ def _make_runner(modbus_client: Any = None) -> ScenarioRunner:
 class TestModbusReadExecutor:
     async def test_passes_and_returns_value(self) -> None:
         mb = MagicMock()
-        mb.read_register_at = AsyncMock(return_value=12345)
+        mb.read_register_block = AsyncMock(return_value={"HOLDING:42": 12345})
         runner = _make_runner(mb)
 
         step = ModbusReadStep(register="HOLDING:42", dtype="uint16")
@@ -140,7 +151,43 @@ class TestModbusReadExecutor:
 
         assert result.outcome == Outcome.PASSED
         assert result.actual_values == {"HOLDING:42": 12345}
-        mb.read_register_at.assert_awaited_once_with("HOLDING:42", dtype="uint16")
+        mb.read_register_block.assert_awaited_once_with("HOLDING:42", 1, dtype="uint16")
+
+    async def test_count_is_passed_through_and_every_value_logged(self) -> None:
+        """The defect this replaces: ``count`` was parsed, then dropped."""
+        mb = MagicMock()
+        mb.read_register_block = AsyncMock(return_value={"HOLDING:10": 42, "HOLDING:11": 99, "HOLDING:12": 7})
+        runner = _make_runner(mb)
+
+        step = ModbusReadStep(register="HOLDING:10", count=3, dtype="uint16")
+        result = await runner._execute_modbus_read(0, step, t0=0.0)
+
+        assert result.outcome == Outcome.PASSED
+        assert result.actual_values == {"HOLDING:10": 42, "HOLDING:11": 99, "HOLDING:12": 7}
+        mb.read_register_block.assert_awaited_once_with("HOLDING:10", 3, dtype="uint16")
+
+    async def test_count_reaches_the_client_verbatim(self) -> None:
+        """A 20-register scan issues one call asking for 20, not 20 calls."""
+        mb = MagicMock()
+        mb.read_register_block = AsyncMock(return_value={f"HOLDING:{i}": i for i in range(20)})
+        runner = _make_runner(mb)
+
+        step = ModbusReadStep(register="HOLDING:0", count=20)
+        result = await runner._execute_modbus_read(0, step, t0=0.0)
+
+        assert mb.read_register_block.await_count == 1
+        assert mb.read_register_block.await_args.args[1] == 20
+        assert len(result.actual_values or {}) == 20
+
+    async def test_dtype_is_forwarded(self) -> None:
+        mb = MagicMock()
+        mb.read_register_block = AsyncMock(return_value={"HOLDING:0": -1})
+        runner = _make_runner(mb)
+
+        step = ModbusReadStep(register="HOLDING:0", dtype="int16")
+        await runner._execute_modbus_read(0, step, t0=0.0)
+
+        mb.read_register_block.assert_awaited_once_with("HOLDING:0", 1, dtype="int16")
 
     async def test_no_client_returns_error(self) -> None:
         runner = _make_runner(None)
@@ -151,12 +198,24 @@ class TestModbusReadExecutor:
 
     async def test_client_exception_becomes_error(self) -> None:
         mb = MagicMock()
-        mb.read_register_at = AsyncMock(side_effect=RuntimeError("boom"))
+        mb.read_register_block = AsyncMock(side_effect=RuntimeError("boom"))
         runner = _make_runner(mb)
         step = ModbusReadStep(register="HOLDING:0")
         result = await runner._execute_modbus_read(0, step, t0=0.0)
         assert result.outcome == Outcome.ERROR
         assert "RuntimeError: boom" in (result.error_message or "")
+
+    async def test_client_rejection_becomes_error(self) -> None:
+        """A bit spec with count > 1 is refused by the client, surfaced as ERROR."""
+        mb = MagicMock()
+        mb.read_register_block = AsyncMock(
+            side_effect=ValueError("Cannot read 20 registers from the bit spec 'HOLDING:5/3'")
+        )
+        runner = _make_runner(mb)
+        step = ModbusReadStep(register="HOLDING:5/3", count=20)
+        result = await runner._execute_modbus_read(0, step, t0=0.0)
+        assert result.outcome == Outcome.ERROR
+        assert "bit spec" in (result.error_message or "")
 
 
 @pytest.mark.asyncio

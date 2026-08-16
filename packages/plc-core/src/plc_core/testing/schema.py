@@ -423,10 +423,17 @@ def _parse_modbus_read(raw: dict[str, Any]) -> ModbusReadStep:
     register = raw.get("register", "")
     if not register:
         raise ValueError("modbus_read step requires a 'register' field")
+    raw_count = raw.get("count", 1)
+    try:
+        count = int(raw_count)
+    except (TypeError, ValueError):
+        raise ValueError(f"modbus_read step 'count' must be an integer, got {raw_count!r}") from None
+    if count < 1:
+        raise ValueError(f"modbus_read step 'count' must be at least 1, got {count}")
     return ModbusReadStep(
         description=raw.get("description", ""),
         register=str(register),
-        count=int(raw.get("count", 1)),
+        count=count,
         dtype=str(raw.get("dtype", "uint16")),
     )
 

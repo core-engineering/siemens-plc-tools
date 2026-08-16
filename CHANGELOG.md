@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   them deliberately.
 
 ### Added
+- **plc-modbus (client)** — new `ModbusClient.read_register_block(spec, count,
+  dtype)`, reading `count` consecutive registers in a single request and
+  returning them keyed by each register's own spec
+  (`{"HOLDING:10": 42, "HOLDING:11": 99}`). The mapping shape is what lets
+  plc-core report which address produced which value without importing
+  plc-modbus to parse the spec. `read_register_at` is unchanged for callers and
+  now delegates to it.
 - **plc-code (executor/codegen)** — `ExpressionTranslator.BUILTIN_MAP` now maps the
   inverse-trigonometric builtins `ASIN/ACOS/ATAN/ATAN2` to `math.asin/acos/atan/atan2`
   (needed by trig-form closed solutions, e.g. Cardano's three-real-roots branch).
@@ -29,6 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   need to be registered by hand. New public helper `load_data_block(path)`.
 
 ### Fixed
+- **plc-core (testing/runner)** — the `modbus_read` step honours `count` again
+  (#1). `_execute_modbus_read` called `read_register_at`, which is single-register
+  by construction, and never referenced `step.count` — so a `count: 20` scan read
+  exactly one register and reported it as success, with no error and no warning
+  that the value had been dropped. The field was parsed, unit-tested and
+  documented ("Read one or more Modbus registers") the whole time; only the
+  executor ignored it. It now always goes through `read_register_block`, so
+  `count` cannot be silently dropped by a code path again, and every register
+  read appears in `actual_values` under its own spec.
+  `count` is validated at parse time (must be an integer >= 1) and a `AREA:N/B`
+  bit spec with `count > 1` is refused outright rather than guessed at.
+  `modbus_assert` and `modbus_wait_until` were checked and have no `count` field
+  at all, so nothing was being dropped there.
 - **plc-code (executor)** — SCL string literals were rewritten as if they were
   code, in two independent places. Both corrupted the literal silently: the block
   still compiled, only its string content was wrong (an alarm text, a state label).
