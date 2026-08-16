@@ -20,6 +20,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   them deliberately.
 
 ### Added
+- **plc-code (parser, CLI)** — a token-driven SCL statement parser, and
+  `plc code transpile --conformance` to report what it reads.
+
+  `SCLParser` lexed a block correctly and then flattened each region body back
+  into a string, one space between every token (`parser.py:815-819`), leaving the
+  executor to rebuild the structure with roughly a hundred regexes. `Region` now
+  carries its token slice alongside that string, and a recursive-descent parser
+  reads the tokens. `Region.content` is unchanged, byte for byte.
+
+  The parser never guesses: what it cannot read becomes a located error and the
+  cursor recovers to the next statement, so one unsupported construct does not
+  hide the rest of a region. A committed test asserts every token is consumed by
+  exactly one statement or one error — the guarantee whose absence let a whole
+  `CASE` be dropped in silence.
+
+  Measured over 624 blocks in five real PLC projects: 99.93% token coverage.
+  Per project — project-B 100%, project-A 99.88%, project-C 100%, project-D 100%,
+  project-E 99.89%. Most frequent constructs not yet read:
+  parenthesized boolean sub-expressions used as a call-statement argument value
+  (e.g. `CLK := (#activeState = #PUMP1_RUNNING)`), compound assignment operators
+  (`+=`), and — the one silent case, caught as unattributed tokens rather than
+  errors — `ELSIF`/`ELSE`/`END_IF` orphaned inside `IF` chains nested in `CASE`
+  arms with string labels.
+
+  Nothing generates from the AST yet. `plc code transpile --check` and the
+  executor are untouched, and `--conformance` always exits 0: it is a report,
+  not a gate.
 - **plc-code (executor/diagnostics, CLI)** — new `plc code transpile` command and
   the `plc_code.executor.diagnostics` module behind it.
 

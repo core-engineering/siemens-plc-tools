@@ -145,7 +145,8 @@ plc                              # Root command group
 │   ├── docs [PATH] [--serve]    # Generate MkDocs documentation
 │   ├── test [PATH] [-v]         # Run block unit tests
 │   ├── transpile [PATH]         # Print generated Python
-│   │   └── --check [-f]         #   ...or report blocks that won't load (exit 1)
+│   │   ├── --check [-f]         #   ...or report blocks that won't load (exit 1)
+│   │   └── --conformance [-f]   #   ...or report statement-parser coverage (always exit 0)
 │   ├── trace [PATH] [-b -o -f]  # I/O→logic dependency trace (text/json/mermaid)
 │   ├── drawio --doc-map --out   # Generate Draw.io diagrams
 │   ├── web [--port --build-docs]# FastAPI analysis server / I/O explorer
