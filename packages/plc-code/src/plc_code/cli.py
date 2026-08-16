@@ -1057,7 +1057,12 @@ def _build_mkdocs_site() -> bool:
 
 @code_group.command()
 @click.option("--port", "-p", type=int, default=8080, help="Port to run server on")
-@click.option("--host", "-h", default="0.0.0.0", help="Host to bind to (0.0.0.0 for network access)")
+@click.option(
+    "--host",
+    "-h",
+    default="127.0.0.1",
+    help="Host to bind to (pass 0.0.0.0 to expose the server on the network)",
+)
 @click.option(
     "--docs-dir",
     type=click.Path(exists=True, path_type=Path),

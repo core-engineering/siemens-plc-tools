@@ -8,6 +8,7 @@ This module provides the main FastAPI application that serves:
 - The REST API at /api/
 """
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -17,6 +18,10 @@ from fastapi.staticfiles import StaticFiles
 
 from .routes import analysis_router, blocks_router, config_router, tags_router, xref_router
 
+#: Comma-separated list of origins allowed to call the API cross-origin.
+#: Unset (the default) means no CORS middleware at all.
+CORS_ORIGINS_ENV = "PLC_WEB_ALLOWED_ORIGINS"
+
 # Create FastAPI app
 app = FastAPI(
     title="PLC Analysis Server",
@@ -24,14 +29,47 @@ app = FastAPI(
     version="0.3.0",
 )
 
-# Add CORS middleware for frontend development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+def configure_cors(target: FastAPI) -> list[str]:
+    """Install CORS middleware only when origins are explicitly allow-listed.
+
+    The UI, the docs and the API are served by this same application, so the
+    browser calls are same-origin and need no CORS at all.  CORS is only needed
+    when a *separately hosted* frontend talks to this API — a development setup
+    the operator has to opt into, by listing the exact origins in
+    ``PLC_WEB_ALLOWED_ORIGINS``.
+
+    The previous unconditional ``allow_origins=["*"]`` combined with
+    ``allow_credentials=True`` handed any web page the visitor happened to open
+    a credentialled channel to an unauthenticated API that reads and writes PLC
+    tags. (Browsers reject that exact combination anyway, so it also never did
+    what it looked like it did.)
+
+    Parameters
+    ----------
+    target : FastAPI
+        The application to configure.
+
+    Returns
+    -------
+    list[str]
+        The origins that were allow-listed; empty when CORS stays off.
+    """
+    raw = os.environ.get(CORS_ORIGINS_ENV, "")
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    if not origins:
+        return []
+    target.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    return origins
+
+
+configure_cors(app)
 
 # Include API routers
 app.include_router(blocks_router)

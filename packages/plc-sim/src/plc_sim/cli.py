@@ -15,6 +15,7 @@ $ plc sim monitor "ns=3;s=MyDB.Var1" "ns=3;s=MyDB.Var2"
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import click
@@ -365,7 +366,12 @@ def monitor(node_ids: tuple[str, ...], interval: int, endpoint: str | None) -> N
 
 @sim_group.command()
 @click.option("--port", "-p", type=int, default=8080, help="Port to run server on")
-@click.option("--host", "-h", default="0.0.0.0", help="Host to bind to")
+@click.option(
+    "--host",
+    "-h",
+    default="127.0.0.1",
+    help="Host to bind to (pass 0.0.0.0 to expose the server on the network)",
+)
 @click.option("--endpoint", "-e", help="OPC UA endpoint URL")
 @click.argument("path", type=click.Path(exists=True, path_type=Path), required=False)
 def web(port: int, host: str, endpoint: str | None, path: Path | None) -> None:
@@ -429,13 +435,23 @@ def web(port: int, host: str, endpoint: str | None, path: Path | None) -> None:
             description="OPC UA live interaction interface",
             version="0.3.0",
         )
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+        # Same rule as the plc-code server: the UI is served by this very app, so
+        # same-origin calls need no CORS. Only an explicitly allow-listed,
+        # separately hosted frontend gets a cross-origin channel to an
+        # unauthenticated API that writes PLC tags.
+        cors_origins = [
+            origin.strip()
+            for origin in os.environ.get("PLC_WEB_ALLOWED_ORIGINS", "").split(",")
+            if origin.strip()
+        ]
+        if cors_origins:
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=cors_origins,
+                allow_credentials=True,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
         app.include_router(sim_router)
         register_sim_page(app)
 
