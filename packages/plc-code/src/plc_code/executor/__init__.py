@@ -69,6 +69,13 @@ from plc_code.executor.control_flow import (
     ControlFlowTranslator,
     translate_control_flow,
 )
+from plc_code.executor.diagnostics import (
+    CODE_SYNTAX,
+    CODE_TRANSPILE,
+    CODE_UNDEFINED_NAME,
+    Diagnostic,
+    check_block,
+)
 from plc_code.executor.external import (
     DependencyRegistry,
     MockDataBlock,
@@ -93,7 +100,12 @@ from plc_code.executor.models import (
 )
 from plc_code.executor.runtime import MockClock, PLCRuntime
 from plc_code.executor.timers import TOF_TIME, TON_TIME, TP_TIME
-from plc_code.executor.transpiler import SCLTranspiler, compile_block, transpile_block
+from plc_code.executor.transpiler import (
+    SCLTranspiler,
+    build_runtime_globals,
+    compile_block,
+    transpile_block,
+)
 from plc_code.executor.types import (
     ArrayTypeInfo,
     SCLType,
@@ -140,6 +152,13 @@ __all__ = [
     "SCLTranspiler",
     "transpile_block",
     "compile_block",
+    "build_runtime_globals",
+    # Diagnostics
+    "check_block",
+    "Diagnostic",
+    "CODE_TRANSPILE",
+    "CODE_SYNTAX",
+    "CODE_UNDEFINED_NAME",
     # Code generation
     "CodeGenContext",
     "ExpressionTranslator",

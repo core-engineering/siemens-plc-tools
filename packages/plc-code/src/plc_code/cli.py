@@ -303,6 +303,137 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
         raise SystemExit(1) from e
 
 
+@code_group.command()
+@click.option(
+    "--check",
+    is_flag=True,
+    help="Report blocks whose generated Python will not load or will raise NameError",
+)
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format for --check",
+)
+@click.argument("path", type=click.Path(exists=True, path_type=Path), required=False)
+def transpile(check: bool, output_format: str, path: Path | None) -> None:
+    """Show or check the Python generated from SCL blocks.
+
+    Without --check, prints the generated Python. That is the fastest way to see
+    what a block actually became when it misbehaves in the harness.
+
+    With --check, reports blocks whose generated Python does not parse, or reads
+    a name nothing defines. The transpiler rewrites text rather than building a
+    statement AST, so a construct it does not support is copied through and
+    reported as a successful transpile — this is what surfaces that silence.
+    Exits 1 if anything is reported.
+
+    If PATH is not specified, uses source path from plc.yaml.
+    """
+    from plc_core.reporting import Severity
+
+    from plc_code.executor.diagnostics import check_block
+    from plc_code.executor.transpiler import transpile_block
+    from plc_code.parser import parse_scl_file
+    from plc_code.project.discovery import discover_blocks
+
+    if path is None:
+        try:
+            from plc_code.core.config import load_config
+
+            path = load_config().source_path
+        except FileNotFoundError:
+            console.print("[red]Error:[/red] No plc.yaml found and no path specified.")
+            console.print("Specify a path: plc code transpile <path>")
+            raise SystemExit(1) from None
+
+    if not path.exists():
+        console.print(f"[red]Error:[/red] Source not found: {path}")
+        raise SystemExit(1)
+
+    if path.is_file():
+        block_files = [path]
+    else:
+        block_files = [bf.source_path for bf in discover_blocks(path)]
+
+    if not block_files:
+        console.print("[yellow]No .s7dcl files found.[/yellow]")
+        raise SystemExit(1)
+
+    blocks: list[tuple[Path, Any]] = []
+    for block_file in block_files:
+        try:
+            block = parse_scl_file(block_file)
+        except Exception as e:  # noqa: BLE001 - a bad file must not abort the run
+            console.print(f"[yellow]Skipped[/yellow] {block_file.name}: {type(e).__name__}: {e}")
+            continue
+        if block is not None and block.name:
+            blocks.append((block_file, block))
+
+    if not check:
+        for block_file, block in blocks:
+            if len(blocks) > 1:
+                console.print(f"[bold]# {block_file.name} — {block.name}[/bold]")
+            print(transpile_block(block).python_code)
+        raise SystemExit(0)
+
+    diagnostics = [d for block_file, block in blocks for d in check_block(block, source_file=block_file)]
+
+    if output_format == "json":
+        print(
+            json.dumps(
+                {
+                    "blocks_checked": len(blocks),
+                    "diagnostics": [
+                        {
+                            "block": d.block_name,
+                            "source": str(d.source_file) if d.source_file else None,
+                            "code": d.code,
+                            "severity": d.severity.value,
+                            "message": d.message,
+                            "line": d.line,
+                            "generated_line": d.generated_line,
+                        }
+                        for d in diagnostics
+                    ],
+                },
+                indent=2,
+            )
+        )
+        raise SystemExit(1 if diagnostics else 0)
+
+    if not diagnostics:
+        console.print(f"[green]OK[/green] {len(blocks)} block(s) transpile to loadable Python.")
+        raise SystemExit(0)
+
+    by_block: dict[str, list[Any]] = {}
+    for diagnostic in diagnostics:
+        by_block.setdefault(diagnostic.block_name, []).append(diagnostic)
+
+    for block_name, found in by_block.items():
+        console.print(f"\n[bold]{block_name}[/bold]")
+        for diagnostic in found:
+            marker = "[red]✗[/red]" if diagnostic.severity is Severity.ERROR else "[yellow]⚠[/yellow]"
+            location = f" (generated line {diagnostic.line})" if diagnostic.line else ""
+            console.print(f"  {marker} {diagnostic.code}{location}: {diagnostic.message}")
+            if diagnostic.generated_line:
+                console.print(f"      {diagnostic.generated_line}", style="dim")
+
+    console.print(
+        f"\n{len(by_block)} of {len(blocks)} block(s) would misbehave at run time "
+        f"({len(diagnostics)} finding(s))."
+    )
+    if any(d.code == "UNDEFINED_NAME" for d in diagnostics):
+        console.print(
+            "An undefined name is normally an SCL builtin or statement the transpiler "
+            "does not support, copied through to the generated Python unchanged.",
+            style="dim",
+        )
+    raise SystemExit(1)
+
+
 # =============================================================================
 # Export Command Group
 # =============================================================================

@@ -20,6 +20,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   them deliberately.
 
 ### Added
+- **plc-code (executor/diagnostics, CLI)** — new `plc code transpile` command and
+  the `plc_code.executor.diagnostics` module behind it.
+
+  The executor rewrites SCL as text, with no statement-level AST: anything
+  `ControlFlowTranslator` does not recognise falls through to the expression
+  path and is copied into the generated Python, and `transpile_block` reports
+  `success=True` with zero errors and zero warnings. `REPEAT`/`UNTIL`, `GOTO`,
+  `CONTINUE` and unmapped builtins (`SEL`, `LIMIT`) all reach a downstream
+  project this way, surfacing as a `SyntaxError` or a `NameError` a long way
+  from the SCL that caused them.
+
+  `--check` makes that silence visible by inspecting the *generated Python*
+  instead of the SCL: the module either does not parse (error — the block cannot
+  load), or reads a name nothing defines (warning — `NameError` when that line
+  runs). Scope analysis uses `symtable`, CPython's own resolver; the whitelist is
+  derived from the new `build_runtime_globals()` that `compile_block` also execs
+  into, so the check cannot drift into false positives as the runtime grows.
+  `-f json` for machine consumption, exit code 1 on any finding.
+
+  Without `--check` the command prints the generated Python, which is the
+  quickest way to see what a block actually became.
+
+  It found one real defect on its first run over the repo's own fixtures:
+  `PumpControl.s7dcl` reads its `VAR CONSTANT` member `PROC_READY` once without
+  the `#` prefix, which the transpiler leaves as an undefined module global.
+  Recorded in `KNOWN_DEFECTS` in `test_diagnostics_corpus.py` — the rest of the
+  31-block corpus is clean, which is the no-false-positive guarantee.
 - **plc-modbus (client)** — new `ModbusClient.read_register_block(spec, count,
   dtype)`, reading `count` consecutive registers in a single request and
   returning them keyed by each register's own spec

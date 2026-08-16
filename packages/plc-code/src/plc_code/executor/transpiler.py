@@ -723,6 +723,46 @@ class SCLTranspiler:
         return self._cf_translator.translate_block(processed_code)
 
 
+def build_runtime_globals() -> dict[str, Any]:
+    """Build the namespace that generated block code is executed in.
+
+    This is the single definition of "what a generated module may reference
+    without importing it". :func:`compile_block` execs into it, and
+    :mod:`plc_code.executor.diagnostics` subtracts its keys when looking for
+    names nothing provides — deriving both from here is what stops the check
+    from drifting into false positives as the runtime surface grows.
+
+    Names the generated module imports for itself (``math``, the runtime
+    helpers, the timer types) are not in here; they bind at module scope when
+    the generated code runs its own import lines.
+
+    Returns
+    -------
+    dict[str, Any]
+        A fresh namespace. Callers may mutate their copy.
+    """
+    runtime_mod = __import__("plc_code.executor.runtime", fromlist=["PLCRuntime", "_AutoStruct"])
+    globals_: dict[str, Any] = {
+        "dataclass": __import__("dataclasses").dataclass,
+        "field": __import__("dataclasses").field,
+        "PLCRuntime": runtime_mod.PLCRuntime,
+        "_AutoStruct": runtime_mod._AutoStruct,
+        "Any": __import__("typing").Any,
+    }
+
+    # Timers are optional: a build without them still compiles blocks that
+    # never reference a timer type.
+    try:
+        timers = __import__("plc_code.executor.timers", fromlist=["TON_TIME", "TOF_TIME", "TP_TIME"])
+        globals_["TON_TIME"] = timers.TON_TIME
+        globals_["TOF_TIME"] = timers.TOF_TIME
+        globals_["TP_TIME"] = timers.TP_TIME
+    except ImportError:
+        pass
+
+    return globals_
+
+
 def transpile_block(
     block: Block,
     options: TranspileOptions | None = None,
@@ -808,23 +848,7 @@ def compile_block(
         )
 
     # Set up compilation globals
-    _runtime_mod = __import__("plc_code.executor.runtime", fromlist=["PLCRuntime", "_AutoStruct"])
-    compile_globals: dict[str, Any] = {
-        "dataclass": __import__("dataclasses").dataclass,
-        "field": __import__("dataclasses").field,
-        "PLCRuntime": _runtime_mod.PLCRuntime,
-        "_AutoStruct": _runtime_mod._AutoStruct,
-        "Any": __import__("typing").Any,
-    }
-
-    # Add timer imports if needed
-    try:
-        timers = __import__("plc_code.executor.timers", fromlist=["TON_TIME", "TOF_TIME", "TP_TIME"])
-        compile_globals["TON_TIME"] = timers.TON_TIME
-        compile_globals["TOF_TIME"] = timers.TOF_TIME
-        compile_globals["TP_TIME"] = timers.TP_TIME
-    except ImportError:
-        pass
+    compile_globals = build_runtime_globals()
 
     # Add extra globals
     if extra_globals:
