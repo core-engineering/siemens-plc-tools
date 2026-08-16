@@ -775,6 +775,7 @@ class SCLParser:
 
         region = Region(name=name)
         content_parts = []
+        token_parts: list[Token] = []
 
         # Parse content until END_REGION
         while self._current().type != TokenType.END_REGION:
@@ -791,6 +792,7 @@ class SCLParser:
                     content_parts.append("\n")
                     content_parts.append(nested.content)
                     content_parts.append("\n")
+                    token_parts.extend(nested.tokens)
 
             # MLC pragma
             elif self._current().type == TokenType.PRAGMA_START:
@@ -816,9 +818,11 @@ class SCLParser:
                 # Add space after token to preserve word boundaries
                 content_parts.append(self._current().value)
                 content_parts.append(" ")
+                token_parts.append(self._current())
                 self._advance()
 
         region.content = "".join(content_parts).strip()
+        region.tokens = token_parts
 
         if self._current().type == TokenType.END_REGION:
             self._advance()

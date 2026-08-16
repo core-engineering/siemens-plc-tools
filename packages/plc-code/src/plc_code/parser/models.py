@@ -8,6 +8,8 @@ associated metadata.
 from dataclasses import dataclass, field
 from typing import Literal
 
+from plc_code.parser.lexer import Token
+
 # Block types
 BlockType = Literal["FUNCTION_BLOCK", "FUNCTION", "TYPE", "ORGANIZATION_BLOCK", "DATA_BLOCK"]
 
@@ -143,7 +145,13 @@ class Region:
     name : str
         Region name from REGION declaration.
     content : str
-        Raw content within the region.
+        Raw content within the region. Built by joining token values with a
+        space, so it is a lossy re-serialisation: `#a` reads as `# a`. Kept
+        unchanged because the analyzer and the executor both consume it.
+    tokens : list[Token]
+        The same body as ``content``, unflattened. Carries the original line
+        and column of every token, which ``content`` has lost. This is what a
+        statement parser should read.
     nested_regions : list[Region]
         Nested REGION blocks.
     mlc_id : str
@@ -152,6 +160,7 @@ class Region:
 
     name: str
     content: str = ""
+    tokens: list[Token] = field(default_factory=list)
     nested_regions: list["Region"] = field(default_factory=list)
     mlc_id: str = ""
 
