@@ -13,28 +13,31 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.12"
+        # Python version comes from .python-version; the dev tool versions are
+        # pinned exactly in pyproject.toml. Both are deliberate: an unpinned
+        # gate turns red on a tool release rather than on a code change.
 
       - name: Sync workspace
         run: uv sync --all-extras --all-packages
 
+      # Tests are gated too: CLAUDE.md has always told contributors to format and
+      # lint them, but CI only ever looked at src/, so they drifted unnoticed.
       - name: Lint (ruff)
-        run: uv run ruff check packages/*/src
+        run: uv run ruff check packages/*/src packages/*/tests src tests
 
       - name: Format check (black)
-        run: uv run black --check packages/*/src
+        run: uv run black --check packages/*/src packages/*/tests src tests
 
+      # mypy stays on src only: the test suites are excluded in pyproject.toml
+      # (each package has its own tests/, which collide as one module for mypy).
       - name: Type check (mypy)
         run: uv run mypy packages/*/src
 
-      - name: Tests (per package)
-        run: |
-          # Run per package (a repo-root glob collides on duplicate tests/conftest.py).
-          # Tolerate pytest exit code 5 ("no tests collected") for packages without a suite yet.
-          for p in plc-core plc-code plc-iol plc-modbus plc-sim plc-sup plc-trace; do
-            echo "=== $p ==="
-            (cd packages/$p && uv run pytest -q) || { code=$?; [ "$code" -eq 5 ] || exit "$code"; }
-          done
-          echo "=== integration ==="
-          uv run pytest tests/ -q
+      - name: Tests
+        # One run over every workspace package plus the integration suite.
+        # (This needed a per-package loop while each tests/ directory carried an
+        # __init__.py: every one of them imported as the same "tests" package, so
+        # the second conftest.py hit "Plugin already registered under a different
+        # name". They are plain directories now, and importlib mode gives each
+        # module a path-unique name.)
+        run: uv run pytest -q
