@@ -44,6 +44,13 @@ class ParseResult:
     Neither list is exceptional: a region routinely yields statements *and*
     errors, which is exactly the report phase 1 exists to produce.
 
+    ``statement_spans`` and ``error_spans`` are the anti-silence guarantee.
+    A parse that quietly skips a construct — advances the cursor over it
+    without putting it in ``statements`` or ``errors`` — leaves a gap that
+    ``verify_no_silent_loss`` can detect from these two lists alone. Neither
+    field is meant to be read directly by callers outside this module; they
+    exist so that guarantee is checkable without re-parsing.
+
     Attributes
     ----------
     statements : list[Statement]
@@ -52,10 +59,38 @@ class ParseResult:
     errors : list[ParseError]
         One entry per construct the parser could not read, in the order the
         parser encountered them. Default is an empty list.
+    consumed_tokens : int
+        The cursor's final position. Always equals the input length once
+        ``parse()`` returns (the recovery loop guarantees forward progress
+        to the end of the stream), so on its own this says nothing about
+        whether every token ended up in ``statements`` or ``errors`` — see
+        ``verify_no_silent_loss`` for the check that does. Default is 0.
+    statement_spans : list[tuple[int, int]]
+        ``(start, end)`` token-index span for each entry in ``statements``,
+        same order, recorded only for top-level statements (a nested
+        statement's span is a subset of its parent's and is not recorded
+        separately). Default is an empty list.
+    error_spans : list[tuple[int, int]]
+        ``(start, end)`` token-index span for each entry in ``errors``, same
+        order. Width is 1 for an error whose token ``_recover()`` then skips,
+        0 for an error that flags a shape problem without consuming anything
+        (the construct's tokens are read again, as plain statements, by
+        whoever called next). Default is an empty list.
+    separator_spans : list[tuple[int, int]]
+        ``(start, end)`` span for each bare statement-separator ``;`` the
+        parser consumed on its own — an empty statement, not an error and
+        not a dropped one. Not aligned with ``statements`` or ``errors``;
+        exists only so ``verify_no_silent_loss`` can tell a semicolon with
+        nothing before it from a genuinely missing token. Default is an
+        empty list.
     """
 
     statements: list[Statement] = field(default_factory=list)
     errors: list[ParseError] = field(default_factory=list)
+    consumed_tokens: int = 0
+    statement_spans: list[tuple[int, int]] = field(default_factory=list)
+    error_spans: list[tuple[int, int]] = field(default_factory=list)
+    separator_spans: list[tuple[int, int]] = field(default_factory=list)
 
 
 class StatementParser:
@@ -94,9 +129,11 @@ class StatementParser:
             statement = self._parse_statement()
             if statement is not None:
                 self._result.statements.append(statement)
+                self._result.statement_spans.append((before, self._stream.position()))
             elif self._stream.position() == before:
                 # Nothing consumed: guarantee forward progress.
                 self._stream.advance()
+        self._result.consumed_tokens = self._stream.position()
         return self._result
 
     def _parse_statement(self) -> Statement | None:
@@ -113,7 +150,9 @@ class StatementParser:
         token = self._stream.peek()
 
         if token.type is TokenType.SEMICOLON:
+            position = self._stream.position()
             self._stream.advance()
+            self._result.separator_spans.append((position, position + 1))
             return None
 
         keyword = token.value.upper() if token.type is TokenType.IDENTIFIER else ""
@@ -143,7 +182,7 @@ class StatementParser:
 
         if keyword in {"REPEAT", "UNTIL", "END_REPEAT", "GOTO", "CONTINUE"}:
             self._error(token, "a supported statement (this construct has no translation)")
-            self._recover()
+            self._recover_and_record()
             return None
 
         return self._parse_assignment_or_call(token)
@@ -186,7 +225,7 @@ class StatementParser:
             return Call(line=first.line, callee=callee, arguments=arguments)
 
         self._error(first, "an assignment or a call")
-        self._recover()
+        self._recover_and_record()
         return None
 
     def _keyword_ahead(self) -> str:
@@ -364,6 +403,7 @@ class StatementParser:
             values = self._parse_case_labels()
             if values is None:
                 self._error(self._stream.peek(), "a case label")
+                self._record_flag_error()
                 branches.append(CaseBranch(values=[], body=self._parse_case_body()))
                 continue
             body = self._parse_case_body()
@@ -569,6 +609,7 @@ class StatementParser:
             self._stream.advance()
             return
         self._error(self._stream.peek(), keyword)
+        self._record_flag_error()
 
     def _consume_colon(self) -> None:
         """Consume a colon at the cursor, if present.
@@ -715,6 +756,30 @@ class StatementParser:
         if not self._stream.at_end():
             self._stream.advance()
 
+    def _recover_and_record(self) -> None:
+        """Call ``_recover()`` and record the span it consumed for the last error.
+
+        Must be called immediately after ``self._error(...)``, with nothing
+        consumed in between, so the span recorded here is exactly what
+        recovery itself did — not an assumed width. ``verify_no_silent_loss``
+        is what checks that width is 1; this method only records it.
+        """
+        before = self._stream.position()
+        self._recover()
+        self._result.error_spans.append((before, self._stream.position()))
+
+    def _record_flag_error(self) -> None:
+        """Record a zero-width span for the last error, which consumed nothing.
+
+        Used for an error that only flags a shape problem — a missing
+        keyword, a branch that failed to open with a label — where the
+        tokens in question are left for whoever parses next (the enclosing
+        loop's own recovery, or a case branch read as plain statements) and
+        must not be double-counted as belonging to the error too.
+        """
+        position = self._stream.position()
+        self._result.error_spans.append((position, position))
+
     def _error(self, token: Token, expected: str) -> None:
         """Record a ``ParseError`` for ``token`` and what was expected there.
 
@@ -749,3 +814,200 @@ def parse_statements(tokens: list[Token]) -> ParseResult:
         Statements and errors.
     """
     return StatementParser(tokens).parse()
+
+
+def _body_width(body: list[Statement]) -> tuple[int, int]:
+    """Sum ``_content_width`` over a list of statements, componentwise.
+
+    Parameters
+    ----------
+    body : list[Statement]
+        Statements to measure, e.g. an ``If`` branch's body.
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(minimum, maximum)`` token count the whole list implies.
+    """
+    lo = hi = 0
+    for statement in body:
+        slo, shi = _content_width(statement)
+        lo += slo
+        hi += shi
+    return lo, hi
+
+
+def _content_width(statement: Statement) -> tuple[int, int]:
+    """The token count ``statement``'s own fields imply, as a ``(min, max)`` range.
+
+    Purely a function of ``statement``'s content — no stream access, no
+    knowledge of how parsing actually went. Every unparsed expression a
+    statement holds is stored verbatim as a ``list[Token]`` slice, so its
+    length is exact; the range only widens where the grammar makes a token
+    optional and the parser tolerates its absence without recording whether
+    it was there — a trailing ``;``, a bare ``ELSE:`` colon, an ``ELSE`` or
+    default arm whose body happens to be empty either because the arm was
+    absent or because it was present and empty.
+
+    ``verify_no_silent_loss`` compares this against a statement's actual
+    recorded span, topped up by any error spans nested inside it, to catch
+    a statement whose real span is wider than anything its content can
+    explain — which is what a construct that got silently swallowed on the
+    way to becoming (part of) this statement looks like from the outside.
+
+    Parameters
+    ----------
+    statement : Statement
+        The statement to measure.
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(minimum, maximum)`` token count, inclusive.
+    """
+    if isinstance(statement, (Return, Exit)):
+        return 1, 2  # keyword ['; ']
+
+    if isinstance(statement, Assignment):
+        exact = len(statement.target) + 1 + len(statement.value)  # target ':=' value
+        return exact, exact + 1  # [';']
+
+    if isinstance(statement, Call):
+        lo = hi = len(statement.callee) + 2  # callee '(' ')'
+        count = len(statement.arguments)
+        lo += max(0, count - 1)  # commas between arguments
+        hi += count  # tolerate one stray trailing comma
+        for argument in statement.arguments:
+            if not argument.name:
+                # Positional: the leading token is folded into `value` already.
+                lo += len(argument.value)
+                hi += len(argument.value)
+            else:
+                operator = 2 if argument.is_output else 1  # ':=' or '=>'
+                width = 1 + operator + len(argument.value)  # name operator value
+                lo += width
+                hi += width
+        return lo, hi + 1  # [';']
+
+    if isinstance(statement, If):
+        lo = hi = 1  # IF
+        for index, branch in enumerate(statement.branches):
+            if index:
+                lo += 1
+                hi += 1  # ELSIF
+            lo += len(branch.condition) + 1  # condition 'THEN'
+            hi += len(branch.condition) + 1
+            blo, bhi = _body_width(branch.body)
+            lo += blo
+            hi += bhi
+        elo, ehi = _body_width(statement.else_body)
+        lo += elo  # ELSE not assumed present
+        hi += ehi + 1  # ELSE keyword, if it was
+        return lo + 1, hi + 2  # END_IF [';']
+
+    if isinstance(statement, Case):
+        lo = hi = 1 + len(statement.selector) + 1  # CASE selector OF
+        for case_branch in statement.branches:
+            if case_branch.values:
+                label = sum(len(value) for value in case_branch.values)
+                label += len(case_branch.values) - 1  # commas between values
+                label += 1  # colon
+                lo += label
+                hi += label
+            blo, bhi = _body_width(case_branch.body)
+            lo += blo
+            hi += bhi
+        dlo, dhi = _body_width(statement.default)
+        lo += dlo  # ELSE not assumed present
+        hi += dhi + 2  # ELSE keyword and its tolerated bare colon
+        return lo + 1, hi + 2  # END_CASE [';']
+
+    if isinstance(statement, For):
+        lo = hi = 1 + len(statement.variable) + 1 + len(statement.start) + 1 + len(statement.end)
+        # FOR variable ':=' start 'TO' end
+        if statement.step:
+            lo += 1 + len(statement.step)  # 'BY' step
+            hi += 1 + len(statement.step)
+        lo += 1  # DO
+        hi += 1
+        blo, bhi = _body_width(statement.body)
+        lo += blo
+        hi += bhi
+        return lo + 1, hi + 2  # END_FOR [';']
+
+    if isinstance(statement, While):
+        lo = hi = 1 + len(statement.condition) + 1  # WHILE condition DO
+        blo, bhi = _body_width(statement.body)
+        lo += blo
+        hi += bhi
+        return lo + 1, hi + 2  # END_WHILE [';']
+
+    raise TypeError(f"unrecognised statement type: {type(statement).__name__}")  # pragma: no cover
+
+
+def verify_no_silent_loss(tokens: list[Token], result: ParseResult) -> list[str]:
+    """Check that every token in ``tokens`` is accounted for by ``result``.
+
+    This is the strong form of the anti-silence guarantee: every token must
+    be covered by exactly one top-level statement's span, a recorded error,
+    or a bare-``;`` separator (an empty statement, not lost code), with no
+    gap left over, and no top-level statement's span may be wider than its
+    own content — plus whatever errors fall inside it — can explain.
+    Counting *that* the cursor reached the end of the stream is not enough
+    (the recovery loop guarantees it always does); this checks that nothing
+    was swallowed on the way.
+
+    Two independent classes of loss are covered: a gap (tokens covered by
+    neither a statement span nor an error span — what an old, unbounded
+    ``_recover()`` produces when it eats a well-formed statement whole and
+    the tokens end up in neither), and an inflated statement (a statement
+    whose recorded span is wider than its fields, plus the errors nested
+    inside it, can account for — what a construct that silently dropped a
+    branch or a label produces: the outer statement still closes cleanly
+    and covers the full span positionally, but its content does not
+    contain what the span implies it read).
+
+    Parameters
+    ----------
+    tokens : list[Token]
+        The exact token slice ``parse_statements`` (or a ``StatementParser``
+        built directly) was given.
+    result : ParseResult
+        Its return value.
+
+    Returns
+    -------
+    list[str]
+        One entry per violation found; an empty list means every token in
+        ``tokens`` is accounted for.
+    """
+    problems: list[str] = []
+
+    for error, (start, end) in zip(result.errors, result.error_spans, strict=True):
+        if end - start not in (0, 1):
+            problems.append(
+                f"error at line {error.line}, column {error.column} spans {end - start} "
+                "token(s), expected 0 (a flag) or 1 (a token _recover() skipped)"
+            )
+
+    intervals = sorted(result.statement_spans + result.error_spans + result.separator_spans)
+    cursor = 0
+    for start, end in intervals:
+        if start > cursor:
+            problems.append(f"tokens [{cursor}, {start}) are unaccounted for")
+        cursor = max(cursor, end)
+    if cursor < len(tokens):
+        problems.append(f"tokens [{cursor}, {len(tokens)}) are unaccounted for")
+
+    for statement, (start, end) in zip(result.statements, result.statement_spans, strict=True):
+        lo, hi = _content_width(statement)
+        error_tokens = sum(e - s for s, e in result.error_spans if start <= s and e <= end)
+        actual = end - start
+        if not (lo + error_tokens <= actual <= hi + error_tokens):
+            problems.append(
+                f"{type(statement).__name__} at line {statement.line} spans {actual} token(s); "
+                f"its content (plus {error_tokens} error token(s) inside it) implies "
+                f"{lo + error_tokens}-{hi + error_tokens}"
+            )
+
+    return problems
