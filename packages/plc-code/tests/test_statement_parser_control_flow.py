@@ -151,3 +151,28 @@ class TestMalformedCase:
         assert isinstance(node, Case)
         assert node.default
         assert any(_targets(a) == ["#", "b"] for a in _assignments(node.default))
+
+    def test_unterminated_labelless_span_still_finds_else(self) -> None:
+        """No semicolon separates the bad span from ELSE.
+
+        Round 1 fixed the buffer-discard defect but, in doing so, let
+        `_at_case_label`'s lookahead scan straight through `ELSE`/`END_CASE`
+        (both lex as plain IDENTIFIER tokens) hunting for a colon. With no
+        semicolon to stop the underlying statement scan first either, `ELSE`
+        itself got consumed into a bogus assignment target and the default
+        arm silently disappeared. This is the case that exposes it: nothing
+        terminates `#a` before `ELSE`.
+        """
+        result = _parse("CASE #x OF #a ELSE #b := 9; END_CASE;")
+        node = result.statements[0]
+        assert isinstance(node, Case)
+        assert node.default
+        assert any(_targets(a) == ["#", "b"] for a in _assignments(node.default))
+
+    def test_unterminated_labelless_span_still_closes_on_end_case(self) -> None:
+        """Same shape, but running straight into END_CASE instead of ELSE."""
+        result = _parse("CASE #x OF #a END_CASE; #c := 2;")
+        node = result.statements[0]
+        assert isinstance(node, Case)
+        assignments = _assignments(result.statements)
+        assert any(_targets(a) == ["#", "c"] for a in assignments)

@@ -204,6 +204,34 @@ class StatementParser:
         token = self._stream.peek()
         return token.value.upper() if token.type is TokenType.IDENTIFIER else ""
 
+    @staticmethod
+    def _is_block_ender(token: Token) -> bool:
+        """Whether ``token`` is a block-ender keyword lexed as an identifier.
+
+        ``ELSE``, ``END_IF``, ``END_CASE`` and the rest of ``_BLOCK_ENDERS``
+        lex as ordinary ``IDENTIFIER`` tokens (see ``_keyword_ahead``), so a
+        raw token-type scan cannot tell one apart from an ordinary name by
+        type alone. Every unbounded expression scan in this parser
+        (``_find_ahead``, ``_take_until``, ``_at_case_label``) must stop here
+        in addition to its own stop set: without this check, a statement
+        missing its terminating semicolon right before a block-ender would
+        read straight through the keyword as if it were ordinary token
+        content, consuming it into the statement instead of leaving it for
+        the construct it actually closes.
+
+        Parameters
+        ----------
+        token : Token
+            The token to classify.
+
+        Returns
+        -------
+        bool
+            True when ``token`` is an identifier whose uppercased value is
+            one of ``_BLOCK_ENDERS``.
+        """
+        return token.type is TokenType.IDENTIFIER and token.value.upper() in _BLOCK_ENDERS
+
     def _take_until_keyword(self, *keywords: str) -> list[Token]:
         """Consume tokens up to (not including) one of ``keywords``.
 
@@ -438,14 +466,24 @@ class StatementParser:
         Scans ahead token by token, accepting the token kinds a label value
         can be made of (numbers, strings, identifiers, `#`-prefixed locals,
         and commas joining multiple values), and reports a label only if a
-        colon is reached before a semicolon, `:=`, or end of stream — any of
-        which means this is a statement, not a label.
+        colon is reached before a semicolon, `:=`, an identifier that is
+        itself a block-ender keyword (``ELSE``, ``END_CASE``, ...), or end of
+        stream — any of which means this is a statement or a construct
+        boundary, not a label.
+
+        The block-ender check exists because ``ELSE`` and ``END_CASE`` lex as
+        ordinary ``IDENTIFIER`` tokens (see ``_keyword_ahead``), so without it
+        this scan would happily walk straight through one hunting for a
+        colon that belongs to something else entirely — which is exactly how
+        an unterminated labelless span (`#a ELSE #b := 9;`, no semicolon
+        before ``ELSE``) could make a later ``ELSE`` disappear into what this
+        method reported as label content.
 
         Returns
         -------
         bool
             True when the tokens ahead form a case label ending in a colon,
-            without an intervening statement boundary.
+            without an intervening statement boundary or block-ender.
         """
         offset = 0
         while True:
@@ -454,6 +492,8 @@ class StatementParser:
                 return False
             if token.type is TokenType.COLON:
                 return True
+            if self._is_block_ender(token):
+                return False
             if token.type not in (
                 TokenType.NUMBER,
                 TokenType.STRING,
@@ -603,13 +643,17 @@ class StatementParser:
         -------
         int | None
             The offset from the cursor to the first matching token, or
-            ``None`` when a semicolon or the end of the stream is reached
-            first.
+            ``None`` when a semicolon, a block-ender keyword, or the end of
+            the stream is reached first. The block-ender stop keeps this
+            scan from reading through ``ELSE``/``END_IF``/etc. in search of
+            e.g. an ``:=`` that actually belongs to a different, later
+            statement — which a statement missing its own terminating
+            semicolon would otherwise let through (see ``_is_block_ender``).
         """
         offset = 0
         while True:
             token = self._stream.peek(offset)
-            if token.type in (TokenType.EOF, TokenType.SEMICOLON):
+            if token.type in (TokenType.EOF, TokenType.SEMICOLON) or self._is_block_ender(token):
                 return None
             if token.type is token_type:
                 return offset
@@ -617,6 +661,12 @@ class StatementParser:
 
     def _take_until(self, *stop: TokenType) -> list[Token]:
         """Consume and return tokens up to (not including) any of ``stop``.
+
+        Also stops before a block-ender keyword (``ELSE``, ``END_IF``, ...)
+        even when it is not among ``stop``, for the same reason
+        ``_find_ahead`` does: those lex as plain identifiers, so nothing
+        else would keep an unterminated statement from consuming one as
+        ordinary token content (see ``_is_block_ender``).
 
         Parameters
         ----------
@@ -629,7 +679,11 @@ class StatementParser:
             The consumed tokens, in source order.
         """
         taken: list[Token] = []
-        while not self._stream.at_end() and not self._stream.match(*stop):
+        while (
+            not self._stream.at_end()
+            and not self._stream.match(*stop)
+            and not self._is_block_ender(self._stream.peek())
+        ):
             taken.append(self._stream.advance())
         return taken
 
