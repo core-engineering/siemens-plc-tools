@@ -127,6 +127,14 @@ class ExpressionTranslator:
         if not result:
             return result
 
+        # Protect SCL string literals FIRST: every pass below rewrites the raw
+        # text, so a literal would be translated as if it were code
+        # (``'CASE#1'`` -> ``'CASEself.1'``, ``'a = b'`` -> ``'a == b'``,
+        # ``'TRUE'`` -> ``'True'``).  The block still compiles, so the damage is
+        # silent — only the string content is wrong.  Same placeholder trick the
+        # named-call extraction below uses.
+        result, string_literals = self._extract_string_literals(result)
+
         # Normalize spaced instance variable references: "# var" -> "#var"
         # The parser may insert a space between '#' and the identifier.
         result = re.sub(r"#\s+(\w)", r"#\1", result)
@@ -173,7 +181,63 @@ class ExpressionTranslator:
         for placeholder, code in named_call_placeholders.items():
             result = result.replace(placeholder, code)
 
+        # Restore string literals last: a protected sub-block call may carry one
+        # in its arguments, so its restored Python can still hold a placeholder.
+        for placeholder, literal in string_literals.items():
+            result = result.replace(placeholder, literal)
+
         return result
+
+    def _extract_string_literals(self, expr: str) -> tuple[str, dict[str, str]]:
+        """Replace single-quoted SCL string literals with inert placeholders.
+
+        SCL escapes a quote by doubling it (``'it''s'``), so the scan cannot stop
+        at the first closing quote.  Double-quoted spans are *symbol names*, not
+        literals: they are copied through untouched because the passes that
+        follow (global-DB access, named sub-block calls) still need to see them.
+
+        Parameters
+        ----------
+        expr : str
+            The raw SCL expression.
+
+        Returns
+        -------
+        tuple[str, dict[str, str]]
+            The expression with each literal replaced by a ``__SLIT<n>__``
+            placeholder, plus a mapping of placeholder -> original literal.
+            Placeholders contain only word characters, so none of the
+            regex-based passes that run afterwards can match inside them.
+        """
+        placeholders: dict[str, str] = {}
+        out: list[str] = []
+        i = 0
+        length = len(expr)
+        while i < length:
+            ch = expr[i]
+            if ch not in "'\"":
+                out.append(ch)
+                i += 1
+                continue
+            # Walk to the closing delimiter, honouring the doubled-quote escape.
+            end = i + 1
+            while end < length:
+                if expr[end] == ch:
+                    if end + 1 < length and expr[end + 1] == ch:
+                        end += 2
+                        continue
+                    end += 1
+                    break
+                end += 1
+            span = expr[i:end]
+            if ch == "'":
+                key = f"__SLIT{len(placeholders)}__"
+                placeholders[key] = span
+                out.append(key)
+            else:
+                out.append(span)
+            i = end
+        return "".join(out), placeholders
 
     # Opening of a quoted-name block call: "BlockName"(
     _NAMED_CALL_OPEN = re.compile(r'"([^"]+)"\s*\(')

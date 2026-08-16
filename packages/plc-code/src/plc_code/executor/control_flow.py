@@ -165,15 +165,67 @@ class ControlFlowTranslator:
         re.IGNORECASE,
     )
 
+    @staticmethod
+    def _quote_mask(line: str) -> list[bool]:
+        """Map each character of ``line`` to "belongs to a quoted span".
+
+        Single quotes delimit SCL *string literals*; double quotes delimit SCL
+        *symbol names* (``"DbSettings".member``, ``"ForwardKinematicMdh"()``).
+        Both are opaque to the text rewriting the translator does: their
+        contents are data or an identifier, never code to be re-spaced.  SCL
+        escapes a quote by doubling it (``''``, ``""``), which does not close
+        the span.  The delimiters themselves are marked ``True`` so a run of
+        ``True`` is exactly one complete quoted span, delimiters included.
+
+        Parameters
+        ----------
+        line : str
+            A preprocessed, stripped source line.
+
+        Returns
+        -------
+        list[bool]
+            One flag per character of ``line``.
+        """
+        in_squote = False
+        in_dquote = False
+        mask: list[bool] = []
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if ch == "'" and not in_dquote:
+                if in_squote and i + 1 < len(line) and line[i + 1] == "'":
+                    # SCL doubled single-quote escape inside a string: '' → stays in string
+                    mask.append(True)
+                    mask.append(True)
+                    i += 2
+                    continue
+                in_squote = not in_squote
+                mask.append(True)  # the delimiter belongs to the span it opens/closes
+                i += 1
+                continue
+            if ch == '"' and not in_squote:
+                if in_dquote and i + 1 < len(line) and line[i + 1] == '"':
+                    # SCL doubled double-quote escape: "" → stays in string
+                    mask.append(True)
+                    mask.append(True)
+                    i += 2
+                    continue
+                in_dquote = not in_dquote
+                mask.append(True)
+                i += 1
+                continue
+            mask.append(in_squote or in_dquote)
+            i += 1
+        return mask
+
     def _quote_aware_compound_split(self, line: str) -> str:
         """Apply ``_INLINE_COMPOUND_SPLIT`` without corrupting string literals.
 
-        Scans ``line`` once to build a per-character "inside-quote" map
-        (mirroring ``_strip_inline_comment``'s logic, with SCL doubled-quote
-        escaping for ``''`` and ``""``), then passes a replacement *function*
-        to ``re.sub`` that inserts the newline split only when the match starts
-        outside any quoted context; matches whose start offset falls inside a
-        quote are returned verbatim.
+        Uses ``_quote_mask`` to decide, per match, whether the match starts
+        inside a quoted span; a replacement *function* then inserts the newline
+        split only for matches that start outside one.  Matches inside a quote
+        are returned verbatim.
 
         Parameters
         ----------
@@ -186,32 +238,7 @@ class ControlFlowTranslator:
             The line with zero or more ``\\n`` splits inserted at compound
             control-flow boundaries that lie outside string literals.
         """
-        # Build a boolean array: inside[i] is True when character i is inside
-        # a single- or double-quoted string literal.
-        in_squote = False
-        in_dquote = False
-        inside: list[bool] = []
-        i = 0
-        while i < len(line):
-            ch = line[i]
-            if ch == "'" and not in_dquote:
-                if in_squote and i + 1 < len(line) and line[i + 1] == "'":
-                    # SCL doubled single-quote escape inside a string: '' → stays in string
-                    inside.append(True)
-                    inside.append(True)
-                    i += 2
-                    continue
-                in_squote = not in_squote
-            elif ch == '"' and not in_squote:
-                if in_dquote and i + 1 < len(line) and line[i + 1] == '"':
-                    # SCL doubled double-quote escape: "" → stays in string
-                    inside.append(True)
-                    inside.append(True)
-                    i += 2
-                    continue
-                in_dquote = not in_dquote
-            inside.append(in_squote or in_dquote)
-            i += 1
+        inside = self._quote_mask(line)
 
         def _replace(m: re.Match[str]) -> str:
             if m.start() < len(inside) and inside[m.start()]:
@@ -248,13 +275,19 @@ class ControlFlowTranslator:
         return False
 
     def _normalize_spacing(self, line: str) -> str:
-        """Normalize spacing around SCL keywords.
+        """Normalize spacing around SCL keywords, outside quoted spans only.
 
         The parser may strip spaces between tokens, so we need to restore them.
         This handles cases like:
         - IF#var -> IF #var
         - #varANDNOT(#var) -> #var AND NOT (#var)
         - CASE#varOF -> CASE #var OF
+
+        The rewriting is applied per *unquoted* segment.  A string literal or a
+        quoted symbol name is data, not code: rewriting inside one silently
+        alters the program (``'DO WHILE loop'`` -> ``' DO WHILE loop'``,
+        ``'a  b'`` -> ``'a b'``) without any compile-time signal.  Splitting on
+        ``_quote_mask`` keeps every quoted span byte-identical.
 
         Parameters
         ----------
@@ -264,7 +297,38 @@ class ControlFlowTranslator:
         Returns
         -------
         str
-            Line with proper spacing around keywords.
+            Line with proper spacing around keywords outside quoted spans.
+        """
+        if not line:
+            return line
+
+        mask = self._quote_mask(line)
+        if not any(mask):
+            return self._normalize_spacing_segment(line)
+
+        out: list[str] = []
+        start = 0
+        for i in range(1, len(line) + 1):
+            if i < len(line) and mask[i] == mask[start]:
+                continue
+            segment = line[start:i]
+            out.append(segment if mask[start] else self._normalize_spacing_segment(segment))
+            start = i
+        return "".join(out)
+
+    def _normalize_spacing_segment(self, line: str) -> str:
+        """Apply the keyword-spacing rules to one unquoted segment.
+
+        Parameters
+        ----------
+        line : str
+            A span of ``line`` known to contain no string literal and no quoted
+            symbol name.
+
+        Returns
+        -------
+        str
+            The segment with proper spacing around keywords.
         """
         result = line
 
