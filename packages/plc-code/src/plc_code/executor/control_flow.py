@@ -772,6 +772,41 @@ class ControlFlowTranslator:
 
         return result
 
+    # The values a CASE label may carry:
+    #   #NO_ALARM     symbolic, instance-prefixed (region reconstruction also
+    #                 emits it spaced out as ``# NO_ALARM``, hence the ``\s*``)
+    #   "USER_FREEWHEEL"   symbolic, quoted — one per label only
+    #   1, 2, 3       numeric, possibly several
+    #
+    # Comma-separated *quoted* labels (`"A", "B":`, real: project-A
+    # ArmFinalState.s7dcl) are deliberately NOT matched here. Matching them
+    # would be worse than not: `_collect_string_constants` only maps the name
+    # glued to the colon, so the branch is emitted with unresolved values and
+    # then silently dropped. Leaving it unmatched keeps the line visible in the
+    # generated Python, where `transpile --check` reports it. Restore this once
+    # the constant collection handles the list — see the xfail tests in
+    # tests/test_executor/test_case_labels.py.
+    _CASE_LABEL_VALUES = r'#\s*\w+(?:\s*,\s*#\s*\w+)*|"\w+"|[\d,\s]+'
+
+    # SCL's default branch is a bare ``ELSE`` with NO colon. Matching only
+    # ``ELSE:`` — a spelling that does not occur — left the keyword to be
+    # collected as a body line of the preceding branch, which both put the
+    # default body inside that branch and leaked the word ``ELSE`` into the
+    # generated Python as an undefined name. The colon stays optional so the
+    # tolerated spelling keeps working.
+    _CASE_ELSE = re.compile(r"^\s*ELSE\s*:?\s*$", re.IGNORECASE)
+
+    # A label, and optionally the branch's first statement on the same line
+    # (``1: #b := 10;``). Requiring the label to be alone on its line meant no
+    # label matched at all in that layout, so ``current_values`` stayed empty and
+    # the whole CASE was dropped in silence.
+    #
+    # ``(?!=)`` after the colon is what keeps an assignment out: in
+    # ``#activeState := #ALARM;`` the values alternative matches ``#activeState``
+    # and the colon matches, so without the lookahead every such statement would
+    # be read as a label.
+    _CASE_LABEL = re.compile(rf"^\s*({_CASE_LABEL_VALUES})\s*:(?!=)\s*(.*)$")
+
     def _translate_case_block(self, block: list[str]) -> list[str]:
         """Translate CASE/OF block to Python if/elif chain.
 
@@ -809,21 +844,20 @@ class ControlFlowTranslator:
                 body_lines.append(line)
                 continue
 
-            # Case label: #VALUE: or "STRING_VALUE": or numeric values
-            # (at start of line, not followed by =)
-            # Must not match assignments like #activeState:=#ALARM;
-            # Patterns:
-            #   #NO_ALARM:
-            #   "USER_FREEWHEEL":
-            #   1, 2, 3:
-            #   ELSE: (for default case)
-            # Region-content reconstruction separates the tokens, so the same labels
-            # also arrive as ``# NO_ALARM :`` — the optional spaces are required or
-            # every symbolic branch is silently swallowed as a body line.
-            label_match = re.match(
-                r'^\s*(#\s*\w+(?:\s*,\s*#\s*\w+)*|"\w+"|[\d,\s]+|ELSE)\s*:\s*$', line, re.IGNORECASE
-            )
-            if label_match and depth == 1 and not upper.rstrip("; ") == "END_CASE":
+            # A new branch starts: either the default (`ELSE`) or a value label,
+            # the latter possibly carrying its first statement on the same line.
+            is_end_case = upper.rstrip("; ") == "END_CASE"
+            else_match = self._CASE_ELSE.match(line) if depth == 1 else None
+            label_match = self._CASE_LABEL.match(line) if depth == 1 and not else_match else None
+
+            if depth == 1 and not is_end_case and (else_match or label_match):
+                values_str = "ELSE" if else_match else (label_match.group(1) if label_match else "")
+                trailing = "" if else_match else (label_match.group(2).strip() if label_match else "")
+
+                if not values_str.strip():
+                    body_lines.append(line)
+                    continue
+
                 # Output previous case if any
                 if current_values and body_lines:
                     self._emit_case_branch(
@@ -831,17 +865,18 @@ class ControlFlowTranslator:
                     )
                     is_first = False
 
-                # Parse new case values.  ``ELSE`` is the default branch: it carries no
-                # value to compare against and must become a Python ``else``.
-                values_str = label_match.group(1)
-                current_is_default = values_str.strip().upper() == "ELSE"
+                # ``ELSE`` is the default branch: it carries no value to compare
+                # against and must become a Python ``else``.
+                current_is_default = else_match is not None
                 if current_is_default:
-                    current_values = [values_str.strip()]
+                    current_values = ["ELSE"]
                 else:
                     current_values = [
-                        self.expr_translator.translate(v.strip()) for v in values_str.split(",")
+                        self.expr_translator.translate(v.strip()) for v in values_str.split(",") if v.strip()
                     ]
-                body_lines = []
+                # A statement written on the label's own line is the branch's
+                # first body line, not part of the label.
+                body_lines = [trailing] if trailing else []
                 continue
 
             # END_CASE

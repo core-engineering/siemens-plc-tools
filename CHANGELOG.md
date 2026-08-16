@@ -62,6 +62,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   need to be registered by hand. New public helper `load_data_block(path)`.
 
 ### Fixed
+- **plc-code (executor/control_flow)** — two CASE layouts were mistranslated,
+  both silently, from one root cause: the label regex required the label to
+  occupy its whole line *and* end with a colon.
+  - SCL's default branch is a bare `ELSE` with **no** colon, so only `ELSE:` —
+    a spelling that does not occur — ever matched. The keyword was collected as
+    a body line of the *preceding* branch, which put the default body inside
+    that branch and leaked the word `ELSE` into the generated Python as an
+    undefined name. Found in production: project-A `UserMode.s7dcl`, whose
+    user-mode state machine had its fallback folded into the `activeState == 2`
+    case.
+  - `1: #b := 10;` (statement on the label's line) matched nothing, so
+    `current_values` stayed empty and the `if current_values and body_lines`
+    guard dropped **the entire CASE**. `execute()` did nothing, with no
+    diagnostic to show for it — the generated Python is valid, just empty.
+
+  Comma-separated *quoted* labels (`"A", "B":`, real: project-A
+  `ArmFinalState.s7dcl`) are deliberately still not matched: making the label
+  regex accept them without teaching `_collect_string_constants` about the list
+  emits a branch with unresolved conditions that is then dropped, trading a
+  visible failure for a silent one. Left visible and covered by a strict
+  `xfail`.
+
+  Note for anyone reading the `transpile --check` numbers: this fix makes them
+  look worse. Blocks whose CASE was previously dropped whole now emit their real
+  code, and that code meets other, pre-existing gaps. Across five PLC projects
+  the clean count went 510 -> 504 and syntax findings 92 -> 99. Every one of
+  those blocks used to do nothing at all.
 - **examples, plc-code fixtures** — `PumpControl.s7dcl` did not run. It declares
   `PROC_READY` in a `VAR CONSTANT` section and read it once without the `#`
   prefix (`IF #processState = PROC_READY THEN`), while its two other uses of the

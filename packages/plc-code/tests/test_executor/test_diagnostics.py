@@ -66,7 +66,32 @@ class TestSupportedConstructsAreClean:
 
     A noisy detector is a useless one — these are the tests that decide whether
     the command is worth running.
+
+    Note what these tests can and cannot prove. "No diagnostics" is not "works":
+    a translator that drops a construct entirely emits valid, empty Python and
+    passes here. That is precisely how a CASE written as ``1: #b := 10;`` used to
+    vanish without a word. Whether a construct *behaves* is asserted by
+    execution elsewhere — see ``test_case_labels.py`` for CASE — and
+    ``test_supported_constructs_emit_code`` below is the blunt guard against the
+    empty-output failure mode.
     """
+
+    def test_supported_constructs_emit_code(self) -> None:
+        """A clean block must also have produced statements, not nothing."""
+        from plc_code.executor import transpile_block
+
+        body = (
+            "            CASE #a OF\n"
+            "                1: #b := 10;\n"
+            "            ELSE\n"
+            "                #b := 0;\n"
+            "            END_CASE;"
+        )
+        source = _TEMPLATE.format(name="Probe", body=body)
+        block = SCLParser(tokenize_with_newlines(source)).parse()
+        generated = transpile_block(block).python_code
+        assert "self.b = 10" in generated
+        assert "else:" in generated
 
     def test_if_elsif_else(self) -> None:
         body = (
