@@ -20,31 +20,44 @@ from click.testing import CliRunner
 from plc_code.cli import cli
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-
-# Declares PROC_READY in VAR CONSTANT, then reads it once without the '#'
-# prefix — the generated Python leaves a module global nothing defines.
-BLOCK_WITH_DEFECT = FIXTURES / "PumpControl.s7dcl"
 CLEAN_BLOCK = FIXTURES / "SignalDebounce.s7dcl"
 
-_UNSUPPORTED_SCL = """
-FUNCTION_BLOCK "RepeatUser"
+
+def _block(name: str, body: str) -> str:
+    return f"""
+FUNCTION_BLOCK "{name}"
     VAR_INPUT
         a : Int;
     END_VAR
     VAR_OUTPUT
         b : Int;
     END_VAR
-    { S7_Language := "SCL" }
+    {{ S7_Language := "SCL" }}
     NETWORK
         REGION Logic
-            REPEAT
-                #b := #b + 1;
-            UNTIL #b > 5
-            END_REPEAT;
+{body}
         END_REGION
     END_NETWORK
 END_FUNCTION_BLOCK
 """
+
+
+# Deliberately broken SCL lives here, not in fixtures/: every block in that
+# directory must stay clean, which is what test_diagnostics_corpus.py asserts.
+#
+# REPEAT/UNTIL has no translation, so the keywords are copied into the
+# generated Python and it stops parsing -> SYNTAX, an error.
+_SYNTAX_DEFECT = _block(
+    "RepeatUser",
+    "            REPEAT\n                #b := #b + 1;\n            UNTIL #b > 5\n            END_REPEAT;",
+)
+
+# SEL is not in BUILTIN_MAP, so the call survives into Python as a global read
+# -> UNDEFINED_NAME, a warning: it only fails when that line runs.
+_UNDEFINED_NAME_DEFECT = _block(
+    "SelUser",
+    "            #b := SEL(G := TRUE, IN0 := 1, IN1 := 2);",
+)
 
 
 @pytest.fixture
@@ -54,9 +67,31 @@ def runner() -> CliRunner:
 
 @pytest.fixture
 def unsupported_block(tmp_path: Path) -> Path:
+    """A block whose generated Python does not parse."""
     path = tmp_path / "RepeatUser.s7dcl"
-    path.write_text(_UNSUPPORTED_SCL, encoding="utf-8")
+    path.write_text(_SYNTAX_DEFECT, encoding="utf-8")
     return path
+
+
+@pytest.fixture
+def undefined_name_block(tmp_path: Path) -> Path:
+    """A block whose generated Python parses but reads an undefined name."""
+    path = tmp_path / "SelUser.s7dcl"
+    path.write_text(_UNDEFINED_NAME_DEFECT, encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def mixed_dir(tmp_path: Path) -> Path:
+    """A directory holding one clean block and one broken one."""
+    directory = tmp_path / "blocks"
+    directory.mkdir()
+    (directory / "SelUser.s7dcl").write_text(_UNDEFINED_NAME_DEFECT, encoding="utf-8")
+    (directory / "Fine.s7dcl").write_text(
+        _block("Fine", "            IF #a > 1 THEN\n                #b := 2;\n            END_IF;"),
+        encoding="utf-8",
+    )
+    return directory
 
 
 class TestCommandIsRegistered:
@@ -80,10 +115,13 @@ class TestEmitMode:
         assert "class " in result.output
         assert "def execute" in result.output
 
-    def test_emit_mode_succeeds_on_a_defective_block(self, runner: CliRunner) -> None:
+    def test_emit_mode_succeeds_on_a_defective_block(
+        self, runner: CliRunner, unsupported_block: Path
+    ) -> None:
         """Emitting is for reading the output, not judging it."""
-        result = runner.invoke(cli, ["transpile", str(BLOCK_WITH_DEFECT)])
+        result = runner.invoke(cli, ["transpile", str(unsupported_block)])
         assert result.exit_code == 0
+        assert "UNTIL" in result.output
 
     def test_missing_path_is_an_error(self, runner: CliRunner, tmp_path: Path) -> None:
         result = runner.invoke(cli, ["transpile", str(tmp_path / "nope.s7dcl")])
@@ -97,23 +135,29 @@ class TestCheckMode:
         result = runner.invoke(cli, ["transpile", "--check", str(CLEAN_BLOCK)])
         assert result.exit_code == 0
 
-    def test_defective_block_exits_non_zero(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["transpile", "--check", str(BLOCK_WITH_DEFECT)])
+    def test_defective_block_exits_non_zero(self, runner: CliRunner, undefined_name_block: Path) -> None:
+        result = runner.invoke(cli, ["transpile", "--check", str(undefined_name_block)])
         assert result.exit_code == 1
 
-    def test_defective_block_names_the_symbol(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["transpile", "--check", str(BLOCK_WITH_DEFECT)])
-        assert "PROC_READY" in result.output
+    def test_defective_block_names_the_symbol(self, runner: CliRunner, undefined_name_block: Path) -> None:
+        result = runner.invoke(cli, ["transpile", "--check", str(undefined_name_block)])
+        assert "SEL" in result.output
 
     def test_unsupported_construct_is_reported(self, runner: CliRunner, unsupported_block: Path) -> None:
         result = runner.invoke(cli, ["transpile", "--check", str(unsupported_block)])
         assert result.exit_code == 1
         assert "RepeatUser" in result.output
 
-    def test_directory_scan_reports_per_block(self, runner: CliRunner) -> None:
+    def test_whole_fixture_corpus_is_clean(self, runner: CliRunner) -> None:
+        """The shipped fixtures are blocks the toolchain handles — all of them."""
         result = runner.invoke(cli, ["transpile", "--check", str(FIXTURES)])
+        assert result.exit_code == 0, result.output
+
+    def test_directory_scan_reports_only_the_broken_block(self, runner: CliRunner, mixed_dir: Path) -> None:
+        result = runner.invoke(cli, ["transpile", "--check", str(mixed_dir)])
         assert result.exit_code == 1
-        assert "PumpControl" in result.output
+        assert "SelUser" in result.output
+        assert "Fine" not in result.output
 
     def test_check_does_not_print_generated_python(self, runner: CliRunner) -> None:
         """The report is the output; the code would drown it."""
@@ -129,19 +173,27 @@ class TestJsonOutput:
         assert payload["blocks_checked"] == 1
         assert payload["diagnostics"] == []
 
-    def test_defective_block_json_carries_the_finding(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["transpile", "--check", "-f", "json", str(BLOCK_WITH_DEFECT)])
+    def test_defective_block_json_carries_the_finding(
+        self, runner: CliRunner, undefined_name_block: Path
+    ) -> None:
+        result = runner.invoke(cli, ["transpile", "--check", "-f", "json", str(undefined_name_block)])
         assert result.exit_code == 1
         payload = json.loads(result.output)
         assert payload["blocks_checked"] == 1
         assert len(payload["diagnostics"]) >= 1
-        finding = payload["diagnostics"][0]
+        finding = next(f for f in payload["diagnostics"] if "SEL" in f["message"])
         assert finding["code"] == "UNDEFINED_NAME"
         assert finding["severity"] == "warning"
-        assert finding["block"] == "PumpControl"
-        assert "PROC_READY" in finding["message"]
+        assert finding["block"] == "SelUser"
         assert finding["line"] > 0
-        assert finding["source"].endswith("PumpControl.s7dcl")
+        assert finding["source"].endswith("SelUser.s7dcl")
+
+    def test_syntax_defect_json_is_an_error(self, runner: CliRunner, unsupported_block: Path) -> None:
+        result = runner.invoke(cli, ["transpile", "--check", "-f", "json", str(unsupported_block)])
+        assert result.exit_code == 1
+        finding = json.loads(result.output)["diagnostics"][0]
+        assert finding["code"] == "SYNTAX"
+        assert finding["severity"] == "error"
 
     def test_json_is_the_only_thing_on_stdout(self, runner: CliRunner) -> None:
         """Parseable without stripping a banner."""

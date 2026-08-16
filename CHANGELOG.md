@@ -42,11 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Without `--check` the command prints the generated Python, which is the
   quickest way to see what a block actually became.
 
-  It found one real defect on its first run over the repo's own fixtures:
-  `PumpControl.s7dcl` reads its `VAR CONSTANT` member `PROC_READY` once without
-  the `#` prefix, which the transpiler leaves as an undefined module global.
-  Recorded in `KNOWN_DEFECTS` in `test_diagnostics_corpus.py` — the rest of the
-  31-block corpus is clean, which is the no-false-positive guarantee.
+  It found a real defect on its first run over the repo's own fixtures (see
+  `PumpControl.s7dcl` below). The whole 31-block corpus is clean now, asserted
+  by `test_diagnostics_corpus.py` — that is the no-false-positive guarantee, and
+  it is what decides whether the command is worth running at all.
 - **plc-modbus (client)** — new `ModbusClient.read_register_block(spec, count,
   dtype)`, reading `count` consecutive registers in a single request and
   returning them keyed by each register's own spec
@@ -63,6 +62,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   need to be registered by hand. New public helper `load_data_block(path)`.
 
 ### Fixed
+- **examples, plc-code fixtures** — `PumpControl.s7dcl` did not run. It declares
+  `PROC_READY` in a `VAR CONSTANT` section and read it once without the `#`
+  prefix (`IF #processState = PROC_READY THEN`), while its two other uses of the
+  same constant are `#PROC_READY`. `VAR CONSTANT` members are generated as
+  instance attributes, so the prefixed form resolves to `self.PROC_READY` while
+  the bare one was left as a module global nothing defines. That line is the
+  first transition of the initial `IDLE` state, so `execute()` raised
+  `NameError` on cycle one — in the demo project shipped under `examples/`.
+
+  Nothing executed the fixture (42 test references, all parsing, docs, draw.io
+  and discovery), which is why it survived. Found by `plc code transpile --check`
+  on its first run. Fixed in both copies; the block now runs and transitions
+  `IDLE -> PRIMING` as intended.
+
+  A sweep of 624 blocks across five real PLC projects found no other bare
+  constant reference, confirming this as a typo in a hand-written demo rather
+  than an SCL form the transpiler needs to support.
 - **plc-core (testing/runner)** — the `modbus_read` step honours `count` again
   (#1). `_execute_modbus_read` called `read_register_at`, which is single-register
   by construction, and never referenced `step.count` — so a `count: 20` scan read

@@ -22,17 +22,17 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 # block file -> the unsupported construct it exercises.
 #
-# PumpControl declares PROC_READY in a VAR CONSTANT section and then reads it
-# once *without* the '#' prefix (`IF #processState = PROC_READY THEN`), while
-# the same file's other two uses are `#PROC_READY`. VAR CONSTANT members are
-# generated as instance attributes, so the prefixed form resolves to
-# `self.PROC_READY` and the bare one is left as a module global that nothing
-# defines — NameError the first time that branch is taken. Either the fixture
-# has a typo or bare constant references need transpiler support; until that is
-# decided, the detector is right to flag it.
-KNOWN_DEFECTS = {
-    "PumpControl.s7dcl": "bare VAR CONSTANT reference (PROC_READY without '#')",
-}
+# Empty, and meant to stay that way: a fixture in this directory is a block the
+# toolchain is expected to handle. Deliberately broken SCL belongs in the test
+# that needs it (see test_cli_transpile.py, which writes its own to tmp_path),
+# not in the corpus — putting it here would weaken the guarantee this file
+# exists to provide.
+#
+# The mechanism is kept because a genuine, not-yet-decided gap may need parking
+# here for a while. The first entry it ever held was PumpControl.s7dcl, which
+# read its VAR CONSTANT member PROC_READY once without the '#' prefix; that was
+# a typo in the fixture, fixed rather than tolerated.
+KNOWN_DEFECTS: dict[str, str] = {}
 
 
 def _fixture_files() -> list[Path]:

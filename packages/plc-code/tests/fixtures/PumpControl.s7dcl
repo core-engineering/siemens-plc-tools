@@ -79,7 +79,7 @@ FUNCTION_BLOCK "PumpControl"
                     REGION IDLE state
 
                         REGION IDLE state transitions
-                            IF #processState = PROC_READY THEN
+                            IF #processState = #PROC_READY THEN
                                 #activeState := #PRIMING;
                             END_IF;
                         END_REGION
