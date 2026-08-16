@@ -96,3 +96,58 @@ class TestLoops:
         node = _parse("WHILE #a < 5 DO #a := #a + 1; END_WHILE;").statements[0]
         assert isinstance(node, While)
         assert len(node.body) == 1
+
+
+def _assignments(statements) -> list[Assignment]:
+    """Every Assignment reachable from a statement list, including inside a Case."""
+    found: list[Assignment] = []
+    for statement in statements:
+        if isinstance(statement, Assignment):
+            found.append(statement)
+        elif isinstance(statement, Case):
+            for branch in statement.branches:
+                found.extend(_assignments(branch.body))
+            found.extend(_assignments(statement.default))
+    return found
+
+
+def _targets(assignment: Assignment) -> list[str]:
+    return [t.value for t in assignment.target]
+
+
+class TestMalformedCase:
+    """A CASE branch that fails to open with a label must not lose tokens.
+
+    `_parse_case_labels` originally scanned speculatively into a buffer and
+    discarded that buffer on failure, silently dropping whatever it had
+    scanned with no statement and no recorded error. These reproduce the
+    reviewer's finding directly and guard against it recurring.
+    """
+
+    def test_unlabelled_branch_does_not_swallow_statements(self) -> None:
+        """The reviewer's exact case: a branch opening with a bare statement."""
+        result = _parse("CASE #a OF #x := 1; END_CASE; #c := 2;")
+        assignments = _assignments(result.statements)
+        # #x := 1 must not vanish: either it shows up as a statement
+        # (nested in the Case or spilled out of it), or an error was
+        # recorded for the span that failed to open as a label.
+        x_present = any(_targets(a) == ["#", "x"] for a in assignments)
+        assert x_present or result.errors
+        # #c := 2, after END_CASE, must still parse regardless.
+        assert any(_targets(a) == ["#", "c"] for a in assignments)
+
+    def test_second_branch_without_label_keeps_first_branch_intact(self) -> None:
+        result = _parse("CASE #a OF 1: #b := 1; 2 #c := 2; END_CASE;")
+        node = result.statements[0]
+        assert isinstance(node, Case)
+        assert [t.value for t in node.branches[0].values[0]] == ["1"]
+        first_body = node.branches[0].body
+        assert isinstance(first_body[0], Assignment)
+        assert _targets(first_body[0]) == ["#", "b"]
+
+    def test_labelless_body_followed_by_else_still_recognises_default(self) -> None:
+        result = _parse("CASE #a OF #x := 1; ELSE #b := 9; END_CASE;")
+        node = result.statements[0]
+        assert isinstance(node, Case)
+        assert node.default
+        assert any(_targets(a) == ["#", "b"] for a in _assignments(node.default))

@@ -307,6 +307,19 @@ class StatementParser:
         rather than treating it as an error, since a stray ``ELSE:`` is
         harmless and not worth flagging.
 
+        A branch that fails to open with a label (a colon reachable before
+        the next statement boundary, ELSE, END_CASE, or end of stream) does
+        not abort the CASE: a ``ParseError`` is recorded naming the problem,
+        and the span is still parsed as a branch body — through
+        ``_parse_case_body``, exactly like a labelled one — with
+        ``CaseBranch.values`` left empty to mark it as unlabelled. The loop
+        then keeps going, so a well-formed label or ELSE arm later in the
+        same CASE is still found and used. This is what lets `1: #b := 10;`
+        immediately followed by unlabelled statements, or a labelless span
+        ahead of a real ELSE, still surface every statement and still
+        recognise the default — see `_parse_case_labels` for why the old
+        version of this method could not do that.
+
         Returns
         -------
         Statement
@@ -322,7 +335,9 @@ class StatementParser:
         while not self._stream.at_end() and self._keyword_ahead() not in {"ELSE", "END_CASE"}:
             values = self._parse_case_labels()
             if values is None:
-                break
+                self._error(self._stream.peek(), "a case label")
+                branches.append(CaseBranch(values=[], body=self._parse_case_body()))
+                continue
             body = self._parse_case_body()
             branches.append(CaseBranch(values=values, body=body))
 
@@ -343,14 +358,27 @@ class StatementParser:
         label is exactly one token), so values are split on commas and
         closed by the colon rather than read one token at a time.
 
+        Gated on the non-consuming lookahead ``_at_case_label`` before a
+        single token is touched. An earlier version of this method instead
+        scanned speculatively into a local buffer and discarded that buffer
+        on failure — which silently consumed and dropped whatever it had
+        scanned (e.g. a branch that opened with a bare statement instead of
+        a label), with no statement and no recorded error. Checking first
+        and only then consuming means a failed attempt here leaves the
+        cursor exactly where it started, so the caller (`_parse_case`) can
+        record an error and still hand the same tokens to `_parse_case_body`
+        to be read as ordinary statements.
+
         Returns
         -------
         list[list[Token]] | None
             One entry per comma-separated value, in source order; ``None``
-            when no label is present at the cursor (the CASE has reached its
-            ELSE arm, its END_CASE, or the stream ended without a colon —
-            any of which means there is nothing more to read as a branch).
+            when no label is present at the cursor. Nothing is consumed in
+            the ``None`` case.
         """
+        if not self._at_case_label():
+            return None
+
         values: list[list[Token]] = []
         current: list[Token] = []
         while not self._stream.at_end():
@@ -365,10 +393,8 @@ class StatementParser:
                     values.append(current)
                 current = []
                 continue
-            if self._keyword_ahead() in {"ELSE", "END_CASE"}:
-                return None
             current.append(self._stream.advance())
-        return None
+        return None  # pragma: no cover - unreachable once `_at_case_label` gates entry
 
     def _parse_case_body(self) -> list[Statement]:
         """Parse statements up to the next label, ELSE or END_CASE.
