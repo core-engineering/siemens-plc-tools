@@ -222,7 +222,10 @@ class OpcUaClient:
 
                 # Try to read server application name
                 try:
-                    server_node = self._client.get_node(ua.NodeId(ua.ObjectIds.Server))
+                    # ua.Int32 wrapping is a typing formality: NodeId's declared
+                    # identifier union excludes bare int, and the resulting NodeId
+                    # is identical either way (FourByte, Identifier=2253).
+                    server_node = self._client.get_node(ua.NodeId(ua.Int32(ua.ObjectIds.Server)))
                     server_status = await server_node.get_child(
                         ["0:ServerStatus", "0:BuildInfo", "0:ProductName"]
                     )
@@ -231,8 +234,14 @@ class OpcUaClient:
                     self._server_name = "Unknown"
 
                 try:
-                    self._session_id = str(self._client.uaclient.protocol.channel.security_token.TokenId)
-                except (AttributeError, Exception):
+                    # ``channel`` is set on the socket protocol at runtime but is
+                    # not part of its declared interface, and ``protocol`` itself is
+                    # Optional until the session is up. Best-effort: any miss falls
+                    # back to the generic marker below.
+                    protocol = self._client.uaclient.protocol
+                    token_id = protocol.channel.security_token.TokenId  # type: ignore[union-attr]
+                    self._session_id = str(token_id)
+                except Exception:
                     self._session_id = "active"
                 self._status = ConnectionStatus.CONNECTED
                 logger.info("Connected to OPC UA server at %s", url)
@@ -407,11 +416,13 @@ class OpcUaClient:
 
             try:
                 access_level = await node.read_attribute(ua.AttributeIds.AccessLevel)
-                access_val = access_level.Value.Value
-                if isinstance(access_val, int):
-                    is_writable = bool(access_val & ua.AccessLevel.CurrentWrite.mask)
-                else:
-                    is_writable = bool(int(access_val) & ua.AccessLevel.CurrentWrite.mask)
+                variant = access_level.Value
+                if variant is not None:
+                    access_val = variant.Value
+                    if isinstance(access_val, int):
+                        is_writable = bool(access_val & ua.AccessLevel.CurrentWrite.mask)
+                    else:
+                        is_writable = bool(int(access_val) & ua.AccessLevel.CurrentWrite.mask)
             except Exception:
                 pass
 

@@ -166,8 +166,10 @@ class TagResolver:
                         pass
                     try:
                         al = await child.read_attribute(ua.AttributeIds.AccessLevel)
-                        val = al.Value.Value
-                        is_writable = bool(int(val) & ua.AccessLevel.CurrentWrite.mask)
+                        variant = al.Value
+                        if variant is not None:
+                            val = variant.Value
+                            is_writable = bool(int(val) & ua.AccessLevel.CurrentWrite.mask)
                     except Exception:
                         pass
 

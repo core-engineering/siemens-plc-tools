@@ -59,6 +59,8 @@ class RedisVerifier:
             return None
 
         _entry_id, fields = entries[0]
+        if fields is None:
+            return None
         # Stream entries have a "value" field containing msgpack data
         raw_value = fields.get(b"value")
         if raw_value is None:
