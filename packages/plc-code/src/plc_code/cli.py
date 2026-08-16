@@ -310,15 +310,20 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
     help="Report blocks whose generated Python will not load or will raise NameError",
 )
 @click.option(
+    "--conformance",
+    is_flag=True,
+    help="Report how much SCL the statement parser reads (always exits 0)",
+)
+@click.option(
     "--format",
     "-f",
     "output_format",
     type=click.Choice(["text", "json"]),
     default="text",
-    help="Output format for --check",
+    help="Output format for --check/--conformance",
 )
 @click.argument("path", type=click.Path(exists=True, path_type=Path), required=False)
-def transpile(check: bool, output_format: str, path: Path | None) -> None:
+def transpile(check: bool, conformance: bool, output_format: str, path: Path | None) -> None:
     """Show or check the Python generated from SCL blocks.
 
     Without --check, prints the generated Python. That is the fastest way to see
@@ -329,6 +334,12 @@ def transpile(check: bool, output_format: str, path: Path | None) -> None:
     statement AST, so a construct it does not support is copied through and
     reported as a successful transpile — this is what surfaces that silence.
     Exits 1 if anything is reported.
+
+    With --conformance, reports how much SCL the token-driven statement parser
+    (a separate, in-progress AST path — not what --check or the transpiler
+    above uses) can read. This is a report, not a gate: nothing generates from
+    the AST yet, so an unparsed statement does not mean a broken block. Always
+    exits 0.
 
     If PATH is not specified, uses source path from plc.yaml.
     """
@@ -371,6 +382,78 @@ def transpile(check: bool, output_format: str, path: Path | None) -> None:
             continue
         if block is not None and block.name:
             blocks.append((block_file, block))
+
+    if conformance:
+        from plc_code.parser.conformance import build_report
+
+        report = build_report(blocks)
+        if output_format == "json":
+            print(
+                json.dumps(
+                    {
+                        "blocks": report.blocks,
+                        "clean_blocks": report.clean_blocks,
+                        "block_clean_rate": round(report.block_clean_rate, 4),
+                        "regions": report.regions,
+                        "clean_regions": report.clean_regions,
+                        "region_clean_rate": round(report.region_clean_rate, 4),
+                        "statements": report.statements,
+                        "tokens": report.tokens,
+                        "consumed": report.consumed,
+                        "coverage": round(report.coverage, 4),
+                        "by_statement_kind": report.by_statement_kind,
+                        "errors": [
+                            {
+                                "block": name,
+                                "line": e.line,
+                                "column": e.column,
+                                "token": e.token_value,
+                                "expected": e.expected,
+                            }
+                            for name, e in report.errors
+                        ],
+                        "silent_loss": report.silent_loss,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            console.print(
+                f"[bold]{report.blocks}[/bold] block(s), "
+                f"[bold]{report.regions}[/bold] region(s), "
+                f"[bold]{report.statements}[/bold] statement(s) parsed"
+            )
+            console.print(
+                f"token coverage: [bold]{report.coverage:.1%}[/bold] " f"({report.consumed}/{report.tokens})"
+            )
+            console.print(
+                f"clean blocks: [bold]{report.block_clean_rate:.1%}[/bold] "
+                f"({report.clean_blocks}/{report.blocks}); "
+                f"clean regions: [bold]{report.region_clean_rate:.1%}[/bold] "
+                f"({report.clean_regions}/{report.regions})"
+            )
+            if report.by_statement_kind:
+                console.print("\n[bold]Statements read[/bold]")
+                for kind, count in report.by_statement_kind.items():
+                    console.print(f"  {count:6}  {kind}")
+            if report.errors:
+                console.print(f"\n[bold]Not read[/bold] ({len(report.errors)})")
+                for name, error in report.errors[:40]:
+                    console.print(f"  {name}: {error.message}")
+                if len(report.errors) > 40:
+                    console.print(f"  ... and {len(report.errors) - 40} more", style="dim")
+            if report.silent_loss:
+                console.print(
+                    f"\n[bold red]Silent loss[/bold red] ({len(report.silent_loss)}) "
+                    "— tokens dropped rather than read, rejected, or flagged:"
+                )
+                for problem in report.silent_loss[:40]:
+                    console.print(f"  {problem}")
+                if len(report.silent_loss) > 40:
+                    console.print(f"  ... and {len(report.silent_loss) - 40} more", style="dim")
+        # A report, not a gate. Nothing generates from the AST yet, so an
+        # unparsed statement does not mean a broken block.
+        raise SystemExit(0)
 
     if not check:
         for block_file, block in blocks:
