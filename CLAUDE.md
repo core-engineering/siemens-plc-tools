@@ -228,6 +228,17 @@ iol:
     pattern: "{io_category}_{location}_{signal}"
 ```
 
+### Environment Variables
+
+| Variable | Effect |
+|----------|--------|
+| `PLC_WEB_ALLOWED_ORIGINS` | Comma-separated origins allowed to call the web API cross-origin. Unset (default) installs no CORS middleware at all. |
+
+The web servers (`plc code web`, `plc sim web`) serve their UI, docs and API from
+one application, so browser calls are same-origin and need no CORS. They also
+have **no authentication**, and `plc sim` writes PLC tags — so both bind to
+`127.0.0.1` by default. Pass `--host 0.0.0.0` only on a network you control.
+
 ---
 
 ## 5. Module Boundary Rules
@@ -253,23 +264,37 @@ FORBIDDEN:
 |------|-------------|
 | Type annotations | Required for all public APIs (mypy strict) |
 | Docstrings | NumPy-style for public functions/classes |
-| Line length | 100 characters |
+| Line length | 110 characters |
 | Imports | Absolute imports, isort groups |
 | Formatting | Black |
-| Linting | Ruff (E, W, F, I, B, C4, UP) |
+| Linting | Ruff (E, W, F, I, B, C4, UP; UP042 ignored — see `pyproject.toml`) |
+
+### Toolchain
+The Python version (`.python-version`) and every dev tool version
+(`[dependency-groups] dev`) are pinned exactly. The gate must fail on a code
+change, never on a tool release. Bump them deliberately, in their own commit,
+together with whatever fixes the new version demands.
+
+Ruff is configured **once**, at the workspace root; each package's
+`pyproject.toml` carries `extend = "../../pyproject.toml"` rather than its own
+copy of the rules.
 
 ### Pre-commit Checks
 ```bash
 # Format and lint
-uv run black packages/*/src packages/*/tests
-uv run ruff check --fix packages/*/src packages/*/tests
+uv run black packages/*/src packages/*/tests src
+uv run ruff check --fix packages/*/src packages/*/tests src
 
 # Type check
 uv run mypy packages/*/src
 
-# Run all tests
-uv run pytest packages/*/tests tests/
+# Run all tests (whole workspace, one pass)
+uv run pytest
 ```
+
+Note: no `tests/` directory carries an `__init__.py`. Adding one back makes every
+package's suite import as the same `tests` package, and the second `conftest.py`
+collected aborts the run with "Plugin already registered under a different name".
 
 ---
 
@@ -341,9 +366,31 @@ from plc_iol.exporters import ExcelExporter
 
 | Requirement | Details |
 |-------------|---------|
-| Unit tests | Each package has `tests/` directory |
+| Unit tests | Each package has `tests/` directory (no `__init__.py` — see §6) |
 | Integration tests | Root `tests/` for cross-package tests |
-| Coverage | Minimum 85% per package |
+| Coverage goal | 85% per package |
+| Coverage gate | `fail_under = 59` (whole workspace), a ratchet — raise it, never lower it |
+
+### Coverage: goal vs. state
+
+`uv run pytest` measures all nine coverage targets and fails below the floor in
+`[tool.coverage.report]`. As of the last full run: **59.86%** overall.
+
+| Package | Coverage |
+|---------|----------|
+| plc-modbus | 97.6% |
+| plc-trace | 72.9% |
+| plc-iol | 67.3% |
+| plc-tools | 65.3% |
+| plc-code | 62.8% |
+| plc-core | 55.6% |
+| plc-sup | 39.0% |
+| plc-net | 31.5% |
+| plc-sim | 27.2% |
+
+`plc-sup`, `plc-net` and `plc-sim` have no real suite of their own; their figures
+are incidental import-time coverage. They were also missing from the `--cov`
+list entirely until recently, so the headline number used to exclude them.
 
 ---
 
