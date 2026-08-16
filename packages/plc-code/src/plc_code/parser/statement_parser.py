@@ -278,10 +278,22 @@ class StatementParser:
             self._stream.advance()
 
     def _recover(self) -> None:
-        """Skip to just past the next `;`, so the next statement still parses."""
-        while not self._stream.at_end():
-            if self._stream.advance().type is TokenType.SEMICOLON:
-                return
+        """Skip the single offending token, so parsing can retry from what follows.
+
+        Recovery consumes exactly one token — the one just reported in a
+        ``ParseError`` — rather than hunting for the next `;`. An unsupported
+        keyword such as `REPEAT` has no statement boundary of its own: its body
+        is one or more inner, semicolon-terminated statements, so jumping to
+        the next `;` would consume the first of those as if it belonged to the
+        unsupported construct, silently dropping a perfectly readable
+        statement. Skipping one token and letting ``parse()``'s loop retry
+        ``_parse_statement`` on the remainder means every well-formed statement
+        between one error and the next is still parsed, at the cost of more,
+        smaller errors across a genuinely unparseable span — the trade this
+        module makes on purpose (see the module docstring).
+        """
+        if not self._stream.at_end():
+            self._stream.advance()
 
     def _error(self, token: Token, expected: str) -> None:
         """Record a ``ParseError`` for ``token`` and what was expected there.

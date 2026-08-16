@@ -93,3 +93,51 @@ class TestErrorRecovery:
     def test_repeat_is_reported_not_supported(self) -> None:
         result = _parse("REPEAT #b := 1; UNTIL #b > 5 END_REPEAT;")
         assert result.errors
+
+    def test_recovery_does_not_swallow_a_well_formed_statement_inside_bad_span(self) -> None:
+        """A readable statement between two unsupported constructs must survive.
+
+        `REPEAT` and `UNTIL` are individually unsupported, but the assignments
+        between and after them are perfectly ordinary statements. Jumping to
+        the next `;` on error would eat `#a := 1;` as if it were part of the
+        unsupported construct; it must instead be parsed on its own.
+        """
+        result = _parse("REPEAT #a := 1; #b := 2; UNTIL #c > 5 END_REPEAT; #d := 9;")
+        assert result.errors
+        assignments = [s for s in result.statements if isinstance(s, Assignment)]
+        assert [t.value for t in assignments[0].target] == ["#", "a"]
+        assert any(
+            [t.value for t in a.target] == ["#", "a"] and [t.value for t in a.value] == ["1"]
+            for a in assignments
+        )
+        assert any(
+            [t.value for t in a.target] == ["#", "d"] and [t.value for t in a.value] == ["9"]
+            for a in assignments
+        )
+
+    def test_good_statements_survive_before_and_after_an_error(self) -> None:
+        result = _parse("#a := 1; GOTO x; #b := 2;")
+        assert result.errors
+        assignments = [s for s in result.statements if isinstance(s, Assignment)]
+        assert len(assignments) == 2
+
+    def test_lone_close_paren_terminates_and_is_reported(self) -> None:
+        """A stray `)` with nothing else must not hang the parser."""
+        result = _parse(")")
+        assert result.statements == []
+        assert result.errors
+        assert result.errors[0].token_value == ")"
+
+    def test_unterminated_call_terminates(self) -> None:
+        """A call missing its closing paren and semicolon must not hang the parser."""
+        result = _parse("#timer(IN := #start")
+        assert len(result.statements) == 1
+        assert isinstance(result.statements[0], Call)
+        assert result.statements[0].arguments[0].name == "IN"
+
+    def test_statement_with_no_trailing_semicolon_at_eof_terminates(self) -> None:
+        """A final statement missing its `;` must still be parsed, not lost."""
+        result = _parse("#a := 1")
+        assert len(result.statements) == 1
+        assert isinstance(result.statements[0], Assignment)
+        assert [t.value for t in result.statements[0].value] == ["1"]
