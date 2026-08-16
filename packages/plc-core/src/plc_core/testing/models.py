@@ -51,10 +51,15 @@ class ScenarioResult:
     outcome: Outcome = Outcome.PASSED
     duration_s: float = 0.0
     error_message: str | None = None
+    skip_reason: str | None = None
 
     @property
     def passed(self) -> bool:
         return self.outcome == Outcome.PASSED
+
+    @property
+    def skipped(self) -> bool:
+        return self.outcome == Outcome.SKIPPED
 
     @property
     def total_steps(self) -> int:
@@ -89,9 +94,13 @@ class TestSuiteResult:
         return sum(1 for s in self.scenario_results if s.passed)
 
     @property
+    def scenarios_skipped(self) -> int:
+        return sum(1 for s in self.scenario_results if s.skipped)
+
+    @property
     def scenarios_failed(self) -> int:
-        return self.total_scenarios - self.scenarios_passed
+        return self.total_scenarios - self.scenarios_passed - self.scenarios_skipped
 
     @property
     def overall_success(self) -> bool:
-        return all(s.passed for s in self.scenario_results)
+        return all(s.passed or s.skipped for s in self.scenario_results)

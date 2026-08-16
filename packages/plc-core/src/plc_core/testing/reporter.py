@@ -56,7 +56,10 @@ def print_scenario_result(console: Console, result: ScenarioResult) -> None:
     warn_suffix = ""
     if result.steps_warned:
         warn_suffix = f", [yellow]{result.steps_warned} warning(s)[/yellow]"
-    if result.passed:
+    if result.skipped:
+        reason = result.skip_reason or "no reason given"
+        console.print(f"  [yellow]SKIPPED[/yellow]  {reason}")
+    elif result.passed:
         console.print(
             f"  [green]PASSED[/green]  "
             f"{result.steps_passed}/{result.total_steps} steps"
@@ -86,10 +89,14 @@ def print_suite_summary(console: Console, suite: TestSuiteResult) -> None:
 
     for sr in suite.scenario_results:
         test_num = _extract_test_number(sr.source_file)
-        status = "[green]PASS[/green]" if sr.passed else "[red]FAIL[/red]"
-        steps = f"{sr.steps_passed}/{sr.total_steps}"
-        if sr.steps_warned:
-            steps += f" ([yellow]{sr.steps_warned}W[/yellow])"
+        if sr.skipped:
+            status = "[yellow]SKIP[/yellow]"
+            steps = "-"
+        else:
+            status = "[green]PASS[/green]" if sr.passed else "[red]FAIL[/red]"
+            steps = f"{sr.steps_passed}/{sr.total_steps}"
+            if sr.steps_warned:
+                steps += f" ([yellow]{sr.steps_warned}W[/yellow])"
         duration = f"{sr.duration_s:.2f}s"
         table.add_row(test_num, sr.name, status, steps, duration)
 
@@ -97,15 +104,26 @@ def print_suite_summary(console: Console, suite: TestSuiteResult) -> None:
 
     # Overall summary
     total = suite.total_scenarios
+    passed = suite.scenarios_passed
     failed = suite.scenarios_failed
+    skipped = suite.scenarios_skipped
+    skip_suffix = f", {skipped} skipped" if skipped else ""
 
     if suite.overall_success:
-        console.print(
-            f"\n[bold green]All {total} scenario(s) passed[/bold green] " f"({suite.total_duration_s:.2f}s)"
-        )
+        if skipped:
+            console.print(
+                f"\n[bold green]{passed}/{total} scenario(s) passed[/bold green]{skip_suffix} "
+                f"({suite.total_duration_s:.2f}s)"
+            )
+        else:
+            console.print(
+                f"\n[bold green]All {total} scenario(s) passed[/bold green] "
+                f"({suite.total_duration_s:.2f}s)"
+            )
     else:
         console.print(
-            f"\n[bold red]{failed}/{total} scenario(s) failed[/bold red] " f"({suite.total_duration_s:.2f}s)"
+            f"\n[bold red]{failed}/{total} scenario(s) failed[/bold red]{skip_suffix} "
+            f"({suite.total_duration_s:.2f}s)"
         )
 
 
@@ -135,11 +153,24 @@ def generate_junit_xml(suite: TestSuiteResult, output_path: Path) -> None:
     for scenario in suite.scenario_results:
         testsuite = SubElement(testsuites, "testsuite")
         testsuite.set("name", scenario.name)
-        testsuite.set("tests", str(scenario.total_steps))
+        testsuite.set("tests", str(scenario.total_steps or (1 if scenario.skipped else 0)))
         testsuite.set("failures", str(scenario.steps_failed))
         testsuite.set("time", f"{scenario.duration_s:.3f}")
         if scenario.source_file:
             testsuite.set("file", str(scenario.source_file))
+
+        if scenario.skipped:
+            # A scenario-level skip never runs any steps, so there is
+            # nothing in step_results to report — synthesize one
+            # testcase so CI dashboards show the whole file as skipped
+            # rather than an empty, zero-test suite.
+            testcase = SubElement(testsuite, "testcase")
+            testcase.set("name", scenario.name)
+            testcase.set("classname", scenario.name)
+            testcase.set("time", f"{scenario.duration_s:.3f}")
+            skipped_el = SubElement(testcase, "skipped")
+            skipped_el.set("message", scenario.skip_reason or "no reason given")
+            continue
 
         for step in scenario.step_results:
             testcase = SubElement(testsuite, "testcase")
@@ -306,8 +337,11 @@ def generate_markdown_report(
 
     for sr in suite.scenario_results:
         test_num = _extract_test_number(sr.source_file)
-        status = "PASS" if sr.passed else "FAIL"
-        steps = f"{sr.steps_passed}/{sr.total_steps}"
+        if sr.skipped:
+            status, steps = "SKIP", "-"
+        else:
+            status = "PASS" if sr.passed else "FAIL"
+            steps = f"{sr.steps_passed}/{sr.total_steps}"
         duration = f"{sr.duration_s:.2f}s"
         lines.append(f"| {test_num} | {sr.name} | {status} | {steps} | {duration} |")
 
@@ -328,6 +362,11 @@ def generate_markdown_report(
         if sr.source_file:
             lines.append(f"**Source:** `{sr.source_file.name}`")
             lines.append("")
+
+        if sr.skipped:
+            lines.append(f"**Result: SKIP** --- {sr.skip_reason or 'no reason given'}")
+            lines.append("")
+            continue
 
         status = "PASS" if sr.passed else "FAIL"
         lines.append(
