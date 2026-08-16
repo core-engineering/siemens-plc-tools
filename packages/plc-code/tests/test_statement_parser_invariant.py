@@ -103,6 +103,67 @@ def test_case_branch_that_fails_to_open_still_surfaces_its_statement() -> None:
     assert not verify_no_silent_loss(tokens, result)
 
 
+def test_stray_block_ender_inside_a_case_branch_is_caught() -> None:
+    """The reviewer's repro: an unmatched END_WHILE inside an ELSE-less CASE branch.
+
+    ``_parse_case_body``'s last-resort fallback (statement_parser.py, the
+    ``elif self._stream.position() == before`` branch) recognises ``END_WHILE``
+    as belonging to no CASE construct, so nothing in ``_parse_statement`` reads
+    it either; it used to be skipped with no statement, no error and no
+    separator recorded for it at all — invisible to both the old weak
+    ``consumed_tokens`` check and, before this fix, to the CASE branch of
+    ``_content_width``'s unconditional ELSE slack too.
+    """
+    tokens = [
+        t for t in tokenize("CASE #a OF 1: #b := 1; END_WHILE; END_CASE;") if t.type is not TokenType.EOF
+    ]
+    result = parse_statements(tokens)
+    assert not result.errors  # nothing flags this today; that is the point
+    problems = verify_no_silent_loss(tokens, result)
+    assert problems, "the dropped END_WHILE should be reported"
+    assert any("unattributed" in p for p in problems)
+
+
+def test_stray_block_ender_nested_inside_an_if_inside_a_case_branch_is_caught() -> None:
+    """Same shape, one level deeper: the stray keyword is inside an IF's THEN body.
+
+    This exercises ``_parse_body``'s fallback (not ``_parse_case_body``'s),
+    reached only because the IF itself is nested inside a CASE branch — the
+    top-level statement is the CASE, so only recursive content-width
+    accounting (not a top-level span) can see the loss.
+    """
+    tokens = [
+        t
+        for t in tokenize("CASE #a OF 1: IF #x THEN #b := 1; END_WHILE; END_IF; END_CASE;")
+        if t.type is not TokenType.EOF
+    ]
+    result = parse_statements(tokens)
+    assert not result.errors
+    problems = verify_no_silent_loss(tokens, result)
+    assert problems, "the dropped END_WHILE nested inside the IF should be reported"
+    assert any("unattributed" in p for p in problems)
+
+
+def test_else_less_case_well_formed_has_no_false_positive() -> None:
+    """The tightened (zero) ELSE slack must not flag a genuinely ELSE-less CASE."""
+    tokens = [
+        t for t in tokenize("CASE #a OF 1: #b := 10; 2: #b := 20; END_CASE;") if t.type is not TokenType.EOF
+    ]
+    result = parse_statements(tokens)
+    assert not verify_no_silent_loss(tokens, result)
+
+
+def test_case_with_else_arm_well_formed_has_no_false_positive() -> None:
+    """A real ELSE arm still earns its (now-conditional) slack."""
+    tokens = [
+        t
+        for t in tokenize("CASE #a OF 1: #b := 10; 2: #b := 20; ELSE #b := 99; END_CASE;")
+        if t.type is not TokenType.EOF
+    ]
+    result = parse_statements(tokens)
+    assert not verify_no_silent_loss(tokens, result)
+
+
 def _load_scratch_parser(module_name: str, source_text: str) -> object:
     """Load a scratch copy of ``statement_parser`` with its source text swapped in.
 

@@ -83,6 +83,19 @@ class ParseResult:
         exists only so ``verify_no_silent_loss`` can tell a semicolon with
         nothing before it from a genuinely missing token. Default is an
         empty list.
+    unattributed_spans : list[tuple[int, int]]
+        ``(start, end)`` span for each token a body loop's last-resort
+        "nothing recognised this, skip one token" fallback consumed —
+        typically a block-ender keyword that does not match the body it
+        appears in (e.g. a stray ``END_WHILE`` inside a ``CASE`` branch).
+        Unlike ``separator_spans``, this is never a legitimate no-op: no
+        statement, no error and no separator claimed the token, which is
+        exactly the failure mode this module exists to catch. It is kept
+        deliberately as-is rather than turned into a recorded error, because
+        doing so would change what ``errors`` reports for existing inputs;
+        recording *that it happened* here, without changing behaviour, is
+        what lets ``verify_no_silent_loss`` see it anyway. Always a defect
+        when non-empty. Default is an empty list.
     """
 
     statements: list[Statement] = field(default_factory=list)
@@ -91,6 +104,7 @@ class ParseResult:
     statement_spans: list[tuple[int, int]] = field(default_factory=list)
     error_spans: list[tuple[int, int]] = field(default_factory=list)
     separator_spans: list[tuple[int, int]] = field(default_factory=list)
+    unattributed_spans: list[tuple[int, int]] = field(default_factory=list)
 
 
 class StatementParser:
@@ -131,8 +145,11 @@ class StatementParser:
                 self._result.statements.append(statement)
                 self._result.statement_spans.append((before, self._stream.position()))
             elif self._stream.position() == before:
-                # Nothing consumed: guarantee forward progress.
+                # Nothing consumed: guarantee forward progress. Nothing recognised
+                # this token as a statement, an error, or a separator either, so
+                # the accounting must see it — see _record_unattributed.
                 self._stream.advance()
+                self._record_unattributed(before)
         self._result.consumed_tokens = self._stream.position()
         return self._result
 
@@ -329,6 +346,7 @@ class StatementParser:
                 body.append(statement)
             elif self._stream.position() == before:
                 self._stream.advance()
+                self._record_unattributed(before)
         return body
 
     def _parse_if(self) -> Statement:
@@ -498,6 +516,7 @@ class StatementParser:
                 body.append(statement)
             elif self._stream.position() == before:
                 self._stream.advance()
+                self._record_unattributed(before)
         return body
 
     def _at_case_label(self) -> bool:
@@ -780,6 +799,21 @@ class StatementParser:
         position = self._stream.position()
         self._result.error_spans.append((position, position))
 
+    def _record_unattributed(self, position: int) -> None:
+        """Record that the token at ``position`` was skipped by a body loop's
+        last-resort fallback — recognised by nothing, so accounted for by
+        nothing else.
+
+        Called immediately after that fallback's own single ``advance()``,
+        so the span is always exactly one token wide.
+
+        Parameters
+        ----------
+        position : int
+            The stream index the skipped token was at.
+        """
+        self._result.unattributed_spans.append((position, position + 1))
+
     def _error(self, token: Token, expected: str) -> None:
         """Record a ``ParseError`` for ``token`` and what was expected there.
 
@@ -901,8 +935,17 @@ def _content_width(statement: Statement) -> tuple[int, int]:
             lo += blo
             hi += bhi
         elo, ehi = _body_width(statement.else_body)
-        lo += elo  # ELSE not assumed present
-        hi += ehi + 1  # ELSE keyword, if it was
+        lo += elo
+        hi += ehi
+        if statement.else_body:
+            # A non-empty else_body proves ELSE was present: earn the keyword.
+            lo += 1
+            hi += 1
+        # An empty else_body means ELSE was absent — nothing else parses an
+        # empty arm as anything but absent, so no slack is earned here. Do
+        # not widen this to tolerate an "ELSE with nothing in it" source: that
+        # ambiguity is exactly the kind of unearned margin that hides a
+        # dropped token (see verify_no_silent_loss's Case sibling below).
         return lo + 1, hi + 2  # END_IF [';']
 
     if isinstance(statement, Case):
@@ -918,8 +961,17 @@ def _content_width(statement: Statement) -> tuple[int, int]:
             lo += blo
             hi += bhi
         dlo, dhi = _body_width(statement.default)
-        lo += dlo  # ELSE not assumed present
-        hi += dhi + 2  # ELSE keyword and its tolerated bare colon
+        lo += dlo
+        hi += dhi
+        if statement.default:
+            # A non-empty default proves ELSE was present: earn the keyword,
+            # plus the bare-colon tolerance SCL allows there (_consume_colon).
+            lo += 1
+            hi += 2
+        # An empty default means ELSE was absent — same reasoning as If's
+        # else_body above. Widening this back to "maybe ELSE, maybe not" is
+        # exactly the unconditional slack that let a stray block-ender inside
+        # a branch body hide behind an ELSE-less CASE's own tolerance.
         return lo + 1, hi + 2  # END_CASE [';']
 
     if isinstance(statement, For):
@@ -950,22 +1002,28 @@ def verify_no_silent_loss(tokens: list[Token], result: ParseResult) -> list[str]
 
     This is the strong form of the anti-silence guarantee: every token must
     be covered by exactly one top-level statement's span, a recorded error,
-    or a bare-``;`` separator (an empty statement, not lost code), with no
-    gap left over, and no top-level statement's span may be wider than its
-    own content — plus whatever errors fall inside it — can explain.
+    a bare-``;`` separator (an empty statement, not lost code), or — always
+    reported as a defect — an unattributed span, with no gap left over, and
+    no top-level statement's span may be wider than its own content — plus
+    whatever errors and unattributed spans fall inside it — can explain.
     Counting *that* the cursor reached the end of the stream is not enough
     (the recovery loop guarantees it always does); this checks that nothing
     was swallowed on the way.
 
-    Two independent classes of loss are covered: a gap (tokens covered by
-    neither a statement span nor an error span — what an old, unbounded
-    ``_recover()`` produces when it eats a well-formed statement whole and
-    the tokens end up in neither), and an inflated statement (a statement
-    whose recorded span is wider than its fields, plus the errors nested
-    inside it, can account for — what a construct that silently dropped a
-    branch or a label produces: the outer statement still closes cleanly
-    and covers the full span positionally, but its content does not
-    contain what the span implies it read).
+    Three classes of loss are covered: a gap (tokens covered by nothing at
+    all — what an old, unbounded ``_recover()`` produces when it eats a
+    well-formed statement whole), an inflated statement (a statement whose
+    recorded span is wider than its fields, plus the errors and unattributed
+    tokens nested inside it, can account for — what a construct that
+    silently dropped a branch or a label produces: the outer statement still
+    closes cleanly and covers the full span positionally, but its content
+    does not contain what the span implies it read), and an unattributed
+    span itself — a token none of ``statements``, ``errors`` or
+    ``separator_spans`` claimed, which a body loop's last-resort fallback
+    can still silently swallow (e.g. a stray block-ender keyword nested
+    inside a body it does not close). The third is reported unconditionally,
+    independent of whatever slack the second check tolerates elsewhere, so
+    it cannot be hidden by an unrelated statement's wide bracket.
 
     Parameters
     ----------
@@ -990,7 +1048,14 @@ def verify_no_silent_loss(tokens: list[Token], result: ParseResult) -> list[str]
                 "token(s), expected 0 (a flag) or 1 (a token _recover() skipped)"
             )
 
-    intervals = sorted(result.statement_spans + result.error_spans + result.separator_spans)
+    for start, _end in result.unattributed_spans:
+        token = tokens[start] if start < len(tokens) else None
+        where = f"line {token.line}, column {token.column}: {token.value!r}" if token else "end of stream"
+        problems.append(f"unattributed token at {where} — no statement, error or separator claimed it")
+
+    intervals = sorted(
+        result.statement_spans + result.error_spans + result.separator_spans + result.unattributed_spans
+    )
     cursor = 0
     for start, end in intervals:
         if start > cursor:
@@ -1001,13 +1066,14 @@ def verify_no_silent_loss(tokens: list[Token], result: ParseResult) -> list[str]
 
     for statement, (start, end) in zip(result.statements, result.statement_spans, strict=True):
         lo, hi = _content_width(statement)
-        error_tokens = sum(e - s for s, e in result.error_spans if start <= s and e <= end)
+        nested = result.error_spans + result.unattributed_spans
+        extra_tokens = sum(e - s for s, e in nested if start <= s and e <= end)
         actual = end - start
-        if not (lo + error_tokens <= actual <= hi + error_tokens):
+        if not (lo + extra_tokens <= actual <= hi + extra_tokens):
             problems.append(
                 f"{type(statement).__name__} at line {statement.line} spans {actual} token(s); "
-                f"its content (plus {error_tokens} error token(s) inside it) implies "
-                f"{lo + error_tokens}-{hi + error_tokens}"
+                f"its content (plus {extra_tokens} error/unattributed token(s) inside it) implies "
+                f"{lo + extra_tokens}-{hi + extra_tokens}"
             )
 
     return problems
