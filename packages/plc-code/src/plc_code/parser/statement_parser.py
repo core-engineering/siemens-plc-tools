@@ -19,11 +19,17 @@ from plc_code.parser.lexer import Token, TokenType
 from plc_code.parser.statements import (
     Argument,
     Assignment,
+    Branch,
     Call,
+    Case,
+    CaseBranch,
     Exit,
+    For,
+    If,
     ParseError,
     Return,
     Statement,
+    While,
 )
 from plc_code.parser.token_stream import TokenStream, adjacent
 
@@ -122,6 +128,15 @@ class StatementParser:
             self._consume_semicolon()
             return Exit(line=token.line)
 
+        if keyword == "IF":
+            return self._parse_if()
+        if keyword == "CASE":
+            return self._parse_case()
+        if keyword == "FOR":
+            return self._parse_for()
+        if keyword == "WHILE":
+            return self._parse_while()
+
         if keyword in _BLOCK_ENDERS:
             # Belongs to an enclosing construct; leave it for the caller.
             return None
@@ -173,6 +188,331 @@ class StatementParser:
         self._error(first, "an assignment or a call")
         self._recover()
         return None
+
+    def _keyword_ahead(self) -> str:
+        """Uppercased value of the current token when it is an identifier.
+
+        Returns
+        -------
+        str
+            The current token's value, uppercased, when it is an
+            ``IDENTIFIER`` token (keywords are lexed as identifiers, see
+            ``lexer.py``); an empty string for any other token type,
+            including ``EOF``, so callers can compare it against a keyword
+            set without a separate type check.
+        """
+        token = self._stream.peek()
+        return token.value.upper() if token.type is TokenType.IDENTIFIER else ""
+
+    def _take_until_keyword(self, *keywords: str) -> list[Token]:
+        """Consume tokens up to (not including) one of ``keywords``.
+
+        Used for the token slices that make up a condition, selector or bound
+        expression, which are not parsed further in phase 1.
+
+        Parameters
+        ----------
+        *keywords : str
+            Keyword spellings (case-insensitive) that end the slice.
+
+        Returns
+        -------
+        list[Token]
+            The consumed tokens, in source order. Stops at the end of the
+            stream as well, so a malformed construct missing its terminating
+            keyword still yields a bounded slice rather than looping forever.
+        """
+        taken: list[Token] = []
+        wanted = {k.upper() for k in keywords}
+        while not self._stream.at_end() and self._keyword_ahead() not in wanted:
+            taken.append(self._stream.advance())
+        return taken
+
+    def _parse_body(self, *terminators: str) -> list[Statement]:
+        """Parse statements until one of ``terminators`` is the next keyword.
+
+        This is the loop shared by every control-flow body (IF branches,
+        ELSE, FOR, WHILE). It mirrors ``parse()``'s own loop and keeps the
+        same recovery invariant: a statement that parses is appended, a
+        statement that fails leaves an error in ``self._result.errors`` and
+        the cursor already past the offending token (via ``_recover``), and
+        if neither happened — the only remaining case, a keyword this loop
+        does not recognise as a terminator and ``_parse_statement`` also does
+        not recognise — exactly one token is skipped so the loop cannot spin
+        without consuming input. No well-formed statement between two errors
+        is ever discarded by this loop.
+
+        Parameters
+        ----------
+        *terminators : str
+            Keyword spellings (case-insensitive) that close this body and
+            are left unconsumed for the caller.
+
+        Returns
+        -------
+        list[Statement]
+            Statements parsed before the terminator, in source order.
+        """
+        wanted = {t.upper() for t in terminators}
+        body: list[Statement] = []
+        while not self._stream.at_end() and self._keyword_ahead() not in wanted:
+            before = self._stream.position()
+            statement = self._parse_statement()
+            if statement is not None:
+                body.append(statement)
+            elif self._stream.position() == before:
+                self._stream.advance()
+        return body
+
+    def _parse_if(self) -> Statement:
+        """Parse an IF statement, including any ELSIF and ELSE clauses.
+
+        ``IF ... THEN ... ELSIF ... THEN ... ELSE ... END_IF;`` — ELSIF is
+        not a separate node; each ELSIF clause becomes another ``Branch`` in
+        ``If.branches``, alongside the IF clause itself as the first entry.
+
+        Returns
+        -------
+        Statement
+            The parsed ``If`` node.
+        """
+        line = self._stream.advance().line  # IF
+        branches: list[Branch] = []
+        condition = self._take_until_keyword("THEN")
+        self._expect_keyword("THEN")
+        branches.append(Branch(condition=condition, body=self._parse_body("ELSIF", "ELSE", "END_IF")))
+
+        while self._keyword_ahead() == "ELSIF":
+            self._stream.advance()
+            condition = self._take_until_keyword("THEN")
+            self._expect_keyword("THEN")
+            branches.append(Branch(condition=condition, body=self._parse_body("ELSIF", "ELSE", "END_IF")))
+
+        else_body: list[Statement] = []
+        if self._keyword_ahead() == "ELSE":
+            self._stream.advance()
+            else_body = self._parse_body("END_IF")
+
+        self._expect_keyword("END_IF")
+        self._consume_semicolon()
+        return If(line=line, branches=branches, else_body=else_body)
+
+    def _parse_case(self) -> Statement:
+        """Parse a CASE statement, including its default (ELSE) arm.
+
+        ``CASE selector OF v1: ... v2, v3: ... ELSE ... END_CASE;``
+
+        SCL's default arm is a bare ``ELSE`` with no colon, unlike the
+        labelled arms above it; ``_consume_colon`` tolerates one anyway
+        rather than treating it as an error, since a stray ``ELSE:`` is
+        harmless and not worth flagging.
+
+        Returns
+        -------
+        Statement
+            The parsed ``Case`` node.
+        """
+        line = self._stream.advance().line  # CASE
+        selector = self._take_until_keyword("OF")
+        self._expect_keyword("OF")
+
+        branches: list[CaseBranch] = []
+        default: list[Statement] = []
+
+        while not self._stream.at_end() and self._keyword_ahead() not in {"ELSE", "END_CASE"}:
+            values = self._parse_case_labels()
+            if values is None:
+                break
+            body = self._parse_case_body()
+            branches.append(CaseBranch(values=values, body=body))
+
+        if self._keyword_ahead() == "ELSE":
+            self._stream.advance()
+            self._consume_colon()  # `ELSE:` is tolerated; SCL writes it bare
+            default = self._parse_body("END_CASE")
+
+        self._expect_keyword("END_CASE")
+        self._consume_semicolon()
+        return Case(line=line, selector=selector, branches=branches, default=default)
+
+    def _parse_case_labels(self) -> list[list[Token]] | None:
+        """Read `v1, v2:` — one token slice per value.
+
+        Each label value may be more than one token (e.g. a quoted symbolic
+        constant is a single ``STRING`` token, but nothing here assumes a
+        label is exactly one token), so values are split on commas and
+        closed by the colon rather than read one token at a time.
+
+        Returns
+        -------
+        list[list[Token]] | None
+            One entry per comma-separated value, in source order; ``None``
+            when no label is present at the cursor (the CASE has reached its
+            ELSE arm, its END_CASE, or the stream ended without a colon —
+            any of which means there is nothing more to read as a branch).
+        """
+        values: list[list[Token]] = []
+        current: list[Token] = []
+        while not self._stream.at_end():
+            if self._stream.match(TokenType.COLON):
+                self._stream.advance()
+                if current:
+                    values.append(current)
+                return values or None
+            if self._stream.match(TokenType.COMMA):
+                self._stream.advance()
+                if current:
+                    values.append(current)
+                current = []
+                continue
+            if self._keyword_ahead() in {"ELSE", "END_CASE"}:
+                return None
+            current.append(self._stream.advance())
+        return None
+
+    def _parse_case_body(self) -> list[Statement]:
+        """Parse statements up to the next label, ELSE or END_CASE.
+
+        A label is detected by lookahead (``_at_case_label``) rather than by
+        line position, which is what makes `1: #b := 10;` — label and first
+        statement on one line — behave the same as a label on its own line.
+        The old text-based translator treated them differently and dropped
+        the whole CASE when it saw the first form.
+
+        Follows the same recovery invariant as ``_parse_body``: a statement
+        either parses, leaves a recorded error with the cursor already past
+        the offending token, or (only when neither `_parse_statement` nor
+        the label/terminator checks above recognised what is at the cursor)
+        has exactly one token skipped, so the loop always makes forward
+        progress and never discards a statement it could otherwise read.
+
+        Returns
+        -------
+        list[Statement]
+            Statements parsed before the next label or terminator, in
+            source order.
+        """
+        body: list[Statement] = []
+        while not self._stream.at_end():
+            if self._keyword_ahead() in {"ELSE", "END_CASE"}:
+                break
+            if self._at_case_label():
+                break
+            before = self._stream.position()
+            statement = self._parse_statement()
+            if statement is not None:
+                body.append(statement)
+            elif self._stream.position() == before:
+                self._stream.advance()
+        return body
+
+    def _at_case_label(self) -> bool:
+        """Whether a `value:` label starts here, without consuming anything.
+
+        Scans ahead token by token, accepting the token kinds a label value
+        can be made of (numbers, strings, identifiers, `#`-prefixed locals,
+        and commas joining multiple values), and reports a label only if a
+        colon is reached before a semicolon, `:=`, or end of stream — any of
+        which means this is a statement, not a label.
+
+        Returns
+        -------
+        bool
+            True when the tokens ahead form a case label ending in a colon,
+            without an intervening statement boundary.
+        """
+        offset = 0
+        while True:
+            token = self._stream.peek(offset)
+            if token.type in (TokenType.EOF, TokenType.SEMICOLON, TokenType.ASSIGN):
+                return False
+            if token.type is TokenType.COLON:
+                return True
+            if token.type not in (
+                TokenType.NUMBER,
+                TokenType.STRING,
+                TokenType.IDENTIFIER,
+                TokenType.HASH,
+                TokenType.COMMA,
+            ):
+                return False
+            offset += 1
+
+    def _parse_for(self) -> Statement:
+        """Parse a FOR loop, with or without a BY step clause.
+
+        ``FOR variable := start TO end BY step DO ... END_FOR;`` — the BY
+        clause is optional in SCL; when absent, ``For.step`` is left empty so
+        callers can tell "no BY clause" apart from an explicit step.
+
+        Returns
+        -------
+        Statement
+            The parsed ``For`` node.
+        """
+        line = self._stream.advance().line  # FOR
+        variable = self._take_until(TokenType.ASSIGN)
+        self._stream.expect(TokenType.ASSIGN)
+        start = self._take_until_keyword("TO")
+        self._expect_keyword("TO")
+        end = self._take_until_keyword("BY", "DO")
+        step: list[Token] = []
+        if self._keyword_ahead() == "BY":
+            self._stream.advance()
+            step = self._take_until_keyword("DO")
+        self._expect_keyword("DO")
+        body = self._parse_body("END_FOR")
+        self._expect_keyword("END_FOR")
+        self._consume_semicolon()
+        return For(line=line, variable=variable, start=start, end=end, step=step, body=body)
+
+    def _parse_while(self) -> Statement:
+        """Parse a WHILE loop.
+
+        ``WHILE condition DO ... END_WHILE;``
+
+        Returns
+        -------
+        Statement
+            The parsed ``While`` node.
+        """
+        line = self._stream.advance().line  # WHILE
+        condition = self._take_until_keyword("DO")
+        self._expect_keyword("DO")
+        body = self._parse_body("END_WHILE")
+        self._expect_keyword("END_WHILE")
+        self._consume_semicolon()
+        return While(line=line, condition=condition, body=body)
+
+    def _expect_keyword(self, keyword: str) -> None:
+        """Consume ``keyword``, recording an error when it is absent.
+
+        Unlike ``TokenStream.expect``, which raises on a type mismatch, this
+        follows the rest of the parser's error handling: a missing keyword
+        becomes a recorded ``ParseError`` rather than an exception, and the
+        cursor is left where it is (not advanced) so the caller's own
+        recovery — typically the enclosing body loop — decides what happens
+        next.
+
+        Parameters
+        ----------
+        keyword : str
+            The keyword spelling expected at the cursor (case-insensitive).
+        """
+        if self._keyword_ahead() == keyword.upper():
+            self._stream.advance()
+            return
+        self._error(self._stream.peek(), keyword)
+
+    def _consume_colon(self) -> None:
+        """Consume a colon at the cursor, if present.
+
+        Used only for the CASE default arm, where SCL's own grammar writes a
+        bare ``ELSE`` but a stray ``ELSE:`` is harmless and not worth an
+        error.
+        """
+        if self._stream.match(TokenType.COLON):
+            self._stream.advance()
 
     def _parse_arguments(self) -> list[Argument]:
         """Read `name := value` / `name => value` pairs up to the closing paren.
