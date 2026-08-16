@@ -68,6 +68,18 @@ class TokenType(Enum):
     LBRACKET = auto()  # [
     RBRACKET = auto()  # ]
 
+    # Arithmetic and comparison operators. Single characters only: the
+    # multi-character forms (>=, <=, <>, =>, **) are composed by the statement
+    # parser from adjacent tokens, because merging here would change
+    # Region.content (built from token.value in parser.py:815-819).
+    PLUS = auto()  # +
+    MINUS = auto()  # -
+    STAR = auto()  # *
+    SLASH = auto()  # /
+    GT = auto()  # >
+    LT = auto()  # <
+    EQ = auto()  # =
+
     # Special
     NEWLINE = auto()
     WHITESPACE = auto()
@@ -291,6 +303,22 @@ class SCLLexer:
 
         if char == "]":
             token = Token(TokenType.RBRACKET, "]", self.line, self.column)
+            self._advance()
+            return token
+
+        # Single-character operators. Reached only after _scan_number has had its
+        # chance at a leading '-', so `-1` still lexes as one NUMBER.
+        operator_types = {
+            "+": TokenType.PLUS,
+            "-": TokenType.MINUS,
+            "*": TokenType.STAR,
+            "/": TokenType.SLASH,
+            ">": TokenType.GT,
+            "<": TokenType.LT,
+            "=": TokenType.EQ,
+        }
+        if char in operator_types:
+            token = Token(operator_types[char], char, self.line, self.column)
             self._advance()
             return token
 
