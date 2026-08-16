@@ -69,12 +69,13 @@ all = [
     "plc-trace>=0.1.0",
 ]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-cov>=4.0.0",
-    "black>=23.0.0",
-    "ruff>=0.1.0",
-    "mypy>=1.0.0",
-    "types-PyYAML>=6.0.0",
+    "pytest==9.0.3",
+    "pytest-cov==7.1.0",
+    "pytest-asyncio==1.4.0",
+    "black==26.5.1",
+    "ruff==0.15.16",
+    "mypy==2.1.0",
+    "types-PyYAML==6.0.12.20260518",
 ]
 docs = [
     "mkdocs>=1.6.1",
@@ -98,14 +99,18 @@ build-backend = "hatchling.build"
 packages = ["src/plc_tools"]
 
 [dependency-groups]
+# Pinned exactly on purpose: these tools *are* the quality gate, so a floating
+# range makes CI go red on a tool release rather than on a code change. Bump
+# them deliberately, in their own commit, with the resulting fixes.
 dev = [
-    "pytest>=8.0.0",
-    "pytest-cov>=4.0.0",
-    "black>=23.0.0",
-    "ruff>=0.1.0",
-    "mypy>=1.0.0",
-    "types-PyYAML>=6.0.0",
-    "python-docx>=1.2.0",
+    "pytest==9.0.3",
+    "pytest-cov==7.1.0",
+    "pytest-asyncio==1.4.0",
+    "black==26.5.1",
+    "ruff==0.15.16",
+    "mypy==2.1.0",
+    "types-PyYAML==6.0.12.20260518",
+    "python-docx==1.2.0",
 ]
 
 [tool.uv.workspace]
@@ -148,6 +153,15 @@ select = [
     "C4",  # flake8-comprehensions
     "UP",  # pyupgrade
 ]
+ignore = [
+    # UP042 wants `class X(str, Enum)` rewritten as `class X(StrEnum)`, but the
+    # two do not behave the same: StrEnum.__str__ returns the *value*, while a
+    # str/Enum mixin keeps Enum.__str__ ("IOCategory.DI"). These enums are
+    # interpolated into generated markdown, PDF and JSON reports, so the rewrite
+    # would silently change delivered documentation. Revisit as its own change,
+    # with the report snapshots checked.
+    "UP042",
+]
 
 
 
@@ -158,9 +172,21 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 # importlib mode avoids the "duplicate tests package" collision when running
 # tests across multiple workspace packages from the repo root.
-addopts = "--import-mode=importlib --cov=src --cov=packages/plc-core/src --cov=packages/plc-code/src --cov=packages/plc-iol/src --cov=packages/plc-modbus/src --cov=packages/plc-sim/src --cov=packages/plc-trace/src --cov-report=term-missing --cov-report=html"
+addopts = "--import-mode=importlib --cov=src --cov=packages/plc-core/src --cov=packages/plc-code/src --cov=packages/plc-iol/src --cov=packages/plc-modbus/src --cov=packages/plc-net/src --cov=packages/plc-sim/src --cov=packages/plc-sup/src --cov=packages/plc-trace/src --cov-report=term-missing --cov-report=html"
 # Required by async tests in plc-modbus and plc-sim when running from repo root.
 asyncio_mode = "auto"
+
+[tool.coverage.report]
+# Ratchet, not a target. Coverage was collected but never enforced, so nothing
+# stopped it sliding; this floor is set just under the measured 59.86% so the
+# number can only go up. Raise it whenever a run clears the next step —
+# lowering it is a decision, not a fix.
+#
+# CLAUDE.md's "85% per package" is the goal, not the state. Worst offenders:
+# plc-sim 27%, plc-net 31%, plc-sup 39% (none of the three has a test suite of
+# its own; what they show is incidental import-time coverage).
+fail_under = 59
+precision = 2
 
 [tool.mypy]
 python_version = "3.12"
@@ -176,8 +202,6 @@ exclude = ['(^|/)(tests|test-cases)/']
 
 [[tool.mypy.overrides]]
 module = [
-    "jinja2",
-    "jinja2.*",
     "rich",
     "rich.*",
     "pygments",
@@ -191,7 +215,6 @@ module = [
     "pymodbus",
     "pymodbus.*",
     "msgpack",
-    "msgpack.*",
     "scapy",
     "scapy.*",
     "docx",

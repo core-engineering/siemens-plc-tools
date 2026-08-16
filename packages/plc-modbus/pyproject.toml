@@ -49,19 +49,10 @@ line-length = 110
 target-version = ['py312']
 
 [tool.ruff]
-line-length = 110
-target-version = "py312"
-
-[tool.ruff.lint]
-select = [
-    "E",
-    "W",
-    "F",
-    "I",
-    "B",
-    "C4",
-    "UP",
-]
+# Single source of truth: the workspace root. A per-package copy of these rules
+# meant six configs drifting independently — a rule added at the root silently
+# skipped every package that carried its own block.
+extend = "../../pyproject.toml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

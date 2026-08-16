@@ -58,19 +58,10 @@ line-length = 110
 target-version = ['py312']
 
 [tool.ruff]
-line-length = 110
-target-version = "py312"
-
-[tool.ruff.lint]
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "UP",  # pyupgrade
-]
+# Single source of truth: the workspace root. A per-package copy of these rules
+# meant six configs drifting independently — a rule added at the root silently
+# skipped every package that carried its own block.
+extend = "../../pyproject.toml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
