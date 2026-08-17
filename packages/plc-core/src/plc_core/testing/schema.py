@@ -243,6 +243,8 @@ class Scenario:
     steps: list[Step] = field(default_factory=list)
     cleanup: list[Step] = field(default_factory=list)
     source_file: Path | None = None
+    skip: bool = False
+    skip_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +320,8 @@ def parse_scenario(path: Path) -> Scenario:
         steps=steps,
         cleanup=cleanup,
         source_file=path,
+        skip=bool(sc.get("skip", False)),
+        skip_reason=str(sc.get("skip_reason", "")),
     )
 
 

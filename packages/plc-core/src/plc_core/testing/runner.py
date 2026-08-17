@@ -265,6 +265,14 @@ class ScenarioRunner:
         if scenario.description:
             self._console.print(f"  [dim]{scenario.description}[/dim]")
 
+        if scenario.skip:
+            reason = scenario.skip_reason or "no reason given"
+            self._console.print(f"  [yellow]SKIP[/yellow] {reason}")
+            result.outcome = Outcome.SKIPPED
+            result.skip_reason = scenario.skip_reason or None
+            result.duration_s = time.monotonic() - t0
+            return result
+
         try:
             # Check preconditions
             for pre in scenario.preconditions:
