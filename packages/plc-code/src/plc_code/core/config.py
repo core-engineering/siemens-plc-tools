@@ -49,10 +49,16 @@ class QualityConfig:
         Whether to run quality analysis
     fail_on_error : bool
         Whether to fail on quality errors
+    safety_path_pattern : str
+        Case-insensitive substring marking a directory as safety territory, used by
+        the F003 safety-boundary heuristic to flag a block whose ``S7_Safety``
+        declaration disagrees with where it lives. A project that organises its
+        safety F-blocks under a different directory name should override this.
     """
 
     enabled: bool = True
     fail_on_error: bool = True
+    safety_path_pattern: str = "safety"
 
 
 @dataclass
@@ -250,6 +256,7 @@ class ProjectConfig:
             quality=QualityConfig(
                 enabled=quality_data.get("enabled", True),
                 fail_on_error=quality_data.get("fail_on_error", True),
+                safety_path_pattern=quality_data.get("safety_path_pattern", "safety"),
             ),
             testing=TestingConfig(
                 enabled=testing_data.get("enabled", True),
@@ -403,6 +410,7 @@ paths:
 quality:
   enabled: true                     # Run quality analysis
   fail_on_error: true              # Fail on quality errors
+  # safety_path_pattern: safety     # Directory substring marking safety territory (F003)
 
 testing:
   enabled: true                     # Run tests

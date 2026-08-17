@@ -203,24 +203,30 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
 
     If PATH is not specified, uses source path from plc.yaml.
     """
-    from plc_code.analyzer.quality import AnalysisRunner, CLIReporter
-    from plc_code.parser import parse_scl_file
+    from plc_code.analyzer.quality import AnalysisRunner, CLIReporter, Severity
+    from plc_code.parser import Block, parse_scl_file
     from plc_code.project.discovery import discover_blocks
 
+    # Status/diagnostic chatter must not land on stdout in JSON mode, or it would
+    # corrupt the JSON payload printed there. Same pattern as `transpile --check`.
+    diag_console = console_err if output_format == "json" else console
+
     # Determine source path
+    safety_path_pattern = "safety"
     if path is None:
         try:
             from plc_code.core.config import load_config
 
             config = load_config()
             path = config.source_path
+            safety_path_pattern = config.quality.safety_path_pattern
         except FileNotFoundError:
-            console.print("[red]Error:[/red] No plc.yaml found and no path specified.")
-            console.print("Run 'plc init' or specify a path: plc lint <path>")
+            diag_console.print("[red]Error:[/red] No plc.yaml found and no path specified.")
+            diag_console.print("Run 'plc init' or specify a path: plc lint <path>")
             raise SystemExit(1) from None
 
     if not path.exists():
-        console.print(f"[red]Error:[/red] Source not found: {path}")
+        diag_console.print(f"[red]Error:[/red] Source not found: {path}")
         raise SystemExit(1)
 
     # Discover blocks
@@ -232,28 +238,30 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
             block_files = [bf.source_path for bf in blocks_found]
 
         if not block_files:
-            console.print("[yellow]No .s7dcl files found to analyze.[/yellow]")
+            diag_console.print("[yellow]No .s7dcl files found to analyze.[/yellow]")
             raise SystemExit(1)
 
-        console.print(f"Analyzing {len(block_files)} block(s)...", style="dim")
+        diag_console.print(f"Analyzing {len(block_files)} block(s)...", style="dim")
 
         # Parse all blocks
         blocks = []
+        sources: list[tuple[Path, Block]] = []
         for block_path in block_files:
             try:
                 block = parse_scl_file(Path(block_path))
                 blocks.append(block)
+                sources.append((Path(block_path), block))
             except Exception as e:
                 if verbose:
-                    console.print(f"[yellow]Warning:[/yellow] Failed to parse {block_path}: {e}")
+                    diag_console.print(f"[yellow]Warning:[/yellow] Failed to parse {block_path}: {e}")
 
         if not blocks:
-            console.print("[red]No blocks could be parsed.[/red]")
+            diag_console.print("[red]No blocks could be parsed.[/red]")
             raise SystemExit(1)
 
         # Run analysis
-        runner = AnalysisRunner()
-        result = runner.analyze_blocks(blocks)
+        runner = AnalysisRunner(safety_path_pattern=safety_path_pattern)
+        result = runner.analyze_blocks(blocks, sources=sources)
 
         # Output results
         if output_format == "json":
@@ -287,6 +295,16 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
                     }
                     for br in result.block_results
                 ],
+                "project_violations": [
+                    {
+                        "rule": v.rule_code,
+                        "severity": v.severity.value,
+                        "message": v.message,
+                        "context": v.context,
+                        "suggestion": v.suggestion,
+                    }
+                    for v in result.project_violations
+                ],
             }
             print(json.dumps(output, indent=2))
         else:
@@ -294,13 +312,21 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
             use_color = not no_color
             print(reporter.report(result, use_color=use_color))
 
+            if result.project_violations:
+                console.print("\n[bold]Project-level findings[/bold]")
+                for violation in result.project_violations:
+                    marker = "[red]✗[/red]" if violation.severity is Severity.ERROR else "[yellow]⚠[/yellow]"
+                    console.print(
+                        f"  {marker} {violation.rule_code} {violation.context}: " f"{violation.message}"
+                    )
+
         # Exit code
         raise SystemExit(0 if result.passed else 1)
 
     except SystemExit:
         raise
     except Exception as e:
-        console.print(f"[red]Error during analysis:[/red] {e}")
+        diag_console.print(f"[red]Error during analysis:[/red] {e}")
         raise SystemExit(1) from e
 
 
