@@ -106,6 +106,14 @@ def build_safety_report(
         # Only a callable kind can be a caller or a callee; a TYPE or a DATA_BLOCK
         # sharing a FUNCTION_BLOCK's name must not be able to overwrite it here and
         # make the call check below read the wrong safety flag.
+        #
+        # Two blocks of the *same* callable kind sharing a name still collide, last
+        # one wins, and that is not detected. A TIA Portal PLC cannot contain two
+        # blocks with the same name, so it takes linting across merged or duplicated
+        # source trees to reach; the observed corpus has no duplicate block name at
+        # all. Left as-is rather than half-solved: reporting it properly means a
+        # diagnostic of its own, which belongs to whatever consumes the call graph,
+        # not to this check.
         if block.name and block.block_type in _CALLABLE_KINDS:
             by_name[block.name] = block
             paths[block.name] = path
