@@ -148,14 +148,15 @@ def status(config_path: str | None) -> None:
 # =============================================================================
 
 
-@iol_group.group()
+# `import` is a Python keyword, so the function is `import_` — but naming the
+# command explicitly matters: a bare `@iol_group.group()` derives the name from
+# the function and registers it as `import-`, and the follow-up `add_command(...,
+# name="import")` then registered the same group a second time. Both names showed
+# up in `plc iol --help`, one of them an artefact nothing documented.
+@iol_group.group(name="import")
 def import_() -> None:
     """Import data from various sources."""
     pass
-
-
-# Rename to avoid conflict with Python keyword
-iol_group.add_command(import_, name="import")
 
 
 @import_.command(name="tags")
