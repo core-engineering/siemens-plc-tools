@@ -169,24 +169,35 @@ class ProjectAnalysisResult:
     ----------
     block_results : list[BlockAnalysisResult]
         Results for all analyzed blocks.
+    project_violations : list[Violation]
+        Findings that belong to the project as a whole rather than to any one
+        block (e.g. safety-boundary crossings). Counted into ``total_errors``,
+        ``total_warnings`` and ``total_info`` so ``fail_on_error`` sees them.
     """
 
     block_results: list[BlockAnalysisResult] = field(default_factory=list)
+    project_violations: list[Violation] = field(default_factory=list)
 
     @property
     def total_errors(self) -> int:
-        """Total error count across all blocks."""
-        return sum(r.error_count for r in self.block_results)
+        """Total error count across all blocks and the project itself."""
+        blocks = sum(r.error_count for r in self.block_results)
+        project = sum(1 for v in self.project_violations if v.severity is Severity.ERROR)
+        return blocks + project
 
     @property
     def total_warnings(self) -> int:
-        """Total warning count across all blocks."""
-        return sum(r.warning_count for r in self.block_results)
+        """Total warning count across all blocks and the project itself."""
+        blocks = sum(r.warning_count for r in self.block_results)
+        project = sum(1 for v in self.project_violations if v.severity is Severity.WARNING)
+        return blocks + project
 
     @property
     def total_info(self) -> int:
-        """Total info count across all blocks."""
-        return sum(r.info_count for r in self.block_results)
+        """Total info count across all blocks and the project itself."""
+        blocks = sum(r.info_count for r in self.block_results)
+        project = sum(1 for v in self.project_violations if v.severity is Severity.INFO)
+        return blocks + project
 
     @property
     def blocks_with_errors(self) -> int:
@@ -215,6 +226,8 @@ class ProjectAnalysisResult:
         for result in self.block_results:
             for violation in result.violations:
                 counts[violation.rule_code] = counts.get(violation.rule_code, 0) + 1
+        for violation in self.project_violations:
+            counts[violation.rule_code] = counts.get(violation.rule_code, 0) + 1
         return counts
 
     def get_violations_by_severity(self) -> dict[Severity, int]:

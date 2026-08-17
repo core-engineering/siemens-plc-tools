@@ -30,9 +30,18 @@ class AnalysisRunner:
     >>> print(f"Errors: {result.error_count}, Warnings: {result.warning_count}")
     """
 
-    def __init__(self) -> None:
-        """Initialize the runner with all registered rules."""
+    def __init__(self, safety_path_pattern: str = "safety") -> None:
+        """Initialize the runner with all registered rules.
+
+        Parameters
+        ----------
+        safety_path_pattern : str
+            Case-insensitive substring marking a directory as safety territory,
+            forwarded to ``build_safety_report`` when ``analyze_blocks`` is given
+            ``sources``.
+        """
         self.rules: list[Rule] = [rule_class() for rule_class in ALL_RULES]
+        self.safety_path_pattern = safety_path_pattern
 
     def analyze_block(self, block: Block) -> BlockAnalysisResult:
         """Analyze a single block with all rules.
@@ -73,24 +82,38 @@ class AnalysisRunner:
 
         return result
 
-    def analyze_blocks(self, blocks: list[Block]) -> ProjectAnalysisResult:
-        """Analyze multiple blocks.
+    def analyze_blocks(
+        self,
+        blocks: list[Block],
+        sources: list[tuple[Path, Block]] | None = None,
+    ) -> ProjectAnalysisResult:
+        """Analyse every block, and the project as a whole when paths are given.
 
         Parameters
         ----------
         blocks : list[Block]
-            Blocks to analyze.
+            Blocks to check with the per-block rules.
+        sources : list[tuple[Path, Block]] | None
+            Source path and block pairs. When given, project-level checks run and
+            their findings land in ``ProjectAnalysisResult.project_violations``.
+            Deliberately not a name-keyed mapping: a UDT's name may be absent.
 
         Returns
         -------
         ProjectAnalysisResult
-            Combined analysis results for all blocks.
+            Combined analysis results.
         """
         result = ProjectAnalysisResult()
 
         for block in blocks:
-            block_result = self.analyze_block(block)
-            result.block_results.append(block_result)
+            result.block_results.append(self.analyze_block(block))
+
+        if sources is not None:
+            from plc_code.analyzer.safety_crossref import build_safety_report
+
+            result.project_violations.extend(
+                build_safety_report(sources, self.safety_path_pattern).violations
+            )
 
         return result
 
