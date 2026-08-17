@@ -83,3 +83,7 @@ examples/**/report.pdf
 
 # Lock files (regenerate with uv sync)
 uv.lock
+
+# Superpowers SDD scratch — plan ledgers, briefs, reports, review packages.
+# Never tracked: these are internal working notes, not deliverables.
+.superpowers/
