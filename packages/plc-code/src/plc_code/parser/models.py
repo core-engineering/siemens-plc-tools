@@ -42,6 +42,9 @@ class BlockAttributes:
         MLC reference for block title (S7_BlockTitle).
     block_comment_mlc : str
         MLC reference for block comment (S7_BlockComment).
+    is_safety : bool
+        True when the block declares ``S7_Safety`` truthy — a Siemens F block.
+        False for a standard block and for any block that omits the attribute.
     """
 
     author: str = ""
@@ -52,6 +55,7 @@ class BlockAttributes:
     preferred_language: Language = "SCL"
     block_title_mlc: str = ""
     block_comment_mlc: str = ""
+    is_safety: bool = False
 
 
 @dataclass

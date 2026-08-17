@@ -209,6 +209,8 @@ class SCLParser:
                     attrs.family = value
                 elif key == "S7_Optimized":
                     attrs.optimized = value.upper() == "TRUE"
+                elif key == "S7_Safety":
+                    attrs.is_safety = value.upper() == "TRUE"
                 elif key == "S7_EditorMode":
                     attrs.editor_mode = value
                 elif key == "S7_PreferredLanguage":
@@ -622,7 +624,7 @@ class SCLParser:
         return "".join(parts)
 
     def _parse_pragma_or_network(self, block: Block) -> None:
-        """Parse a pragma that might be network attributes.
+        """Parse a pragma that might be network attributes or block attributes.
 
         Parameters
         ----------
@@ -644,12 +646,32 @@ class SCLParser:
                 key = key.strip()
                 value = value.strip().strip('"')
 
+                # Network attributes
                 if key == "S7_Language":
                     attrs.language = value  # type: ignore[assignment]
                 elif key == "S7_NetworkTitle":
                     attrs.network_title_mlc = value
                 elif key == "S7_NetworkComment":
                     attrs.network_comment_mlc = value
+                # Block attributes that may appear here
+                elif key == "S7_Optimized":
+                    block.attributes.optimized = value.upper() == "TRUE"
+                elif key == "S7_Safety":
+                    block.attributes.is_safety = value.upper() == "TRUE"
+                elif key == "S7_Author":
+                    block.attributes.author = value
+                elif key == "S7_Version":
+                    block.attributes.version = value
+                elif key == "S7_Family":
+                    block.attributes.family = value
+                elif key == "S7_EditorMode":
+                    block.attributes.editor_mode = value
+                elif key == "S7_PreferredLanguage":
+                    block.attributes.preferred_language = value  # type: ignore[assignment]
+                elif key == "S7_BlockTitle":
+                    block.attributes.block_title_mlc = value
+                elif key == "S7_BlockComment":
+                    block.attributes.block_comment_mlc = value
 
         if self._current().type == TokenType.PRAGMA_END:
             self._advance()
