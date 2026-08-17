@@ -213,6 +213,9 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
 
     # Determine source path
     safety_path_pattern = "safety"
+    # Only a loaded plc.yaml can turn the gate off; an explicit PATH argument
+    # never reads config at all, so it keeps the strict default.
+    fail_on_error = True
     if path is None:
         try:
             from plc_code.core.config import load_config
@@ -220,6 +223,7 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
             config = load_config()
             path = config.source_path
             safety_path_pattern = config.quality.safety_path_pattern
+            fail_on_error = config.quality.fail_on_error
         except FileNotFoundError:
             diag_console.print("[red]Error:[/red] No plc.yaml found and no path specified.")
             diag_console.print("Run 'plc init' or specify a path: plc lint <path>")
@@ -320,8 +324,10 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
                         f"  {marker} {violation.rule_code} {violation.context}: " f"{violation.message}"
                     )
 
-        # Exit code
-        raise SystemExit(0 if result.passed else 1)
+        # Exit code. `code.quality.fail_on_error: false` reports every finding and
+        # still exits 0 — what the bundled example project asks for, and what its
+        # own plc.yaml has always claimed to do.
+        raise SystemExit(0 if result.passed or not fail_on_error else 1)
 
     except SystemExit:
         raise
@@ -1488,6 +1494,10 @@ def trace(
     from plc_code.parser import parse_scl_file
     from plc_code.project.discovery import discover_blocks
 
+    # Diagnostics must not share the stream the JSON payload is written to, or
+    # `-f json` emits an unparseable document whenever anything is reported.
+    diag_console = console_err if output_format == "json" else console
+
     # Determine source path
     if path is None:
         try:
@@ -1496,12 +1506,12 @@ def trace(
             config = load_config()
             path = config.source_path
         except FileNotFoundError:
-            console.print("[red]Error:[/red] No plc.yaml found and no path specified.")
-            console.print("Run 'plc init' or specify a path: plc code trace <path>")
+            diag_console.print("[red]Error:[/red] No plc.yaml found and no path specified.")
+            diag_console.print("Run 'plc init' or specify a path: plc code trace <path>")
             raise SystemExit(1) from None
 
     if not path.exists():
-        console.print(f"[red]Error:[/red] Source not found: {path}")
+        diag_console.print(f"[red]Error:[/red] Source not found: {path}")
         raise SystemExit(1)
 
     try:
@@ -1513,18 +1523,18 @@ def trace(
             block_files = [bf.source_path for bf in blocks_found]
 
         if not block_files:
-            console.print("[yellow]No .s7dcl files found to analyze.[/yellow]")
+            diag_console.print("[yellow]No .s7dcl files found to analyze.[/yellow]")
             raise SystemExit(1)
 
         # Filter by block name if specified
         if block_name:
             matching = [bf for bf in block_files if Path(bf).stem.lower() == block_name.lower()]
             if not matching:
-                console.print(f"[red]Error:[/red] Block '{block_name}' not found.")
+                diag_console.print(f"[red]Error:[/red] Block '{block_name}' not found.")
                 raise SystemExit(1)
             block_files = matching
 
-        console.print(f"Analyzing {len(block_files)} block(s)...", style="dim")
+        diag_console.print(f"Analyzing {len(block_files)} block(s)...", style="dim")
 
         # Analyze each block
         all_results: dict[str, dict] = {}
@@ -1547,10 +1557,10 @@ def trace(
                     }
 
             except Exception as e:
-                console.print(f"[yellow]Warning:[/yellow] Failed to analyze {block_path}: {e}")
+                diag_console.print(f"[yellow]Warning:[/yellow] Failed to analyze {block_path}: {e}")
 
         if not all_results:
-            console.print("[yellow]No output dependencies found.[/yellow]")
+            diag_console.print("[yellow]No output dependencies found.[/yellow]")
             raise SystemExit(0)
 
         # Generate output based on format
@@ -1564,10 +1574,12 @@ def trace(
     except SystemExit:
         raise
     except Exception as e:
-        console.print(f"[red]Error during analysis:[/red] {e}")
+        diag_console.print(f"[red]Error during analysis:[/red] {e}")
+        import sys
         import traceback
 
-        traceback.print_exc()
+        # Default is stdout, which would land inside the JSON payload.
+        traceback.print_exc(file=sys.stderr)
         raise SystemExit(1) from e
 
 
