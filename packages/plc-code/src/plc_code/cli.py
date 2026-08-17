@@ -29,6 +29,7 @@ from plc_code.drawio_generator.page_builder import build_sheet
 from plc_code.drawio_generator.xml_writer import write_drawio
 
 console = Console()
+console_err = Console(stderr=True)
 
 
 # =============================================================================
@@ -350,18 +351,24 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
     from plc_code.parser import parse_scl_file
     from plc_code.project.discovery import discover_blocks
 
+    # In JSON mode, stdout must carry only the JSON payload. Anything that can
+    # appear before it — or instead of it, on an early exit — is routed to
+    # stderr so it stays visible without corrupting a machine reader's stdout.
+    # In text mode this is exactly `console`, so nothing changes for a human.
+    diag_console = console_err if output_format == "json" else console
+
     if path is None:
         try:
             from plc_code.core.config import load_config
 
             path = load_config().source_path
         except FileNotFoundError:
-            console.print("[red]Error:[/red] No plc.yaml found and no path specified.")
-            console.print("Specify a path: plc code transpile <path>")
+            diag_console.print("[red]Error:[/red] No plc.yaml found and no path specified.")
+            diag_console.print("Specify a path: plc code transpile <path>")
             raise SystemExit(1) from None
 
     if not path.exists():
-        console.print(f"[red]Error:[/red] Source not found: {path}")
+        diag_console.print(f"[red]Error:[/red] Source not found: {path}")
         raise SystemExit(1)
 
     if path.is_file():
@@ -370,7 +377,7 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
         block_files = [bf.source_path for bf in discover_blocks(path)]
 
     if not block_files:
-        console.print("[yellow]No .s7dcl files found.[/yellow]")
+        diag_console.print("[yellow]No .s7dcl files found.[/yellow]")
         raise SystemExit(1)
 
     blocks: list[tuple[Path, Any]] = []
@@ -378,7 +385,7 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
         try:
             block = parse_scl_file(block_file)
         except Exception as e:  # noqa: BLE001 - a bad file must not abort the run
-            console.print(f"[yellow]Skipped[/yellow] {block_file.name}: {type(e).__name__}: {e}")
+            diag_console.print(f"[yellow]Skipped[/yellow] {block_file.name}: {type(e).__name__}: {e}")
             continue
         if block is not None and block.name:
             blocks.append((block_file, block))

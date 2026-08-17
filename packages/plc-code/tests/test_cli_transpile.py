@@ -94,6 +94,50 @@ def mixed_dir(tmp_path: Path) -> Path:
     return directory
 
 
+# A VAR_INPUT declaration missing its colon. This is what really trips the
+# structural parser in customer code (project-C's FCT_GEST_2PPES.s7dcl:
+# "ParseError: Expected COLON at line 35, got SEMICOLON") — here reduced to a
+# minimal block that raises the same ParseError class, without copying any
+# customer source into this repo.
+_UNREADABLE_BLOCK = """
+FUNCTION_BLOCK "Unparseable"
+    VAR_INPUT
+        a Int;
+    END_VAR
+    VAR_OUTPUT
+        b : Int;
+    END_VAR
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION Logic
+            IF #a > 1 THEN
+                #b := 2;
+            END_IF;
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK
+"""
+
+
+@pytest.fixture
+def dir_with_unreadable_file(tmp_path: Path) -> Path:
+    """One well-formed block plus one file the structural parser cannot read.
+
+    ``mixed_dir`` above holds two blocks that both parse structurally — one
+    just fails ``--check`` diagnostics. This fixture is the case
+    ``test_json_is_the_only_thing_on_stdout`` missed: ``parse_scl_file`` itself
+    raises, which is what triggers the "Skipped" warning in ``transpile``.
+    """
+    directory = tmp_path / "blocks"
+    directory.mkdir()
+    (directory / "Unparseable.s7dcl").write_text(_UNREADABLE_BLOCK, encoding="utf-8")
+    (directory / "Fine.s7dcl").write_text(
+        _block("Fine", "            IF #a > 1 THEN\n                #b := 2;\n            END_IF;"),
+        encoding="utf-8",
+    )
+    return directory
+
+
 class TestCommandIsRegistered:
     def test_listed_in_help(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["--help"])
@@ -199,3 +243,43 @@ class TestJsonOutput:
         """Parseable without stripping a banner."""
         result = runner.invoke(cli, ["transpile", "--check", "-f", "json", str(CLEAN_BLOCK)])
         json.loads(result.output)
+
+
+class TestSkippedFileDoesNotCorruptJson:
+    """A file the structural parser cannot read must not land on stdout in -f json.
+
+    ``CliRunner`` (Click 8.4) exposes ``result.output`` as stdout and stderr
+    merged together, and ``result.stdout`` / ``result.stderr`` as the same two
+    streams kept separate — no special runner construction is needed to get
+    them apart, just reading the right attribute.
+    """
+
+    def test_check_json_still_parses(self, runner: CliRunner, dir_with_unreadable_file: Path) -> None:
+        result = runner.invoke(cli, ["transpile", "--check", "-f", "json", str(dir_with_unreadable_file)])
+        payload = json.loads(result.stdout)
+        assert payload["blocks_checked"] == 1
+
+    def test_conformance_json_still_parses(self, runner: CliRunner, dir_with_unreadable_file: Path) -> None:
+        result = runner.invoke(
+            cli, ["transpile", "--conformance", "-f", "json", str(dir_with_unreadable_file)]
+        )
+        payload = json.loads(result.stdout)
+        assert payload["blocks"] == 1
+
+    def test_skip_warning_is_still_emitted_on_stderr(
+        self, runner: CliRunner, dir_with_unreadable_file: Path
+    ) -> None:
+        """A silently dropped warning would be a worse bug than the stdout leak."""
+        result = runner.invoke(cli, ["transpile", "--check", "-f", "json", str(dir_with_unreadable_file)])
+        assert "Skipped" in result.stderr
+        assert "Unparseable.s7dcl" in result.stderr
+        # And it must not have leaked back onto stdout alongside the JSON.
+        assert "Skipped" not in result.stdout
+
+    def test_text_mode_skip_warning_stays_on_stdout(
+        self, runner: CliRunner, dir_with_unreadable_file: Path
+    ) -> None:
+        """Text mode is unchanged: the warning is still where a human looks."""
+        result = runner.invoke(cli, ["transpile", "--check", str(dir_with_unreadable_file)])
+        assert "Skipped" in result.stdout
+        assert "Unparseable.s7dcl" in result.stdout
