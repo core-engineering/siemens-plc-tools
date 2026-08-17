@@ -18,7 +18,12 @@ jobs:
         # gate turns red on a tool release rather than on a code change.
 
       - name: Sync workspace
-        run: uv sync --all-extras --all-packages
+        # --locked makes uv.lock authoritative: it installs exactly what the lock
+        # says and fails if the lock has drifted from pyproject.toml, rather than
+        # silently re-resolving. Without it a committed lock buys nothing, and a
+        # new release of any `>=` runtime dependency can turn CI red with no code
+        # change — the same failure the exact dev-tool pins already prevent.
+        run: uv sync --all-extras --all-packages --locked
 
       # Tests are gated too: CLAUDE.md has always told contributors to format and
       # lint them, but CI only ever looked at src/, so they drifted unnoticed.

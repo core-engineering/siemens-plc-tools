@@ -81,8 +81,11 @@ examples/**/report.pdf
 # Claude Code
 .claude/
 
-# Lock files (regenerate with uv sync)
-uv.lock
+# uv.lock IS tracked. The dev tools are pinned exactly in pyproject.toml because
+# they are the quality gate, but every runtime dependency is a `>=` range, so
+# without a committed lock CI resolves fresh on every run and a new release of
+# click, pydantic or rich turns it red with no code change. Same reasoning,
+# applied to the other half of the dependency tree.
 
 # Superpowers SDD scratch — plan ledgers, briefs, reports, review packages.
 # Never tracked: these are internal working notes, not deliverables.

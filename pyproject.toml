@@ -178,14 +178,17 @@ asyncio_mode = "auto"
 
 [tool.coverage.report]
 # Ratchet, not a target. Coverage was collected but never enforced, so nothing
-# stopped it sliding; this floor is set just under the measured 59.86% so the
+# stopped it sliding; this floor sits just under the last measured run so the
 # number can only go up. Raise it whenever a run clears the next step —
 # lowering it is a decision, not a fix.
 #
+# 59 (measured 59.86) -> 63 (measured 63.74, after the safety-boundary work and
+# the parser/CLI fixes added tests).
+#
 # CLAUDE.md's "85% per package" is the goal, not the state. Worst offenders:
-# plc-sim 27%, plc-net 31%, plc-sup 39% (none of the three has a test suite of
-# its own; what they show is incidental import-time coverage).
-fail_under = 59
+# plc-sim, plc-net and plc-sup, none of which has a test suite of its own; what
+# they show is incidental import-time coverage.
+fail_under = 63
 precision = 2
 
 [tool.mypy]
