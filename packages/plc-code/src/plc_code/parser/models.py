@@ -329,10 +329,13 @@ class UserDataType:
         Type name.
     fields : list[StructField]
         Fields in the STRUCT.
+    is_safety : bool
+        True when the type declares ``S7_Safety`` truthy. False otherwise.
     """
 
     name: str
     fields: list[StructField] = field(default_factory=list)
+    is_safety: bool = False
 
 
 @dataclass

@@ -979,6 +979,26 @@ class SCLParser:
         block : Block
             Block to fill with UDT info.
         """
+        # A leading pragma sits between TYPE and the type name, and used to block
+        # the name entirely: this method reads the name by expecting an IDENTIFIER
+        # at the cursor, and never reached it. Consuming the pragma here both reads
+        # S7_Safety and lets the name through.
+        is_safety = False
+        while self._current().type == TokenType.PRAGMA_START:
+            self._advance()
+            self._skip_newlines()
+            while self._current().type == TokenType.PRAGMA_CONTENT:
+                content = self._current().value
+                if ":=" in content:
+                    key, value = content.split(":=", 1)
+                    if key.strip() == "S7_Safety":
+                        is_safety = value.strip().strip('"').upper() == "TRUE"
+                self._advance()
+                self._skip_newlines()
+            if self._current().type == TokenType.PRAGMA_END:
+                self._advance()
+            self._skip_newlines()
+
         # Get type name
         name = ""
         if self._current().type == TokenType.IDENTIFIER:
@@ -997,7 +1017,7 @@ class SCLParser:
             self._skip_newlines()
 
         block.name = name
-        udt = UserDataType(name=name)
+        udt = UserDataType(name=name, is_safety=is_safety)
 
         # Parse struct fields
         pending_mlc = ""

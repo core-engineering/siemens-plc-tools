@@ -1,0 +1,7 @@
+TYPE
+    { S7_Safety := "True" }
+    typeSafetyProbe : STRUCT
+        enable : Bool;
+        setpoint : Real;
+    END_STRUCT;
+END_TYPE

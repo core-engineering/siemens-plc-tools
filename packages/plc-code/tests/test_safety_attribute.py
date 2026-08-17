@@ -83,3 +83,55 @@ END_FUNCTION_BLOCK
         path.write_text(code, encoding="utf-8")
         block = parse_scl_file(path)
         assert block.attributes.is_safety is True
+
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def _udt(tmp_path: Path, pragma: str) -> str:
+    path = tmp_path / "typeFoo.s7dcl"
+    path.write_text(
+        f"TYPE\n{pragma}    typeFoo : STRUCT\n        a : Bool;\n    END_STRUCT;\nEND_TYPE\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+class TestUdtSafetyAttribute:
+    """The pragma sits before the type name and used to block it.
+
+    `_parse_udt` expected an IDENTIFIER at the cursor, so a leading pragma left
+    both `Block.name` and `UserDataType.name` empty. Reading the flag requires
+    consuming the pragma, which fixes the name too — one change, two effects.
+    """
+
+    def test_pragma_sets_the_udt_flag(self, tmp_path: Path) -> None:
+        block = parse_scl_file(_udt(tmp_path, '    { S7_Safety := "True" }\n'))
+        assert block.user_data_type is not None
+        assert block.user_data_type.is_safety is True
+
+    def test_pragma_no_longer_blocks_the_type_name(self, tmp_path: Path) -> None:
+        block = parse_scl_file(_udt(tmp_path, '    { S7_Safety := "True" }\n'))
+        assert block.name == "typeFoo"
+        assert block.user_data_type is not None
+        assert block.user_data_type.name == "typeFoo"
+
+    def test_udt_without_a_pragma_still_parses_its_name(self, tmp_path: Path) -> None:
+        """The fix must not trade one break for another."""
+        block = parse_scl_file(_udt(tmp_path, ""))
+        assert block.name == "typeFoo"
+        assert block.user_data_type is not None
+        assert block.user_data_type.name == "typeFoo"
+        assert block.user_data_type.is_safety is False
+
+    def test_non_safety_pragma_leaves_the_flag_false_and_the_name_read(self, tmp_path: Path) -> None:
+        block = parse_scl_file(_udt(tmp_path, '    { S7_Setpoint := "False" }\n'))
+        assert block.name == "typeFoo"
+        assert block.user_data_type is not None
+        assert block.user_data_type.is_safety is False
+
+    def test_shipped_fixture_is_recognised(self) -> None:
+        block = parse_scl_file(FIXTURES / "typeSafetyProbe.s7dcl")
+        assert block.name == "typeSafetyProbe"
+        assert block.user_data_type is not None
+        assert block.user_data_type.is_safety is True
