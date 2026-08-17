@@ -1153,11 +1153,21 @@ def parse_resource_file(file_path: Path) -> ResourceFile:
 
     resource = ResourceFile()
     for entry in data["MultiLingualTexts"]:
-        mlc_id = entry.get("id", "")
-        text = entry.get("en-US", "")
+        # `.s7res` is YAML, so a comment that looks like a scalar is parsed as one:
+        # `40021` arrives as an int, `1.5` as a float, `ON` as a bool, a bare date
+        # as a `datetime.date`, and an empty value as None. `MultiLingualText.text`
+        # is annotated `str` but a dataclass does not enforce that at runtime, so
+        # the wrong type flowed straight through to every string operation
+        # downstream. One real project comments its rungs with Modbus
+        # holding-register numbers, which took `plc code lint` down for the whole
+        # project with "'int' object has no attribute 'lower'". Coerce here: this is
+        # the only place a MultiLingualText is built, so it is the only place that
+        # can guarantee the annotation.
+        mlc_id = str(entry.get("id", "") or "")
+        raw_text = entry.get("en-US")
         resource.texts[mlc_id] = MultiLingualText(
             id=mlc_id,
-            text=text,
+            text="" if raw_text is None else str(raw_text),
         )
 
     return resource

@@ -431,6 +431,71 @@ class TestResourceFiles:
         resource = parse_resource_file(tmp_path / "nonexistent.s7res")
         assert len(resource.texts) == 0
 
+    def test_numeric_text_is_a_string(self, tmp_path: Path) -> None:
+        """A comment that is only digits must not arrive as an int.
+
+        `.s7res` is YAML, so an unquoted `40021` parses as an int and the
+        declared `MultiLingualText.text: str` is not enforced at runtime. One
+        real project uses Modbus holding-register numbers as rung comments —
+        24 of them in a single file — and every string operation downstream
+        then raised `AttributeError: 'int' object has no attribute 'lower'`,
+        taking down `plc code lint` for the whole project.
+        """
+        content = """MultiLingualTexts:
+  - id: MLC_reg
+    en-US: 40021
+"""
+        res_file = tmp_path / "test.s7res"
+        res_file.write_text(content, encoding="utf-8")
+
+        resource = parse_resource_file(res_file)
+
+        assert resource.texts["MLC_reg"].text == "40021"
+        assert isinstance(resource.get_text("MLC_reg"), str)
+
+    def test_every_yaml_scalar_shape_becomes_a_string(self, tmp_path: Path) -> None:
+        """Floats, booleans and dates are comments too, and YAML coerces them all.
+
+        `ON`/`OFF` and `1.5` are ordinary PLC comment text, and a bare date is
+        common in a revision note. Guarding only the integer case would leave
+        the same crash one comment away.
+        """
+        content = """MultiLingualTexts:
+  - id: MLC_int
+    en-US: 42
+  - id: MLC_float
+    en-US: 1.5
+  - id: MLC_bool
+    en-US: ON
+  - id: MLC_date
+    en-US: 2026-08-17
+"""
+        res_file = tmp_path / "test.s7res"
+        res_file.write_text(content, encoding="utf-8")
+
+        resource = parse_resource_file(res_file)
+
+        for mlc_id in ("MLC_int", "MLC_float", "MLC_bool", "MLC_date"):
+            value = resource.texts[mlc_id].text
+            assert isinstance(value, str), f"{mlc_id} came back as {type(value).__name__}"
+            assert value != ""
+
+    def test_missing_and_null_text_become_empty_strings(self, tmp_path: Path) -> None:
+        """An absent or explicitly null `en-US` must give "", never None."""
+        content = """MultiLingualTexts:
+  - id: MLC_null
+    en-US:
+  - id: MLC_absent
+    de-DE: Beschreibung
+"""
+        res_file = tmp_path / "test.s7res"
+        res_file.write_text(content, encoding="utf-8")
+
+        resource = parse_resource_file(res_file)
+
+        assert resource.texts["MLC_null"].text == ""
+        assert resource.texts["MLC_absent"].text == ""
+
 
 class TestLibraryFiles:
     """Tests for parsing library metadata files."""
