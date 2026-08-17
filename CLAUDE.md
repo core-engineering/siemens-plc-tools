@@ -220,6 +220,9 @@ code:
   quality:
     enabled: true
     fail_on_error: false
+    safety_path_pattern: safety  # default; case-insensitive substring matched against
+                                 # a block's containing directory, not the whole path
+                                 # (the F003 safety-boundary check)
 
 # IOL module configuration
 iol:

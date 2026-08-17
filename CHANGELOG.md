@@ -97,6 +97,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `"DbName".MEMBER` now auto-load from the runtime's block search paths (mirroring
   `call_named_block` for FUNCTION/FB sub-blocks), so shared constant DBs no longer
   need to be registered by hand. New public helper `load_data_block(path)`.
+- **plc-code (parser, analyzer, CLI)** — the toolchain can now tell a safety block
+  from a standard one, and reports where the boundary is crossed.
+
+  `S7_Safety` was parsed nowhere: `BlockAttributes` carried author, version, family,
+  optimized, editor_mode, preferred_language and two MLC fields, and nothing about
+  safety, so every rule and every generated document treated an F block exactly like
+  a standard one. 36 files in one delivered project carry the attribute.
+
+  Both spellings the corpus uses are accepted — `"TRUE"` appears 20 times and
+  `"True"` 16 — so the comparison is case-insensitive; a strict one would have missed
+  44% of the F blocks.
+
+  Three checks, reported by `plc code lint` in text and under `project_violations` in
+  `-f json`, with the `F` prefix Siemens itself uses for fail-safe: `F001` a standard
+  block calls a safety block, `F002` a safety block calls a standard block, both
+  errors; `F003` declaration and path disagree, a warning because it is a heuristic.
+  The path pattern is `code.quality.safety_path_pattern`, defaulting to `safety`, and
+  it matches the block's containing directory rather than the whole path — Siemens keeps
+  F code in a folder, while a standard block's own name routinely contains "Safety"
+  because it interfaces with the safety side. Matching the filename too would have
+  reported 26 blocks that are correctly standard, 14 of them in one project.
+
+  They are not quality rules, and could not be: `Rule.check(self, block)` sees one
+  block, so a cross-block check cannot reach the callee's flag. They follow the
+  repository's existing shape for cross-block work instead. For them to gate,
+  `ProjectAnalysisResult` gained `project_violations`, counted by `total_errors`,
+  `total_warnings`, `total_info` and `get_violations_by_rule`; `blocks_with_errors`
+  and `blocks_passed` still count blocks. `analyze_blocks(blocks)` without the new
+  `sources` argument behaves exactly as before, so the docs pipeline is untouched.
+
+  Measured across five real PLC projects. The delivered project-A program comes out
+  clean: 165 blocks, 36 carrying `S7_Safety`, and no boundary crossing of either
+  kind — which is also the prediction the design committed to in advance, since all
+  36 sit inside a directory matching the pattern. project-B is clean on crossings too
+  (50 blocks, 23 safety) but reports 7 `F003`: six safety UDTs and one safety
+  parameter DB kept in generic folders rather than under a safety tree — real
+  organisational drift, and the kind of thing the check exists to surface.
+  `project-E` reports the corpus's only two `F001`, and both are
+  test-harness code — `Test_ArmSafetySequence` and
+  `Test_ArmSafetySwitchManagement` driving safety blocks on purpose — plus 10
+  `F003`: eight `Test_Safety/` harness blocks, the standard-side
+  `Safety/InterfaceProcessSafety`, and one genuine drift finding in the other
+  direction, `Program blocks/Parameters/ProjectSafetyParameters`, which declares
+  `S7_Safety` from a generic folder just as project-B's parameter DB does.
+  `project-D` carries no safety code at all. `project-C` carries none either (207 blocks parsed, zero `S7_Safety`
+  declarations), measured through the analyzer rather than through `lint`, because
+  `plc code lint project-C` fails with `AttributeError: 'int' object has no
+  attribute 'lower'` at `extractor/header.py:169` — a pre-existing defect in the
+  documentation rule, unrelated to this work and not fixed here.
 
 ### Fixed
 - **plc-code (executor/control_flow)** — two CASE layouts were mistranslated,
@@ -209,6 +258,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     (`test_limitation_fixes.py::test_two_assignments_on_one_source_line_both_assign`);
   - an `Array[..] of <UDT>` passed as a direct FC parameter resolves
     (`test_array_of_udt.py`).
+- **plc-code (parser)** — a UDT declared with a leading pragma lost its name.
+  `_parse_udt` read the type name by expecting an `IDENTIFIER` at the cursor, but the
+  token stream is `TYPE`, `PRAGMA_START`, `PRAGMA_CONTENT`, `PRAGMA_END`,
+  `IDENTIFIER` — the pragma sat before the name and blocked it, leaving both
+  `Block.name` and `UserDataType.name` empty. Reading `S7_Safety` there required
+  consuming the pragma, which fixes the name as a direct consequence.
+
+  This is a behaviour change rather than an addition: **24 production UDTs gain a
+  name they did not have** — project-A 15, project-B 6, project-E 3 — which
+  changes what any consumer of UDT names produces. No shipped fixture exercised a
+  pragma before a type name, which is why nothing caught it; one has been added.
+
+  One UDT still parses with an empty name: project-C's `16bits.s7dcl` declares
+  `TYPE "16bits" : STRUCT`, a quoted-string type name (Siemens identifiers cannot
+  start with a digit) rather than a plain `IDENTIFIER`. `_parse_udt` does not
+  handle that form; it is a separate, pre-existing gap and is left alone here.
 
 ### Changed
 - **workspace** — the Python version (`.python-version`, 3.12) and every dev tool
