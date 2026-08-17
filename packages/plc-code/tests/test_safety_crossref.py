@@ -49,6 +49,31 @@ END_FUNCTION_BLOCK
 """
 
 
+def _ob(name: str, calls: list[str] | None = None) -> str:
+    """Build an organization block in the shape the real corpus uses.
+
+    Derived from ``_fb()``: same attribute-pragma-before-declaration shape,
+    verified against
+    ``Program blocks/100 - Process/101 - Organisation Blocks/Main.s7dcl``. An
+    OB has no ``VAR_INPUT`` section in that corpus, so this shape omits it. No
+    OB in the observed corpus declares ``S7_Safety``, so this helper has no
+    ``safety`` parameter.
+    """
+    body = "\n".join(f'            "{c}"();' for c in (calls or [])) or "            #a := FALSE;"
+    return f"""{{
+    S7_Optimized := "TRUE";
+}}
+ORGANIZATION_BLOCK "{name}"
+    {{ S7_Language := "SCL" }}
+    NETWORK
+        REGION Logic
+{body}
+        END_REGION
+    END_NETWORK
+END_ORGANIZATION_BLOCK
+"""
+
+
 def _parse(source: str):
     return SCLParser(tokenize_with_newlines(source)).parse()
 
@@ -92,6 +117,23 @@ class TestF001StandardCallsSafety:
         )
         f001 = [v for v in report.violations if v.rule_code == "F001"][0]
         assert "std/Caller.s7dcl" in f001.context
+
+    def test_an_organization_block_caller_is_checked(self) -> None:
+        """An OB is where standard cyclic code invokes FBs, so it must be checked.
+
+        Excluding ORGANIZATION_BLOCK from the callable kinds made this crossing
+        invisible. No OB in the observed corpus declares S7_Safety, so nothing in
+        production moves — but the path has to stay closed.
+        """
+        report = build_safety_report(
+            [
+                _pair("std/Main.s7dcl", _ob("Main", calls=["FTarget"])),
+                _pair("safety/FTarget.s7dcl", _fb("FTarget", safety=True)),
+            ]
+        )
+        f001 = [v for v in report.violations if v.rule_code == "F001"]
+        assert len(f001) == 1
+        assert "std/Main.s7dcl" in f001[0].context
 
 
 class TestF002SafetyCallsStandard:

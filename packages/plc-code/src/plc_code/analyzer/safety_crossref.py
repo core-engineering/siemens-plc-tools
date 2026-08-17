@@ -23,8 +23,10 @@ from plc_code.analyzer.graph_builder import build_call_graph
 from plc_code.analyzer.quality.models import Severity, Violation
 from plc_code.parser.models import Block
 
-#: Block kinds that participate in call-boundary checks. A DATA_BLOCK is not called.
-_CALLABLE_KINDS = {"FUNCTION_BLOCK", "FUNCTION"}
+#: Block kinds that participate in call-boundary checks. An ORGANIZATION_BLOCK is
+#: where standard cyclic code invokes FBs and FCs, so it must be checked as a caller
+#: too. A DATA_BLOCK and a TYPE are not called.
+_CALLABLE_KINDS = {"FUNCTION_BLOCK", "FUNCTION", "ORGANIZATION_BLOCK"}
 
 
 @dataclass
