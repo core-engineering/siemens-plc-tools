@@ -19,10 +19,10 @@ from plc_code.parser import parse_scl_file
 
 def _block(pragma: str) -> str:
     return f"""
+{{
+    S7_Optimized := "TRUE";{pragma}
+}}
 FUNCTION_BLOCK "Probe"
-    {{
-        S7_Optimized := "TRUE";{pragma}
-    }}
     VAR_INPUT
         a : Bool;
     END_VAR
@@ -59,5 +59,27 @@ class TestSafetyAttribute:
 
     def test_other_attributes_still_parse(self, tmp_path: Path) -> None:
         """The new branch must not shadow the existing chain."""
-        block = _parse(tmp_path, '\n        S7_Safety := "True";')
+        block = _parse(tmp_path, '\n    S7_Safety := "True";')
         assert block.attributes.optimized is True
+
+    def test_pragma_before_declaration_sets_safety(self, tmp_path: Path) -> None:
+        """Verify that S7_Safety in pragma-before-declaration (real corpus shape) works."""
+        code = """
+{
+    S7_Safety := "TRUE";
+}
+FUNCTION_BLOCK "RealCorpusShape"
+    VAR_INPUT
+        input1 : Bool;
+    END_VAR
+    NETWORK
+        REGION Logic
+            #input1 := FALSE;
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK
+"""
+        path = tmp_path / "test.s7dcl"
+        path.write_text(code, encoding="utf-8")
+        block = parse_scl_file(path)
+        assert block.attributes.is_safety is True
