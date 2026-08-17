@@ -113,6 +113,11 @@ from plc_code.analyzer.models import (
     CallType,
     ConnectedComponent,
 )
+from plc_code.analyzer.safety_crossref import (
+    SafetyReport,
+    build_safety_report,
+    is_safety_block,
+)
 from plc_code.analyzer.state_machine import (
     StateConstant,
     StateMachine,
@@ -169,6 +174,10 @@ __all__ = [
     "generate_db_page",
     "get_variable_anchor_link",
     "normalize_array_indices",
+    # Safety boundary cross-reference
+    "SafetyReport",
+    "build_safety_report",
+    "is_safety_block",
     # Global DB audit
     "AUDIT_RULES",
     "AuditResult",
