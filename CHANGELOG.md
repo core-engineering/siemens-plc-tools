@@ -35,18 +35,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   exactly one statement or one error — the guarantee whose absence let a whole
   `CASE` be dropped in silence.
 
-  Measured over 624 blocks in five real PLC projects: 99.93% token coverage.
+  Measured over 624 blocks in five real PLC projects: 99.96% token coverage.
   Per project — project-B 100%, project-A 99.88%, project-C 100%, project-D 100%,
-  project-E 99.89%. Most frequent constructs not yet read:
-  parenthesized boolean sub-expressions used as a call-statement argument value
-  (e.g. `CLK := (#activeState = #PUMP1_RUNNING)`), compound assignment operators
-  (`+=`), and — the one silent case, caught as unattributed tokens rather than
-  errors — `ELSIF`/`ELSE`/`END_IF` orphaned inside `IF` chains nested in `CASE`
-  arms with string labels.
+  project-E 100%. Most frequent constructs not yet read: parenthesized
+  boolean sub-expressions used as a call-statement argument value (e.g.
+  `CLK := (#activeState = #PUMP1_RUNNING)`) and compound assignment operators
+  (`+=`) — both recorded as errors, not lost silently. The one silent case a
+  final review found is fixed: `_at_case_label` accepted a nested
+  `CASE`/`IF`/`FOR`/`WHILE` at the head of an outer CASE arm as ordinary label
+  content, so the nested construct's own header was scanned for a colon that
+  belonged to *it*, truncating the outer CASE there and leaking every arm after
+  it to top level — the sole root cause of all 33 `silent_loss` findings the
+  first measurement reported. The corpus now reports zero.
 
-  Nothing generates from the AST yet. `plc code transpile --check` and the
-  executor are untouched, and `--conformance` always exits 0: it is a report,
-  not a gate.
+  Nothing generates from the AST yet, and the executor is untouched.
+  `plc code transpile --check`'s own diagnostics did not change; its output
+  routing did. The skip warning for a source file the structural parser
+  cannot read used to print via the same stdout `Console` `-f json` writes
+  its payload to, so `--check -f json` (and `--conformance -f json`) were
+  unparsable whenever a file failed to parse. Those warnings, and the other
+  messages that can precede the payload, now go to stderr in JSON mode —
+  text mode is unchanged. `--conformance` always exits 0 regardless: it is a
+  report, not a gate.
 - **plc-code (executor/diagnostics, CLI)** — new `plc code transpile` command and
   the `plc_code.executor.diagnostics` module behind it.
 

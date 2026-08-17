@@ -56,15 +56,6 @@ SOURCES = [
 
 
 @pytest.mark.parametrize("source", SOURCES, ids=range(len(SOURCES)))
-def test_every_token_is_consumed(source: str) -> None:
-    tokens = [t for t in tokenize(source) if t.type is not TokenType.EOF]
-    result = parse_statements(tokens)
-    assert result.consumed_tokens == len(
-        tokens
-    ), f"{len(tokens) - result.consumed_tokens} token(s) unaccounted for in {source!r}"
-
-
-@pytest.mark.parametrize("source", SOURCES, ids=range(len(SOURCES)))
 def test_every_token_is_accounted_for_by_a_statement_or_an_error(source: str) -> None:
     """The strong invariant: no gap, and no statement wider than its content."""
     tokens = [t for t in tokenize(source) if t.type is not TokenType.EOF]
@@ -78,7 +69,6 @@ def test_an_unreadable_construct_is_still_accounted_for() -> None:
     tokens = [t for t in tokenize("GOTO done; #b := 1;") if t.type is not TokenType.EOF]
     result = parse_statements(tokens)
     assert result.errors
-    assert result.consumed_tokens == len(tokens)
     assert not verify_no_silent_loss(tokens, result)
 
 
@@ -270,9 +260,6 @@ def test_weak_form_never_catches_the_old_recover_defect() -> None:
     ]
     result = module.parse_statements(tokens)
 
-    # Weak form: trivially true, both before and after the revert.
-    assert result.consumed_tokens == len(tokens)
-
     # Strong form: catches it.
     problems = module.verify_no_silent_loss(tokens, result)
     assert problems, "reverting the _recover fix should break verify_no_silent_loss"
@@ -357,9 +344,6 @@ def test_weak_form_never_catches_the_old_case_label_defect() -> None:
     module = _load_scratch_parser("old_case_labels", broken)
     tokens = [t for t in tokenize("CASE #a OF #x := 1; END_CASE;") if t.type is not TokenType.EOF]
     result = module.parse_statements(tokens)
-
-    # Weak form: trivially true, both before and after the revert.
-    assert result.consumed_tokens == len(tokens)
 
     # Strong form: catches it.
     problems = module.verify_no_silent_loss(tokens, result)

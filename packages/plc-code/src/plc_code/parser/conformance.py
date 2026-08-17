@@ -4,13 +4,11 @@ Answers one question: how much of the SCL we actually have can the AST read?
 The figure decides phase 2's strategy — an incremental strangler with a text
 fallback, or a single cutover — instead of that call being guessed.
 
-Coverage is **not** ``consumed_tokens / tokens``. ``consumed_tokens`` is
-``TokenStream.position()`` after ``parse()`` returns, and the recovery loop
-in ``StatementParser.parse`` guarantees forward progress to the end of the
-stream on every input — so ``consumed_tokens`` always equals ``len(tokens)``,
-clean or not. Measured directly: on ``PumpControl.s7dcl``'s 201-token region,
-``consumed_tokens / tokens`` is 201/201, i.e. 100%, regardless of whether the
-region actually parsed. That formula is a constant, not a metric.
+Coverage is **not** "the cursor reached the end of the stream". The recovery
+loop in ``StatementParser.parse`` guarantees forward progress to the end of
+the stream on every input, so that alone is a constant, not a metric —
+measured directly, on ``PumpControl.s7dcl``'s 201-token region the cursor
+reaches token 201 of 201 regardless of whether the region actually parsed.
 
 Coverage here is instead defined from what the parser demonstrably could
 **not** read: the union of token indices inside ``ParseResult.error_spans``
@@ -96,7 +94,7 @@ class ConformanceReport:
         Tokens the parser actually accounted for as a statement, an error's
         own token, or a separator — i.e. ``tokens`` minus the size of the
         per-region union of ``error_spans`` and ``unattributed_spans``. Not
-        ``ParseResult.consumed_tokens`` (see module docstring for why that
+        the cursor's raw end position (see module docstring for why that
         figure is vacuous).
     errors : list[tuple[str, ParseError]]
         Each error with the name of the block it came from.

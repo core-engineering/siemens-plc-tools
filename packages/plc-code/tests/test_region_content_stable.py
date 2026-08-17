@@ -23,5 +23,7 @@ def test_region_content_has_no_merged_tokens(path: Path) -> None:
     for network in block.networks:
         for region in network.regions:
             assert ">=" not in region.content
+            assert "<=" not in region.content
             assert "<>" not in region.content
             assert "=>" not in region.content
+            assert "**" not in region.content

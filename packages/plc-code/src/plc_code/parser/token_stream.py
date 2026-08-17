@@ -96,14 +96,20 @@ class TokenStream:
             )
         return self.advance()
 
-    def compose_operator(self) -> str | None:
-        """Consume one operator, joining an adjacent pair into its SCL form.
+    def peek_operator(self) -> str | None:
+        """What ``compose_operator`` would consume, without consuming it.
+
+        The single lookahead this module offers over ``_OPERATOR_TYPES`` /
+        ``_COMPOSITE_OPERATORS``: a caller that only needs to test which
+        operator sits at the cursor — not consume it on the caller's own
+        terms — uses this instead of duplicating the adjacency check.
 
         Returns
         -------
         str | None
-            The operator text (``">="``, ``"+"``, ...), or None when the cursor
-            is not on an operator. Nothing is consumed in the None case.
+            The operator text (``">="``, ``"+"``, ...) that sits at the
+            cursor, or None when the cursor is not on an operator. Nothing
+            is consumed either way.
         """
         first = self.peek()
         single = _OPERATOR_TYPES.get(first.type)
@@ -115,9 +121,23 @@ class TokenStream:
         if pair is not None and adjacent(first, second):
             composite = _COMPOSITE_OPERATORS.get((single, pair))
             if composite is not None:
-                self.advance()
-                self.advance()
                 return composite
 
-        self.advance()
         return single
+
+    def compose_operator(self) -> str | None:
+        """Consume one operator, joining an adjacent pair into its SCL form.
+
+        Returns
+        -------
+        str | None
+            The operator text (``">="``, ``"+"``, ...), or None when the cursor
+            is not on an operator. Nothing is consumed in the None case.
+        """
+        operator = self.peek_operator()
+        if operator is None:
+            return None
+        self.advance()
+        if len(operator) == 2:  # every composite is two characters; no single is
+            self.advance()
+        return operator

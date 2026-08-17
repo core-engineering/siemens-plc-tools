@@ -7,7 +7,7 @@ production code; the parser must handle them from the start:
 """
 
 from plc_code.parser.lexer import TokenType, tokenize
-from plc_code.parser.statement_parser import parse_statements
+from plc_code.parser.statement_parser import parse_statements, verify_no_silent_loss
 from plc_code.parser.statements import Assignment, Case, For, If, While
 
 
@@ -98,6 +98,36 @@ class TestLoops:
         assert len(node.body) == 1
 
 
+class TestMalformedFor:
+    """A FOR header missing its `:=` must not raise (fuzz-found: 3059 inputs, one site).
+
+    `_parse_for` used to call `TokenStream.expect(ASSIGN)` unguarded, which
+    raises `ValueError` on a mismatch. Every other unreadable construct in
+    this module records a `ParseError` and recovers instead; a missing `:=`
+    in a FOR header must behave the same way.
+    """
+
+    def test_missing_assign_does_not_raise(self) -> None:
+        result = _parse("FOR #i TO 10 DO #a; END_FOR;")
+        assert result.errors
+
+    def test_missing_do_does_not_raise(self) -> None:
+        result = _parse("FOR #i := 1 TO 10 END_FOR;")
+        assert result.errors
+
+    def test_bare_for_end_for_does_not_raise(self) -> None:
+        result = _parse("FOR END_FOR;")
+        assert result.errors
+
+    def test_no_truncation_of_a_well_formed_for_ever_raises(self) -> None:
+        """A small fuzz: every prefix of a valid FOR must parse without raising."""
+        tokens = [
+            t for t in tokenize("FOR #i := 1 TO 9 BY 2 DO #b := #i; END_FOR;") if t.type is not TokenType.EOF
+        ]
+        for length in range(1, len(tokens) + 1):
+            parse_statements(tokens[:length])  # must not raise
+
+
 def _assignments(statements) -> list[Assignment]:
     """Every Assignment reachable from a statement list, including inside a Case."""
     found: list[Assignment] = []
@@ -176,3 +206,72 @@ class TestMalformedCase:
         assert isinstance(node, Case)
         assignments = _assignments(result.statements)
         assert any(_targets(a) == ["#", "c"] for a in assignments)
+
+
+class TestNestedStatementAtHeadOfCaseArm:
+    """A nested CASE/IF/FOR/WHILE opening a CASE arm must not be read as a label.
+
+    `_at_case_label`'s lookahead used to accept CASE/IF/FOR/WHILE as ordinary
+    label-value tokens, so a nested construct's own header was scanned for a
+    colon as if it were the outer arm's label. For a nested CASE, that colon
+    belongs to the nested CASE's own first label — swallowing the nested
+    header as a bogus outer-level label, truncating the outer CASE at the
+    nested construct's `END_CASE`, and leaking every arm after it to top
+    level. This is the sole root cause of every silent-loss finding in the
+    production sweep (33 entries); the reproduction below is the general
+    shape, not the specific production one, which lives in a customer
+    project this repo does not copy from.
+
+    Each case below gives the outer CASE two arms, the first opening with a
+    nested construct, to prove the second arm is not lost.
+    """
+
+    def test_nested_case_does_not_truncate_the_outer_case(self) -> None:
+        result = _parse("CASE #a OF 1: CASE #b OF 2: #x := 1; END_CASE; 3: #y := 2; END_CASE;")
+        assert result.errors == []
+        outer = result.statements[0]
+        assert isinstance(outer, Case)
+        assert len(outer.branches) == 2
+        assert [t.value for t in outer.branches[0].values[0]] == ["1"]
+        assert [t.value for t in outer.branches[1].values[0]] == ["3"]
+
+        first_arm_body = outer.branches[0].body
+        assert len(first_arm_body) == 1
+        assert isinstance(first_arm_body[0], Case)
+
+        second_arm_body = outer.branches[1].body
+        assert len(second_arm_body) == 1
+        assert _targets(second_arm_body[0]) == ["#", "y"]
+
+    def test_nested_if_does_not_truncate_the_outer_case(self) -> None:
+        result = _parse("CASE #a OF 1: IF #b THEN #x := 1; END_IF; 3: #y := 2; END_CASE;")
+        assert result.errors == []
+        outer = result.statements[0]
+        assert isinstance(outer, Case)
+        assert len(outer.branches) == 2
+        assert isinstance(outer.branches[0].body[0], If)
+        assert _targets(outer.branches[1].body[0]) == ["#", "y"]
+
+    def test_nested_for_does_not_truncate_the_outer_case(self) -> None:
+        result = _parse("CASE #a OF 1: FOR #i := 1 TO 2 DO #x := #i; END_FOR; 3: #y := 2; END_CASE;")
+        assert result.errors == []
+        outer = result.statements[0]
+        assert isinstance(outer, Case)
+        assert len(outer.branches) == 2
+        assert isinstance(outer.branches[0].body[0], For)
+        assert _targets(outer.branches[1].body[0]) == ["#", "y"]
+
+    def test_nested_while_does_not_truncate_the_outer_case(self) -> None:
+        result = _parse("CASE #a OF 1: WHILE #b DO #x := 1; END_WHILE; 3: #y := 2; END_CASE;")
+        assert result.errors == []
+        outer = result.statements[0]
+        assert isinstance(outer, Case)
+        assert len(outer.branches) == 2
+        assert isinstance(outer.branches[0].body[0], While)
+        assert _targets(outer.branches[1].body[0]) == ["#", "y"]
+
+    def test_nested_case_reports_no_silent_loss(self) -> None:
+        source = "CASE #a OF 1: CASE #b OF 2: #x := 1; END_CASE; 3: #y := 2; END_CASE;"
+        tokens = [t for t in tokenize(source) if t.type is not TokenType.EOF]
+        result = parse_statements(tokens)
+        assert not verify_no_silent_loss(tokens, result)

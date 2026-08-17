@@ -31,10 +31,13 @@ from plc_code.parser.statements import (
     Statement,
     While,
 )
-from plc_code.parser.token_stream import TokenStream, adjacent
+from plc_code.parser.token_stream import TokenStream
 
 #: Keywords that terminate a statement list without being statements themselves.
 _BLOCK_ENDERS = {"END_IF", "ELSE", "ELSIF", "END_CASE", "END_FOR", "END_WHILE"}
+
+#: Keywords that open a new statement — never valid case-label content.
+_STATEMENT_OPENERS = {"IF", "CASE", "FOR", "WHILE"}
 
 
 @dataclass
@@ -59,12 +62,6 @@ class ParseResult:
     errors : list[ParseError]
         One entry per construct the parser could not read, in the order the
         parser encountered them. Default is an empty list.
-    consumed_tokens : int
-        The cursor's final position. Always equals the input length once
-        ``parse()`` returns (the recovery loop guarantees forward progress
-        to the end of the stream), so on its own this says nothing about
-        whether every token ended up in ``statements`` or ``errors`` — see
-        ``verify_no_silent_loss`` for the check that does. Default is 0.
     statement_spans : list[tuple[int, int]]
         ``(start, end)`` token-index span for each entry in ``statements``,
         same order, recorded only for top-level statements (a nested
@@ -100,7 +97,6 @@ class ParseResult:
 
     statements: list[Statement] = field(default_factory=list)
     errors: list[ParseError] = field(default_factory=list)
-    consumed_tokens: int = 0
     statement_spans: list[tuple[int, int]] = field(default_factory=list)
     error_spans: list[tuple[int, int]] = field(default_factory=list)
     separator_spans: list[tuple[int, int]] = field(default_factory=list)
@@ -150,7 +146,6 @@ class StatementParser:
                 # the accounting must see it — see _record_unattributed.
                 self._stream.advance()
                 self._record_unattributed(before)
-        self._result.consumed_tokens = self._stream.position()
         return self._result
 
     def _parse_statement(self) -> Statement | None:
@@ -288,6 +283,32 @@ class StatementParser:
         """
         return token.type is TokenType.IDENTIFIER and token.value.upper() in _BLOCK_ENDERS
 
+    @staticmethod
+    def _opens_a_statement(token: Token) -> bool:
+        """Whether ``token`` is a keyword that begins a new statement.
+
+        ``IF``, ``CASE``, ``FOR`` and ``WHILE`` lex as ordinary ``IDENTIFIER``
+        tokens too (see ``_keyword_ahead``), so ``_at_case_label``'s
+        lookahead must recognise them explicitly and stop, the same way it
+        stops on a block-ender: without this check, a CASE arm that opens
+        with a nested CASE/IF/FOR/WHILE instead of a label would be scanned
+        for a colon inside that nested construct's own header — reading
+        straight through it as label content and truncating the outer CASE
+        at the nested construct's first colon.
+
+        Parameters
+        ----------
+        token : Token
+            The token to classify.
+
+        Returns
+        -------
+        bool
+            True when ``token`` is an identifier whose uppercased value is
+            one of ``_STATEMENT_OPENERS``.
+        """
+        return token.type is TokenType.IDENTIFIER and token.value.upper() in _STATEMENT_OPENERS
+
     def _take_until_keyword(self, *keywords: str) -> list[Token]:
         """Consume tokens up to (not including) one of ``keywords``.
 
@@ -404,8 +425,7 @@ class StatementParser:
         same CASE is still found and used. This is what lets `1: #b := 10;`
         immediately followed by unlabelled statements, or a labelless span
         ahead of a real ELSE, still surface every statement and still
-        recognise the default — see `_parse_case_labels` for why the old
-        version of this method could not do that.
+        recognise the default.
 
         Returns
         -------
@@ -449,15 +469,14 @@ class StatementParser:
         closed by the colon rather than read one token at a time.
 
         Gated on the non-consuming lookahead ``_at_case_label`` before a
-        single token is touched. An earlier version of this method instead
-        scanned speculatively into a local buffer and discarded that buffer
-        on failure — which silently consumed and dropped whatever it had
-        scanned (e.g. a branch that opened with a bare statement instead of
-        a label), with no statement and no recorded error. Checking first
-        and only then consuming means a failed attempt here leaves the
-        cursor exactly where it started, so the caller (`_parse_case`) can
-        record an error and still hand the same tokens to `_parse_case_body`
-        to be read as ordinary statements.
+        single token is touched, so a failed attempt leaves the cursor
+        exactly where it started rather than consuming speculatively into a
+        buffer and discarding it on failure — which would silently drop
+        whatever was scanned (e.g. a branch that opens with a bare statement
+        instead of a label), with no statement and no recorded error.
+        Checking first means the caller (`_parse_case`) can record an error
+        for a failed attempt and still hand the same, un-consumed tokens to
+        `_parse_case_body` to be read as ordinary statements.
 
         Returns
         -------
@@ -540,13 +559,22 @@ class StatementParser:
         colon that belongs to something else entirely — which is exactly how
         an unterminated labelless span (`#a ELSE #b := 9;`, no semicolon
         before ``ELSE``) could make a later ``ELSE`` disappear into what this
-        method reported as label content.
+        method reported as label content. The statement-opener check
+        (``_opens_a_statement``) exists for the same reason, one level up: a
+        nested ``CASE``/``IF``/``FOR``/``WHILE`` at the head of an outer
+        CASE's arm is a statement, not a label, even though its own header
+        also ends in a colon (a CASE selector) or reads on past one (an IF
+        condition) — without stopping here first, this scan would read into
+        the nested construct's own content hunting for a colon that closes
+        *its* header, truncating the outer CASE at that point instead of
+        recursing into the nested one as a statement.
 
         Returns
         -------
         bool
             True when the tokens ahead form a case label ending in a colon,
-            without an intervening statement boundary or block-ender.
+            without an intervening statement boundary, block-ender, or
+            nested statement.
         """
         offset = 0
         while True:
@@ -555,7 +583,7 @@ class StatementParser:
                 return False
             if token.type is TokenType.COLON:
                 return True
-            if self._is_block_ender(token):
+            if self._is_block_ender(token) or self._opens_a_statement(token):
                 return False
             if token.type not in (
                 TokenType.NUMBER,
@@ -567,19 +595,33 @@ class StatementParser:
                 return False
             offset += 1
 
-    def _parse_for(self) -> Statement:
+    def _parse_for(self) -> Statement | None:
         """Parse a FOR loop, with or without a BY step clause.
 
         ``FOR variable := start TO end BY step DO ... END_FOR;`` — the BY
         clause is optional in SCL; when absent, ``For.step`` is left empty so
         callers can tell "no BY clause" apart from an explicit step.
 
+        A header with no readable ``:=`` (`FOR #i TO 10 DO ...;`) does not
+        raise: like every other unreadable construct, it becomes a recorded
+        ``ParseError`` and the cursor recovers past the offending token,
+        gated the same way ``_parse_assignment_or_call`` gates its own
+        ``expect`` calls — checking with ``_find_ahead`` before consuming,
+        rather than consuming speculatively and only then finding out the
+        expected token was never there.
+
         Returns
         -------
-        Statement
-            The parsed ``For`` node.
+        Statement | None
+            The parsed ``For`` node; ``None`` when the header has no ``:=``
+            before the next statement boundary (an error was recorded and
+            the cursor recovered past it).
         """
         line = self._stream.advance().line  # FOR
+        if self._find_ahead(TokenType.ASSIGN) is None:
+            self._error(self._stream.peek(), "':=' in a FOR header")
+            self._recover_and_record()
+            return None
         variable = self._take_until(TokenType.ASSIGN)
         self._stream.expect(TokenType.ASSIGN)
         start = self._take_until_keyword("TO")
@@ -689,6 +731,11 @@ class StatementParser:
     def _is_output_arrow(self) -> bool:
         """Whether the cursor sits on an adjacent `=` `>` pair.
 
+        Delegates to ``TokenStream.peek_operator``, the same adjacency table
+        ``compose_operator`` uses, so there is exactly one place that decides
+        whether ``=`` and ``>`` compose into `=>` — not a second,
+        independently maintained check here.
+
         Returns
         -------
         bool
@@ -696,8 +743,7 @@ class StatementParser:
             with nothing between them in the source (i.e. the SCL `=>` output
             binding operator, which the lexer never merges into one token).
         """
-        first, second = self._stream.peek(), self._stream.peek(1)
-        return first.type is TokenType.EQ and second.type is TokenType.GT and adjacent(first, second)
+        return self._stream.peek_operator() == "=>"
 
     def _find_ahead(self, token_type: TokenType) -> int | None:
         """Offset of the next ``token_type`` before the statement ends, or None.
@@ -949,9 +995,7 @@ def _content_width(statement: Statement) -> tuple[int, int]:
         # _parse_if records it as a separator span at the point it consumes
         # it (see the ELSE branch above), so verify_no_silent_loss credits it
         # to this statement directly instead of this function having to guess
-        # whether an empty else_body means "absent" or "present but empty" —
-        # the ambiguity that hid a dropped token behind unearned slack before
-        # this was tracked at the source.
+        # whether an empty else_body means "absent" or "present but empty".
         return lo + 1, hi + 2  # END_IF [';']
 
     if isinstance(statement, Case):
