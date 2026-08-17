@@ -82,6 +82,17 @@ def _pair(path: str, source: str) -> tuple[Path, object]:
     return (Path(path), _parse(source))
 
 
+def _udt(name: str, safety: bool) -> str:
+    """Build a UDT (TYPE) in the shape the real corpus uses.
+
+    Mirrors ``TestIsSafetyBlock.test_reads_the_udt_flag_for_a_type`` above: the
+    pragma sits between ``TYPE`` and the type name, which is where TIA Portal
+    writes it.
+    """
+    pragma = '\n    { S7_Safety := "True" }' if safety else ""
+    return f"TYPE{pragma}\n    {name} : STRUCT\n        a : Bool;\n    END_STRUCT;\nEND_TYPE\n"
+
+
 class TestIsSafetyBlock:
     def test_reads_the_block_attribute(self) -> None:
         assert is_safety_block(_parse(_fb("F", safety=True))) is True
@@ -147,6 +158,31 @@ class TestF002SafetyCallsStandard:
         f002 = [v for v in report.violations if v.rule_code == "F002"]
         assert len(f002) == 1
         assert f002[0].severity is Severity.ERROR
+
+
+class TestNameCollisionWithANonCallableKind:
+    def test_a_udt_sharing_a_name_cannot_silence_a_crossing(self) -> None:
+        """A UDT is never a caller or a callee; it must not hide a real F001."""
+        report = build_safety_report(
+            [
+                _pair("std/Caller.s7dcl", _fb("Caller", safety=False, calls=["Worker"])),
+                _pair("safety/Worker.s7dcl", _fb("Worker", safety=True)),
+                _pair("types/Worker.s7dcl", _udt("Worker", safety=False)),
+            ]
+        )
+        f001 = [v for v in report.violations if v.rule_code == "F001"]
+        assert len(f001) == 1
+
+    def test_a_udt_sharing_a_name_cannot_fabricate_a_crossing(self) -> None:
+        """A UDT is never a caller or a callee; it must not fabricate an F001/F002."""
+        report = build_safety_report(
+            [
+                _pair("std/Caller.s7dcl", _fb("Caller", safety=False, calls=["Worker"])),
+                _pair("std/Worker.s7dcl", _fb("Worker", safety=False)),
+                _pair("types/Worker.s7dcl", _udt("Worker", safety=True)),
+            ]
+        )
+        assert [v for v in report.violations if v.rule_code in {"F001", "F002"}] == []
 
 
 class TestNoViolationWhenBothSidesAgree:

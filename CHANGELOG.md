@@ -80,9 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   quickest way to see what a block actually became.
 
   It found a real defect on its first run over the repo's own fixtures (see
-  `PumpControl.s7dcl` below). The whole 31-block corpus is clean now, asserted
-  by `test_diagnostics_corpus.py` — that is the no-false-positive guarantee, and
-  it is what decides whether the command is worth running at all.
+  `PumpControl.s7dcl` below). The whole fixture corpus is clean now — 32 blocks,
+  up from 31 because the UDT name fix below makes one more fixture countable —
+  asserted by `test_diagnostics_corpus.py`, which is the no-false-positive
+  guarantee, and what decides whether the command is worth running at all.
 - **plc-modbus (client)** — new `ModbusClient.read_register_block(spec, count,
   dtype)`, reading `count` consecutive registers in a single request and
   returning them keyed by each register's own spec
@@ -114,18 +115,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   block calls a safety block, `F002` a safety block calls a standard block, both
   errors; `F003` declaration and path disagree, a warning because it is a heuristic.
   The path pattern is `code.quality.safety_path_pattern`, defaulting to `safety`, and
-  it matches the block's containing directory rather than the whole path — Siemens keeps
+  it matches any directory in the block's path rather than the filename — Siemens keeps
   F code in a folder, while a standard block's own name routinely contains "Safety"
   because it interfaces with the safety side. Matching the filename too would have
-  reported 26 blocks that are correctly standard, 14 of them in one project.
+  reported 26 blocks that are correctly standard, 14 of them in one project. Because
+  any ancestor directory counts, a source root or checkout directory whose own name
+  contains the pattern makes every block in the project match.
 
   They are not quality rules, and could not be: `Rule.check(self, block)` sees one
   block, so a cross-block check cannot reach the callee's flag. They follow the
-  repository's existing shape for cross-block work instead. For them to gate,
-  `ProjectAnalysisResult` gained `project_violations`, counted by `total_errors`,
-  `total_warnings`, `total_info` and `get_violations_by_rule`; `blocks_with_errors`
-  and `blocks_passed` still count blocks. `analyze_blocks(blocks)` without the new
-  `sources` argument behaves exactly as before, so the docs pipeline is untouched.
+  repository's existing shape for cross-block work instead. `ProjectAnalysisResult`
+  gained `project_violations`, counted by `total_errors`, `total_warnings`,
+  `total_info` and `get_violations_by_rule` so that `passed` — and, through it,
+  `lint`'s exit code — reflects them; `blocks_with_errors` and `blocks_passed` still
+  count blocks only. (`code.quality.fail_on_error` is a separate, pre-existing key;
+  it is parsed but nothing reads it, so it is `lint`'s exit code that gates, not that
+  key.) `analyze_blocks(blocks)` without the new `sources` argument behaves exactly
+  as before — its signature and no-`sources` behaviour are unchanged. That is not the
+  same as saying generated output is unchanged: see the UDT rename entry under Fixed
+  below for what moves.
 
   Measured across five real PLC projects. The delivered project-A program comes out
   clean: 165 blocks, 36 carrying `S7_Safety`, and no boundary crossing of either
@@ -269,6 +277,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   name they did not have** — project-A 15, project-B 6, project-E 3 — which
   changes what any consumer of UDT names produces. No shipped fixture exercised a
   pragma before a type name, which is why nothing caught it; one has been added.
+
+  A project regenerating docs after this fix will see generated output move, not
+  just this changelog. Measured by blanking only the 24 pragma-first UDT names:
+  `type-prefix` (N002) drops by exactly 24 — project-B 6→0, project-A 15→0,
+  project-E 10→7 — taking project-A's `total_warnings` from 352 to 337; and
+  the type graph changes shape, project-A going from 154 to 165 nodes, 49 to 71 edges,
+  and 4 to 5 connected components with edges, so `type-graph-{N}.md` changes in
+  page count and content. Both changes are improvements — the old N002 warnings
+  were artifacts of this same parser bug, flagged against a name that had been
+  mis-parsed — but an engineer regenerating a project's docs must not be told
+  nothing moves.
 
   One UDT still parses with an empty name: project-C's `16bits.s7dcl` declares
   `TYPE "16bits" : STRUCT`, a quoted-string type name (Siemens identifiers cannot

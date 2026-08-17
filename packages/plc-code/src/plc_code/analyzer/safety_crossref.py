@@ -83,8 +83,11 @@ def build_safety_report(
         may be absent.
     safety_path_pattern : str
         Case-insensitive substring marking a directory as safety territory. Matched
-        against the block's containing directory, not the full path — a standard
-        block's own name often contains "Safety" too. Used by F003 only.
+        against any directory in the block's path, not the filename — a standard
+        block's own name often contains "Safety" too. Because any ancestor
+        directory counts, a source root or checkout directory whose own name
+        contains the pattern makes every block in the project match. Used by F003
+        only.
 
     Returns
     -------
@@ -100,7 +103,10 @@ def build_safety_report(
             report.safety_blocks += 1
         else:
             report.standard_blocks += 1
-        if block.name:
+        # Only a callable kind can be a caller or a callee; a TYPE or a DATA_BLOCK
+        # sharing a FUNCTION_BLOCK's name must not be able to overwrite it here and
+        # make the call check below read the wrong safety flag.
+        if block.name and block.block_type in _CALLABLE_KINDS:
             by_name[block.name] = block
             paths[block.name] = path
 

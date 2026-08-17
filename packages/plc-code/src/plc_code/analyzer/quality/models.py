@@ -172,7 +172,8 @@ class ProjectAnalysisResult:
     project_violations : list[Violation]
         Findings that belong to the project as a whole rather than to any one
         block (e.g. safety-boundary crossings). Counted into ``total_errors``,
-        ``total_warnings`` and ``total_info`` so ``fail_on_error`` sees them.
+        ``total_warnings`` and ``total_info`` so that ``passed`` — and, through
+        it, ``lint``'s exit code — reflects them.
     """
 
     block_results: list[BlockAnalysisResult] = field(default_factory=list)

@@ -221,8 +221,9 @@ code:
     enabled: true
     fail_on_error: false
     safety_path_pattern: safety  # default; case-insensitive substring matched against
-                                 # a block's containing directory, not the whole path
-                                 # (the F003 safety-boundary check)
+                                 # any directory in a block's path, not the filename
+                                 # (the F003 safety-boundary check) — a source root or
+                                 # checkout dir containing this substring matches everything
 
 # IOL module configuration
 iol:

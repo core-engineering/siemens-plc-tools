@@ -52,8 +52,11 @@ class QualityConfig:
     safety_path_pattern : str
         Case-insensitive substring marking a directory as safety territory, used by
         the F003 safety-boundary heuristic to flag a block whose ``S7_Safety``
-        declaration disagrees with where it lives. A project that organises its
-        safety F-blocks under a different directory name should override this.
+        declaration disagrees with where it lives. Matched against any directory in
+        the block's path, not just the immediate one, so a source root or checkout
+        directory whose own name contains the pattern makes every block in the
+        project match. A project that organises its safety F-blocks under a
+        different directory name should override this.
     """
 
     enabled: bool = True
@@ -410,7 +413,8 @@ paths:
 quality:
   enabled: true                     # Run quality analysis
   fail_on_error: true              # Fail on quality errors
-  # safety_path_pattern: safety     # Directory substring marking safety territory (F003)
+  # safety_path_pattern: safety     # Matches any directory in a block's path (F003);
+                                     # a root dir containing this substring matches everything
 
 testing:
   enabled: true                     # Run tests
