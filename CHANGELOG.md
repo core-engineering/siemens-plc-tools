@@ -149,13 +149,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `Safety/InterfaceProcessSafety`, and one genuine drift finding in the other
   direction, `Program blocks/Parameters/ProjectSafetyParameters`, which declares
   `S7_Safety` from a generic folder just as project-B's parameter DB does.
-  `project-D` carries no safety code at all. `project-C` carries none either (207 blocks parsed, zero `S7_Safety`
-  declarations), measured through the analyzer rather than through `lint`, because
-  `plc code lint project-C` fails with `AttributeError: 'int' object has no
-  attribute 'lower'` at `extractor/header.py:169` — a pre-existing defect in the
-  documentation rule, unrelated to this work and not fixed here.
+  `project-D` carries no safety code at all, and `project-C` carries none either
+  (207 blocks, zero `S7_Safety` declarations). That last figure was originally
+  measured through the analyzer rather than through `lint`, because `lint` crashed
+  on the whole project; the crash is fixed below and `lint` now reproduces the same
+  numbers directly.
 
 ### Fixed
+- **plc-code (CLI)** — `plc code trace -f json` emitted an unparseable document.
+
+  Its status line, its per-file parse warnings and, on failure, a full traceback
+  all went to the same stdout the JSON payload is written to, so any project with
+  one unreadable block produced output `json.load` rejected at character 0 —
+  silently, since the command still exited 0. `lint` and `transpile --check` had
+  the same defect and were fixed the same way; this is the third and last
+  instance. Diagnostics now go to stderr in JSON mode, `traceback.print_exc` with
+  them; text mode is unchanged and still prints everything to one stream.
+- **plc-code (CLI)** — `code.quality.fail_on_error` had no consumer.
+
+  The key was parsed into `QualityConfig`, documented in `CLAUDE.md`, written into
+  the generated `plc.yaml` template, and set to `false` by the bundled example
+  project with the comment "Report findings without failing the example" — while
+  `lint` ended in an unconditional `SystemExit(0 if result.passed else 1)` and
+  read it nowhere. The configuration surface promised something the tool did not
+  do. `lint` now honours it: findings are reported either way, and the exit code
+  is 0 when the key is false. As with `safety_path_pattern`, only a discovered
+  `plc.yaml` can soften the gate — `lint <path>` reads no configuration at all and
+  keeps the strict default.
+- **plc-code (parser)** — `plc code lint` crashed on a whole project when a rung
+  comment happened to look like a number.
+
+  `.s7res` resource files are YAML, so an unquoted comment is parsed as whatever
+  scalar it resembles: `40021` as an `int`, `1.5` as a `float`, `ON` as a `bool`,
+  a bare date as a `datetime.date`, an empty value as `None`.
+  `MultiLingualText.text` is annotated `str`, but a dataclass does not enforce
+  that at runtime, so the wrong type flowed through untouched until the first
+  string operation on it. One real project comments its rungs with Modbus
+  holding-register numbers — 24 of them in a single file — and the whole project
+  died with `AttributeError: 'int' object has no attribute 'lower'` at
+  `extractor/header.py:169`, reached from the `D`-category documentation rule.
+  A single unparseable comment took down every rule on all 207 blocks.
+
+  `parse_resource_file` now coerces the value, which is the only place a
+  `MultiLingualText` is constructed and therefore the only place the annotation
+  can be guaranteed. That also fixes two silent cases the crash was hiding:
+  `extract_interface` assigns the same value into a variable's and a UDT field's
+  `description`, so a numeric comment used to reach generated documentation as an
+  `int`.
+
+  `plc code lint` now completes on that project — 207 blocks, valid `-f json`
+  output — and the other four projects report identical figures to before.
 - **plc-code (executor/control_flow)** — two CASE layouts were mistranslated,
   both silently, from one root cause: the label regex required the label to
   occupy its whole line *and* end with a colon.
