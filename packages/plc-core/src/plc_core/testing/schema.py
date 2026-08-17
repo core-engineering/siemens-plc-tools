@@ -275,6 +275,30 @@ def register_step_parser(step_type: str, parser: Callable[[dict[str, Any]], Any]
 # ---------------------------------------------------------------------------
 
 
+def _parse_bool(value: Any) -> bool:
+    """Read a YAML value as a boolean without inverting a quoted one.
+
+    `bool("false")` is True, so a scenario written `skip: "false"` — quoted by
+    hand, or by a generator that quotes every scalar — would be skipped, which is
+    the opposite of what it says. YAML's own unquoted `false`/`no`/`off` already
+    arrive as `False`; this only has to stop a quoted one from flipping.
+
+    Parameters
+    ----------
+    value : Any
+        The raw YAML value.
+
+    Returns
+    -------
+    bool
+        The value's truth, with the strings YAML itself treats as false
+        (`false`, `no`, `off`, `0`, and the empty string) read as False.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "false", "no", "off", "0"}
+    return bool(value)
+
+
 def _parse_step(raw: dict[str, Any]) -> Step:
     """Convert a raw YAML step dict to a typed Step object."""
     step_type = raw.get("step", "").lower()
@@ -320,8 +344,11 @@ def parse_scenario(path: Path) -> Scenario:
         steps=steps,
         cleanup=cleanup,
         source_file=path,
-        skip=bool(sc.get("skip", False)),
-        skip_reason=str(sc.get("skip_reason", "")),
+        skip=_parse_bool(sc.get("skip", False)),
+        # `skip_reason:` left empty is the natural way to skip without a note, and
+        # YAML reads that as None — `str(None)` would render the literal "None" in
+        # the console, the Markdown report and the JUnit message attribute.
+        skip_reason="" if sc.get("skip_reason") is None else str(sc.get("skip_reason")),
     )
 
 
