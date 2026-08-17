@@ -50,7 +50,7 @@ class DocumentConfig:
     Attributes
     ----------
     number : str
-        Document reference number (e.g. "LS_PPAC21933701").
+        Document reference number (e.g. "DOC_PARAMS_0001").
     title : str
         Document title (e.g. "PROGRAM PARAMETERS TABLE").
     template : str
