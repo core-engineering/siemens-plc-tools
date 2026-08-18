@@ -376,24 +376,29 @@ from plc_iol.exporters import ExcelExporter
 | Unit tests | Each package has `tests/` directory (no `__init__.py` — see §6) |
 | Integration tests | Root `tests/` for cross-package tests |
 | Coverage goal | 85% per package |
-| Coverage gate | `fail_under = 59` (whole workspace), a ratchet — raise it, never lower it |
+| Coverage gate | `fail_under = 63` (whole workspace), a ratchet — raise it, never lower it |
 
 ### Coverage: goal vs. state
 
 `uv run pytest` measures all nine coverage targets and fails below the floor in
-`[tool.coverage.report]`. As of the last full run: **59.86%** overall.
+`[tool.coverage.report]`. As of the last full run: **63.92%** overall
+(12813/20046 statements).
 
-| Package | Coverage |
-|---------|----------|
-| plc-modbus | 97.6% |
-| plc-trace | 72.9% |
-| plc-iol | 67.3% |
-| plc-tools | 65.3% |
-| plc-code | 62.8% |
-| plc-core | 55.6% |
-| plc-sup | 39.0% |
-| plc-net | 31.5% |
-| plc-sim | 27.2% |
+| Package | Coverage | Covered / statements |
+|---------|----------|----------------------|
+| plc-modbus | 97.8% | 135 / 138 |
+| plc-trace | 72.9% | 312 / 428 |
+| plc-code | 68.1% | 9636 / 14159 |
+| plc-iol | 67.3% | 1082 / 1608 |
+| plc-tools | 65.3% | 32 / 49 |
+| plc-core | 58.0% | 1031 / 1779 |
+| plc-sup | 39.0% | 174 / 446 |
+| plc-net | 31.5% | 145 / 461 |
+| plc-sim | 27.2% | 266 / 978 |
+
+The statement counts matter as much as the percentages: `plc-code` is 71% of the
+workspace, so it alone sets the headline number, while `plc-modbus`'s 97.8% is
+138 statements and moves nothing.
 
 `plc-sup`, `plc-net` and `plc-sim` have no real suite of their own; their figures
 are incidental import-time coverage. They were also missing from the `--cov`
