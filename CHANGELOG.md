@@ -35,12 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   exactly one statement or one error — the guarantee whose absence let a whole
   `CASE` be dropped in silence.
 
-  Measured over 624 blocks in five real PLC projects: 99.96% token coverage.
-  Per project — project-B 100%, project-A 99.88%, project-C 100%, project-D 100%,
-  project-E 100%. Most frequent constructs not yet read: parenthesized
-  boolean sub-expressions used as a call-statement argument value (e.g.
-  `CLK := (#activeState = #PUMP1_RUNNING)`) and compound assignment operators
-  (`+=`) — both recorded as errors, not lost silently. The one silent case a
+  Measured over 648 blocks in five real PLC projects: **100.00% token coverage,
+  every block clean, zero errors and zero silent loss.** The first measurement
+  reported 99.96% with 51 errors; both remaining constructs are read now — see
+  the argument-depth fix below. The one silent case a
   final review found is fixed: `_at_case_label` accepted a nested
   `CASE`/`IF`/`FOR`/`WHILE` at the head of an outer CASE arm as ordinary label
   content, so the nested construct's own header was scanned for a colon that
@@ -156,6 +154,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   numbers directly.
 
 ### Fixed
+- **plc-code (parser)** — an argument value containing parentheses ended at the
+  wrong one, desynchronising the rest of the call.
+
+  `_take_until(COMMA, RPAREN)` delimited each argument's value without counting
+  parenthesis depth, so on
+
+      #block(CLK := (#state = #RUNNING), Q => #out);
+
+  the value stopped at the paren closing `(#state = #RUNNING)`, the argument list
+  ended there, and every token after it was read as a fresh statement — reporting
+  "an assignment or a call" at `,`, `Q`, `=`, `>` and on into the following lines.
+
+  One missing counter accounted for **45 of the 51** conformance errors left from
+  the statement parser's first release, spread over three blocks and presenting as
+  four unrelated causes: a parenthesised argument value, a nested call as a value,
+  a multi-line boolean value, and an `=>` binding that appeared unsupported but
+  never was. The remaining 6 came from a single `+=`, which the lexer emits as `+`
+  then `=` with nothing composing them; it now desugars to `#i := #i + #n` in the
+  parser, so no consumer of `Assignment` changes and the generator will need no
+  special case.
+
+  Measured across the five production projects after the fix: **648 blocks,
+  100.00% clean, zero errors, zero silent loss, token coverage exactly 1.0000** —
+  from 99.96% with 51 errors.
+
+  Adjacency composition gained a public owner in the process.
+  `composite_operator(left, right)` joins `TokenStream.peek_operator`, which only
+  covers the cursor; the alternative was importing the private table across
+  modules, contradicting the docstring that says `TokenStream` owns it.
 - **plc-code (CLI)** — `plc code trace -f json` emitted an unparseable document.
 
   Its status line, its per-file parse warnings and, on failure, a full traceback
