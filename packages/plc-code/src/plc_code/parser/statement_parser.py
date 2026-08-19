@@ -31,7 +31,7 @@ from plc_code.parser.statements import (
     Statement,
     While,
 )
-from plc_code.parser.token_stream import TokenStream
+from plc_code.parser.token_stream import TokenStream, composite_operator
 
 #: Keywords that terminate a statement list without being statements themselves.
 _BLOCK_ENDERS = {"END_IF", "ELSE", "ELSIF", "END_CASE", "END_FOR", "END_WHILE"}
@@ -221,6 +221,24 @@ class StatementParser:
         """
         assign_at = self._find_ahead(TokenType.ASSIGN)
         paren_at = self._find_ahead(TokenType.LPAREN)
+        compound_at = self._find_compound_assign()
+
+        if compound_at is not None and (assign_at is None or compound_at < assign_at):
+            target = self._take_until_offset(compound_at)
+            operator = self._stream.advance()
+            self._stream.advance()
+            value = self._take_until(TokenType.SEMICOLON)
+            self._consume_semicolon()
+            # `#i += #n` means `#i := #i + #n`. Desugaring here rather than
+            # adding an operator field keeps every consumer of Assignment
+            # unchanged, and the generator needs no special case. SCL targets
+            # are lvalues without side effects, so evaluating the target twice
+            # is sound. One occurrence in the whole observed corpus.
+            return Assignment(
+                line=first.line,
+                target=target,
+                value=[*target, operator, *value],
+            )
 
         if assign_at is not None and (paren_at is None or assign_at < paren_at):
             target = self._take_until(TokenType.ASSIGN)
@@ -715,7 +733,13 @@ class StatementParser:
                 is_output = True
             else:
                 # Positional argument: rewind and take the whole expression.
-                value = self._take_until(TokenType.COMMA, TokenType.RPAREN)
+                # The leading token is already consumed, so an opening paren
+                # there has to be carried into the depth count.
+                value = self._take_until(
+                    TokenType.COMMA,
+                    TokenType.RPAREN,
+                    initial_depth=1 if name_token.type is TokenType.LPAREN else 0,
+                )
                 arguments.append(Argument(name="", value=[name_token, *value]))
                 self._skip_comma()
                 continue
@@ -745,6 +769,44 @@ class StatementParser:
         """
         return self._stream.peek_operator() == "=>"
 
+    def _find_compound_assign(self) -> int | None:
+        """Offset of a compound-assignment operator such as `+=`, or None.
+
+        The lexer never merges two adjacent operator characters, so `+=`
+        reaches here as `+` then `=`. ``TokenStream.peek_operator`` owns the
+        adjacency table that decides whether they compose, and this walks the
+        statement looking for a position where it says they do.
+
+        Returns
+        -------
+        int | None
+            Offset from the cursor to the operator's first token, or None when
+            the statement ends first.
+        """
+        offset = 0
+        while True:
+            token = self._stream.peek(offset)
+            if token.type in (TokenType.EOF, TokenType.SEMICOLON) or self._is_block_ender(token):
+                return None
+            if composite_operator(token, self._stream.peek(offset + 1)) == "+=":
+                return offset
+            offset += 1
+
+    def _take_until_offset(self, offset: int) -> list[Token]:
+        """Consume and return exactly ``offset`` tokens from the cursor.
+
+        Parameters
+        ----------
+        offset : int
+            How many tokens to take.
+
+        Returns
+        -------
+        list[Token]
+            The consumed tokens, in source order.
+        """
+        return [self._stream.advance() for _ in range(offset)]
+
     def _find_ahead(self, token_type: TokenType) -> int | None:
         """Offset of the next ``token_type`` before the statement ends, or None.
 
@@ -773,7 +835,7 @@ class StatementParser:
                 return offset
             offset += 1
 
-    def _take_until(self, *stop: TokenType) -> list[Token]:
+    def _take_until(self, *stop: TokenType, initial_depth: int = 0) -> list[Token]:
         """Consume and return tokens up to (not including) any of ``stop``.
 
         Also stops before a block-ender keyword (``ELSE``, ``END_IF``, ...)
@@ -782,22 +844,44 @@ class StatementParser:
         else would keep an unterminated statement from consuming one as
         ordinary token content (see ``_is_block_ender``).
 
+        A ``stop`` type nested inside parentheses does not end the slice. That
+        matters for argument values: ``CLK := (#state = #RUNNING), Q => #out``
+        delimits its first value with ``RPAREN``, and without depth tracking the
+        inner ``)`` ended it — leaving the argument list, and everything after
+        it, desynchronised. One missing counter accounted for 45 of the 51
+        conformance errors measured across the production corpus.
+
+        Depth only ever rises on ``LPAREN`` and falls on ``RPAREN``, and a
+        ``RPAREN`` at depth zero still stops the slice, so a call's own closing
+        paren behaves exactly as before.
+
         Parameters
         ----------
         *stop : TokenType
-            Token types that end the slice without being consumed.
+            Token types that end the slice without being consumed, when they
+            occur outside any parentheses opened within the slice.
+        initial_depth : int
+            Parenthesis depth already entered by the caller. A positional
+            argument whose value starts with ``(`` has had that token consumed
+            before this call, so its matching ``)`` would otherwise read as a
+            depth-zero terminator.
 
         Returns
         -------
         list[Token]
-            The consumed tokens, in source order.
+            The consumed tokens, in source order. An unbalanced ``(`` yields a
+            slice ending at the stream's end rather than looping.
         """
         taken: list[Token] = []
-        while (
-            not self._stream.at_end()
-            and not self._stream.match(*stop)
-            and not self._is_block_ender(self._stream.peek())
-        ):
+        depth = initial_depth
+        while not self._stream.at_end():
+            token = self._stream.peek()
+            if depth == 0 and (self._stream.match(*stop) or self._is_block_ender(token)):
+                break
+            if token.type is TokenType.LPAREN:
+                depth += 1
+            elif token.type is TokenType.RPAREN:
+                depth -= 1
             taken.append(self._stream.advance())
         return taken
 

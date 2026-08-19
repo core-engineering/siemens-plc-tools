@@ -27,9 +27,35 @@ _COMPOSITE_OPERATORS: dict[tuple[str, str], str] = {
     ("<", ">"): "<>",
     ("=", ">"): "=>",
     ("*", "*"): "**",
+    ("+", "="): "+=",
 }
 
 _EOF = Token(TokenType.EOF, "", 0, 0)
+
+
+def composite_operator(left: Token, right: Token) -> str | None:
+    """The SCL operator ``left`` and ``right`` compose into, if any.
+
+    The lexer never merges two adjacent operator characters, because merging
+    would change ``Region.content`` and 27 rules plus the transpiler read it
+    byte-for-byte. Composition therefore happens at read time, and this is the
+    one place that decides it — ``TokenStream.peek_operator`` covers the cursor,
+    this covers any pair a caller already holds.
+
+    Parameters
+    ----------
+    left, right : Token
+        Two tokens in source order.
+
+    Returns
+    -------
+    str | None
+        The composed operator (``">="``, ``"=>"``, ``"+="`` ...) when the two
+        tokens touch in the source and form one, otherwise None.
+    """
+    if not adjacent(left, right):
+        return None
+    return _COMPOSITE_OPERATORS.get((left.value, right.value))
 
 
 def adjacent(left: Token, right: Token) -> bool:
