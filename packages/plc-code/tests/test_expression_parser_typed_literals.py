@@ -13,7 +13,7 @@ space in it, and a leading `#a` has nothing before it. `adjacent()` from
 """
 
 from plc_code.parser.expression_parser import parse_expression
-from plc_code.parser.expressions import BinaryOp, TypedLiteral, VariableRef
+from plc_code.parser.expressions import BinaryOp, FunctionCall, Index, TypedLiteral, VariableRef
 from plc_code.parser.lexer import TokenType, tokenize
 
 
@@ -58,3 +58,38 @@ class TestNotConfusedWithVariableAccess:
         """`16 # FF` with spaces is not `16#FF`."""
         node = _parse("16 # FF").expression
         assert not isinstance(node, TypedLiteral)
+
+
+class TestTypedLiteralsAwayFromPositionZero:
+    """The shapes the corpus actually contains.
+
+    A rule that only holds at the start of a slice would pass every test above
+    and fail on the first typed literal used as a call argument or an index.
+    """
+
+    def test_inside_a_function_call(self) -> None:
+        result = _parse("ABS(T#5s)")
+        assert result.errors == []
+        call = result.expression
+        assert isinstance(call, FunctionCall)
+        assert isinstance(call.arguments[0], TypedLiteral)
+
+    def test_as_an_array_index(self) -> None:
+        result = _parse("#arr[16#FF]")
+        assert result.errors == []
+        node = result.expression
+        assert isinstance(node, Index)
+        assert isinstance(node.index, TypedLiteral)
+
+    def test_inside_parentheses(self) -> None:
+        result = _parse("(T#5s)")
+        assert result.errors == []
+        assert isinstance(result.expression, TypedLiteral)
+
+    def test_the_run_stops_at_an_operator(self) -> None:
+        """`T#5s+1` has no spaces at all; the value must still be `5s`."""
+        node = _parse("T#5s+1").expression
+        # Binary operators arrive in the next task, so the tree stops at the
+        # literal; what matters here is that the literal itself is not `5s+1`.
+        assert isinstance(node, TypedLiteral)
+        assert node.value == "5s"

@@ -183,11 +183,18 @@ class _ExpressionParser:
         self._stream.advance()  # the prefix
         self._stream.advance()  # the '#'
 
-        # The value is the longest run of tokens touching one another:
-        # `5` `s` -> "5s", `1` `h` `30` `m` -> "1h30m".
+        # The value is the longest run of adjacent NUMBER/IDENTIFIER tokens:
+        # `5` `s` -> "5s", `1` `h` `30` `m` -> "1h30m". Adjacency alone is not
+        # enough to stop the run: real SCL puts no space before a closing
+        # delimiter either, so `ABS(T#5s)`'s `)` and `T#5s+1`'s `+` are both
+        # adjacent to the last value token and must be excluded by type.
         parts: list[str] = []
         previous = hash_token
-        while not self._stream.at_end() and adjacent(previous, self._stream.peek()):
+        while (
+            not self._stream.at_end()
+            and adjacent(previous, self._stream.peek())
+            and self._stream.peek().type in (TokenType.NUMBER, TokenType.IDENTIFIER)
+        ):
             token = self._stream.advance()
             parts.append(token.value)
             previous = token
