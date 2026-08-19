@@ -6,12 +6,13 @@ therefore `>=` versus `> =`) is decidable. The parser never guesses — a
 construct it cannot read produces a ``ParseError`` and the expression is
 reported as unreadable rather than reconstructed from a partial match.
 
-This module covers only the primary and postfix layer: literals, variable
-references (`#local`, `"Global"`), member access, indexing, function calls,
-and parenthesised grouping. Unary and binary operators are a later addition;
-``parse_expression`` and ``_ExpressionParser._parse_expression`` exist as the
-seam that addition slots into, so the top-level entry point does not need to
-be rewired when it does.
+The primary and postfix layer reads literals, variable references (`#local`,
+`"Global"`), member access, indexing, function calls, and parenthesised
+grouping. Above it sits the operator-precedence chain: a left-associative
+level per precedence tier (`OR`, `AND`, comparisons, `+`/`-`, `*`/`/`/`MOD`),
+then right-associative `**`, then unary `NOT`/`-`. ``_parse_expression`` is
+the seam both layers share — every sub-expression (index, call argument,
+grouping) re-enters through it, so the chain applies everywhere.
 """
 
 from __future__ import annotations
@@ -19,20 +20,37 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from plc_code.parser.expressions import (
+    BinaryOp,
     Expression,
     FunctionCall,
     Index,
     Literal,
     Member,
     TypedLiteral,
+    UnaryOp,
     VariableRef,
 )
 from plc_code.parser.lexer import Token, TokenType
 from plc_code.parser.statements import ParseError
-from plc_code.parser.token_stream import TokenStream, adjacent
+from plc_code.parser.token_stream import TokenStream, adjacent, composite_operator
 
 #: Identifier spellings that read as a boolean literal rather than a name.
 _BOOLEAN_LITERALS = {"TRUE", "FALSE"}
+
+#: Single-character operator tokens, mapped to their SCL spelling. Distinct
+#: from ``token_stream._OPERATOR_TYPES``: that module owns the adjacent
+#: composite table (``>=``, ``<=`` ...), this is only the fallback for a
+#: lone operator character, read here rather than exported because it is
+#: needed nowhere else.
+_SIMPLE_OPERATOR_TYPES: dict[TokenType, str] = {
+    TokenType.PLUS: "+",
+    TokenType.MINUS: "-",
+    TokenType.STAR: "*",
+    TokenType.SLASH: "/",
+    TokenType.EQ: "=",
+    TokenType.LT: "<",
+    TokenType.GT: ">",
+}
 
 
 @dataclass
@@ -96,21 +114,192 @@ class _ExpressionParser:
         """
         return self._parse_expression()
 
-    def _parse_expression(self) -> Expression | None:
-        """Top-level expression entry point.
+    #: Left-associative levels, weakest to strongest. Each entry lists that
+    #: level's operators; the chain is walked by _binary_level.
+    _LEVELS: tuple[frozenset[str], ...] = (
+        frozenset({"OR"}),
+        frozenset({"AND"}),
+        frozenset({"=", "<>", "<", ">", "<=", ">="}),
+        frozenset({"+", "-"}),
+        frozenset({"*", "/", "MOD"}),
+    )
 
-        For this task, delegates directly to ``_parse_postfix``: no operator
-        layer exists yet. A later task replaces this method's body with the
-        operator-precedence chain, without touching ``parse_expression`` or
-        any caller of it.
+    def _parse_expression(self) -> Expression | None:
+        """Top-level expression entry point: the operator-precedence chain.
 
         Returns
         -------
         Expression | None
             The parsed expression, or ``None`` when the cursor was on a
-            construct this parser cannot read.
+            construct this parser cannot read (an error was recorded).
         """
+        return self._binary_level(0)
+
+    def _binary_level(self, level: int) -> Expression | None:
+        """One left-associative binary level.
+
+        Parameters
+        ----------
+        level : int
+            Index into ``_LEVELS``. Past the last one, descend to
+            ``_parse_power``.
+
+        Returns
+        -------
+        Expression | None
+            The level's tree, or None when the left operand could not be
+            read, or when an operator was consumed but its right operand
+            could not: a binary node built from a missing operand would be a
+            partial tree presented as a complete one, which the caller has
+            no way to tell apart from a real parse (the same rule
+            ``_parse_postfix`` and ``_parse_function_call`` already follow).
+            ``_peek_operator_in`` can itself record an error without
+            consuming anything (the ``XOR`` case) — that counts too, so a
+            failed lookup only returns ``left`` when no new error appeared.
+        """
+        if level >= len(self._LEVELS):
+            return self._parse_power()
+        left = self._binary_level(level + 1)
+        if left is None:
+            return None
+        while True:
+            error_count = len(self._errors)
+            operator = self._peek_operator_in(self._LEVELS[level])
+            if operator is None:
+                return None if len(self._errors) > error_count else left
+            token = self._stream.peek()
+            self._consume_operator(operator)
+            right = self._binary_level(level + 1)
+            if right is None:
+                return None
+            left = BinaryOp(
+                line=token.line,
+                column=token.column,
+                operator=operator,
+                left=left,
+                right=right,
+            )
+
+    def _parse_power(self) -> Expression | None:
+        """``**``, the only RIGHT-associative operator.
+
+        ``2 ** 3 ** 2`` is ``2 ** (3 ** 2)`` = 512, not 64. Hence recursing
+        into itself on the right rather than looping.
+
+        Returns
+        -------
+        Expression | None
+            The parsed expression; ``None`` on the same terms as
+            ``_binary_level`` (missing left operand, missing right operand
+            after a consumed ``**``, or an error surfaced by
+            ``_peek_operator_in`` itself).
+        """
+        left = self._parse_unary()
+        if left is None:
+            return None
+        error_count = len(self._errors)
+        if self._peek_operator_in(frozenset({"**"})) is None:
+            return None if len(self._errors) > error_count else left
+        token = self._stream.peek()
+        self._consume_operator("**")
+        right = self._parse_power()
+        if right is None:
+            return None
+        return BinaryOp(line=token.line, column=token.column, operator="**", left=left, right=right)
+
+    def _parse_unary(self) -> Expression | None:
+        """``NOT x`` and ``-x``.
+
+        Unary sits ABOVE ``**`` in the chain, so ``-2 ** 2`` gives
+        ``-(2 ** 2)``: the operand of a leading ``-`` or ``NOT`` is read
+        with ``_parse_power``, not by recursing back into ``_parse_unary``
+        directly, so that a ``**`` following the operand is bound before the
+        unary operator wraps it. ``_parse_power`` calls back into
+        ``_parse_unary`` for its own left side, so a run of unary operators
+        (``NOT NOT #a``) still nests correctly through that mutual
+        recursion; only the base case, no unary token at the cursor, reads
+        straight through ``_parse_postfix``.
+
+        Returns
+        -------
+        Expression | None
+            The parsed expression; ``None`` when a ``-`` or ``NOT`` was
+            consumed but no operand followed, or when ``_parse_postfix``
+            found nothing readable (an error was recorded either way).
+        """
+        token = self._stream.peek()
+        if token.type is TokenType.MINUS:
+            self._stream.advance()
+            operand = self._parse_power()
+            if operand is None:
+                return None
+            return UnaryOp(line=token.line, column=token.column, operator="-", operand=operand)
+        if token.type is TokenType.IDENTIFIER and token.value.upper() == "NOT":
+            self._stream.advance()
+            operand = self._parse_power()
+            if operand is None:
+                return None
+            return UnaryOp(line=token.line, column=token.column, operator="NOT", operand=operand)
         return self._parse_postfix()
+
+    def _peek_operator_in(self, names: frozenset[str]) -> str | None:
+        """The SCL form of the operator at the cursor, if it is one of ``names``.
+
+        Checked in order: a composite pair (``>=``, ``**`` ...) via
+        ``composite_operator`` — the single owner of that table — then a
+        word operator (``AND``, ``OR``, ``MOD``) read off an ``IDENTIFIER``
+        token, then a lone operator character. ``XOR`` is recognised here
+        unconditionally, regardless of ``names``: it is never a member of
+        any precedence level, so without this check it would silently stop
+        the chain instead of being reported — the corpus has zero
+        occurrences, and guessing at its translation would be worse than
+        refusing it.
+
+        Parameters
+        ----------
+        names : frozenset[str]
+            The operator spellings this call accepts.
+
+        Returns
+        -------
+        str | None
+            The operator's SCL spelling when it is a member of ``names``,
+            otherwise None. Nothing is consumed either way.
+        """
+        first = self._stream.peek()
+        second = self._stream.peek(1)
+        composed = composite_operator(first, second)
+        if composed is not None and composed in names:
+            return composed
+
+        if first.type is TokenType.IDENTIFIER:
+            word = first.value.upper()
+            if word == "XOR":
+                self._error(first, "an operator this toolchain translates")
+                return None
+            if word in names:
+                return word
+            return None
+
+        simple = _SIMPLE_OPERATOR_TYPES.get(first.type)
+        if simple is not None and simple in names:
+            return simple
+        return None
+
+    def _consume_operator(self, operator: str) -> None:
+        """Advance the cursor past ``operator``.
+
+        Parameters
+        ----------
+        operator : str
+            The operator returned by a prior, unconsumed call to
+            ``_peek_operator_in``. A word operator (``AND``, ``OR``,
+            ``MOD``) and a lone character both occupy one token; a
+            composite (``>=``, ``**`` ...) occupies two adjacent ones.
+        """
+        self._stream.advance()
+        if len(operator) == 2 and not operator.isalpha():
+            self._stream.advance()
 
     def _parse_postfix(self) -> Expression | None:
         """Parse a primary expression, then any `.member` or `[index]` chain.
