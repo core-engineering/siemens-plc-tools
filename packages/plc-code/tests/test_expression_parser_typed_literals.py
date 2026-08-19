@@ -13,7 +13,14 @@ space in it, and a leading `#a` has nothing before it. `adjacent()` from
 """
 
 from plc_code.parser.expression_parser import parse_expression
-from plc_code.parser.expressions import BinaryOp, FunctionCall, Index, TypedLiteral, VariableRef
+from plc_code.parser.expressions import (
+    BinaryOp,
+    FunctionCall,
+    Index,
+    Literal,
+    TypedLiteral,
+    VariableRef,
+)
 from plc_code.parser.lexer import TokenType, tokenize
 
 
@@ -87,9 +94,17 @@ class TestTypedLiteralsAwayFromPositionZero:
         assert isinstance(result.expression, TypedLiteral)
 
     def test_the_run_stops_at_an_operator(self) -> None:
-        """`T#5s+1` has no spaces at all; the value must still be `5s`."""
+        """`T#5s+1` has no spaces at all; the literal must still end at `5s`.
+
+        Before operators existed this returned the bare literal. It returns the
+        addition now, and the point is unchanged and in fact sharper: the value
+        run must not have swallowed `+1`, and the operator must be read as an
+        operator.
+        """
         node = _parse("T#5s+1").expression
-        # Binary operators arrive in the next task, so the tree stops at the
-        # literal; what matters here is that the literal itself is not `5s+1`.
-        assert isinstance(node, TypedLiteral)
-        assert node.value == "5s"
+        assert isinstance(node, BinaryOp)
+        assert node.operator == "+"
+        assert isinstance(node.left, TypedLiteral)
+        assert node.left.value == "5s"
+        assert isinstance(node.right, Literal)
+        assert node.right.value == "1"
