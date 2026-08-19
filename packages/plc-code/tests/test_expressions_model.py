@@ -1,7 +1,7 @@
-"""Les nœuds de l'AST d'expressions.
+"""Expression AST nodes.
 
-Gelés comme ceux de `statements.py` : un arbre qu'un consommateur peut muter
-n'est plus une lecture de la source.
+Frozen like those in `statements.py`: a tree a consumer can mutate is no longer
+a reading of the source.
 """
 
 import dataclasses

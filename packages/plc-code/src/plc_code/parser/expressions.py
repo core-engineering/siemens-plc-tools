@@ -1,13 +1,13 @@
-"""AST d'expressions pour SCL.
+"""Expression AST for SCL.
 
-Dimensionné sur la mesure, pas sur la référence du langage : sur 14 217 tranches
-d'expression dans cinq projets de production, l'accès (`#`, `.`, `[]`) domine
-largement, puis l'arithmétique, puis le booléen. `XOR` n'apparaît pas une seule
-fois et n'a pas de nœud ici — le parseur le signale comme erreur, ce qui est la
-réponse honnête pour une construction que l'outillage ne traduit pas.
+Sized on measurement, not on the language reference: across 14,217 expression
+slices in five production projects, access (`#`, `.`, `[]`) dominates, followed
+by arithmetic, then boolean. `XOR` does not occur once and has no node here —
+the parser reports it as an error, which is the honest answer for a construct
+the toolchain cannot translate.
 
-Les nœuds sont gelés : un arbre qu'un consommateur peut muter n'est plus une
-lecture de la source.
+Nodes are frozen: a tree a consumer can mutate is no longer a reading of the
+source.
 """
 
 from __future__ import annotations
@@ -17,14 +17,14 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class Literal:
-    """Un littéral : nombre, chaîne, ``TRUE``/``FALSE``.
+    """A literal: number, string, `TRUE`/`FALSE`.
 
     Attributes
     ----------
     line, column : int
-        Position du premier token dans la source.
+        Position of the first token in the source.
     value : str
-        Le texte du littéral, tel qu'écrit.
+        The text of the literal, as written.
     """
 
     line: int
@@ -34,20 +34,20 @@ class Literal:
 
 @dataclass(frozen=True)
 class TypedLiteral:
-    """Un littéral préfixé par son type : ``T#5s``, ``16#FF``, ``DINT#5``.
+    """A literal prefixed by its type: `T#5s`, `16#FF`, `DINT#5`.
 
-    Le lexer ne les reconnaît pas ; il produit la même suite de tokens qu'un
-    accès variable précédé d'un nombre ou d'un identifiant. Sans ce nœud,
-    ``16#FF`` se lit « 16 puis la variable ``#FF`` », silencieusement.
+    The lexer does not recognize these; it produces the same token sequence as
+    a variable access preceded by a number or identifier. Without this node,
+    `16#FF` reads as "16 followed by the variable `#FF`", silently.
 
     Attributes
     ----------
     line, column : int
-        Position du préfixe dans la source.
+        Position of the prefix in the source.
     prefix : str
-        Ce qui précède le ``#`` : ``"T"``, ``"16"``, ``"DINT"``.
+        What precedes the `#`: `"T"`, `"16"`, `"DINT"`.
     value : str
-        Ce qui suit le ``#``, concaténé tel quel : ``"5s"``, ``"FF"``.
+        What follows the `#`, concatenated as-is: `"5s"`, `"FF"`.
     """
 
     line: int
@@ -58,18 +58,18 @@ class TypedLiteral:
 
 @dataclass(frozen=True)
 class VariableRef:
-    """Une variable : ``#local`` ou ``"DbName"``.
+    """A variable: `#local` or `"DbName"`.
 
     Attributes
     ----------
     line, column : int
-        Position dans la source.
+        Position in the source.
     name : str
-        Le nom, sans le ``#`` ni les guillemets.
+        The name, without the `#` or quotes.
     is_local : bool
-        True pour ``#name`` (variable du bloc), False pour ``"name"`` (bloc de
-        données ou bloc global). La distinction est celle que le générateur doit
-        faire pour choisir entre un attribut d'instance et une recherche globale.
+        True for `#name` (block variable), False for `"name"` (data block or
+        global block). The distinction determines whether code generation
+        chooses an instance attribute or a global lookup.
     """
 
     line: int
@@ -80,16 +80,16 @@ class VariableRef:
 
 @dataclass(frozen=True)
 class Member:
-    """Un accès membre : ``base.name``.
+    """A member access: `base.name`.
 
     Attributes
     ----------
     line, column : int
-        Position du ``.`` dans la source.
+        Position of the `.` in the source.
     base : Expression
-        Ce sur quoi porte l'accès.
+        The expression being accessed.
     name : str
-        Le nom du membre.
+        The name of the member.
     """
 
     line: int
@@ -100,16 +100,16 @@ class Member:
 
 @dataclass(frozen=True)
 class Index:
-    """Une indexation : ``base[index]``.
+    """An indexing operation: `base[index]`.
 
     Attributes
     ----------
     line, column : int
-        Position du ``[`` dans la source.
+        Position of the `[` in the source.
     base : Expression
-        Ce qui est indexé.
+        The expression being indexed.
     index : Expression
-        L'indice, lui-même une expression.
+        The index, itself an expression.
     """
 
     line: int
@@ -120,16 +120,16 @@ class Index:
 
 @dataclass(frozen=True)
 class UnaryOp:
-    """Un opérateur unaire : ``NOT x``, ``-x``.
+    """A unary operator: `NOT x`, `-x`.
 
     Attributes
     ----------
     line, column : int
-        Position de l'opérateur.
+        Position of the operator.
     operator : str
-        ``"NOT"`` (en majuscules) ou ``"-"``.
+        `"NOT"` (uppercase) or `"-"`.
     operand : Expression
-        L'opérande.
+        The operand.
     """
 
     line: int
@@ -140,17 +140,17 @@ class UnaryOp:
 
 @dataclass(frozen=True)
 class BinaryOp:
-    """Un opérateur binaire.
+    """A binary operator.
 
     Attributes
     ----------
     line, column : int
-        Position de l'opérateur.
+        Position of the operator.
     operator : str
-        La forme SCL composée : ``"+"``, ``"*"``, ``">="``, ``"<>"``, ``"**"``,
-        ``"AND"``, ``"OR"``, ``"MOD"``. Les mots sont en majuscules.
+        The SCL form: `"+"`, `"*"`, `">="`, `"<>"`, `"**"`, `"AND"`, `"OR"`,
+        `"MOD"`. Words are uppercase.
     left, right : Expression
-        Les opérandes.
+        The operands.
     """
 
     line: int
@@ -162,16 +162,16 @@ class BinaryOp:
 
 @dataclass(frozen=True)
 class FunctionCall:
-    """Un appel de fonction dans une expression : ``ABS(#x)``, ``INT_TO_REAL(#n)``.
+    """A function call in an expression: `ABS(#x)`, `INT_TO_REAL(#n)`.
 
     Attributes
     ----------
     line, column : int
-        Position du nom de la fonction.
+        Position of the function name.
     name : str
-        Le nom, tel qu'écrit.
+        The name, as written.
     arguments : list[Expression]
-        Les arguments, dans l'ordre source.
+        The arguments, in source order.
     """
 
     line: int
@@ -180,6 +180,4 @@ class FunctionCall:
     arguments: list[Expression] = field(default_factory=list)
 
 
-Expression = (
-    Literal | TypedLiteral | VariableRef | Member | Index | UnaryOp | BinaryOp | FunctionCall
-)
+Expression = Literal | TypedLiteral | VariableRef | Member | Index | UnaryOp | BinaryOp | FunctionCall
