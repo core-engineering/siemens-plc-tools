@@ -18,7 +18,7 @@ def _parse(source: str):
 
 def _op(source: str) -> str:
     node = _parse(source).expression
-    assert isinstance(node, BinaryOp), f"{source} n'a pas donné un BinaryOp"
+    assert isinstance(node, BinaryOp), f"{source} did not parse to a BinaryOp"
     return node.operator
 
 
