@@ -4,6 +4,10 @@ Gelés comme ceux de `statements.py` : un arbre qu'un consommateur peut muter
 n'est plus une lecture de la source.
 """
 
+import dataclasses
+
+import pytest
+
 from plc_code.parser.expressions import (
     BinaryOp,
     FunctionCall,
@@ -18,13 +22,15 @@ from plc_code.parser.expressions import (
 
 class TestNodesAreFrozen:
     def test_a_literal_cannot_be_mutated(self) -> None:
+        """The type is the contract; the message is a CPython detail.
+
+        Asserting on the message text would tie this test to a wording that
+        changes between Python versions — 3.12 says "cannot assign to field
+        'value'" and says nothing about being frozen.
+        """
         node = Literal(line=1, column=1, value="42")
-        try:
+        with pytest.raises(dataclasses.FrozenInstanceError):
             node.value = "43"  # type: ignore[misc]
-        except Exception as exc:
-            assert "frozen" in str(exc).lower()
-        else:
-            raise AssertionError("Literal doit être gelé")
 
 
 class TestNodesCarryPosition:
