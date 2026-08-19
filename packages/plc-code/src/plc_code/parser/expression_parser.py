@@ -579,3 +579,23 @@ def parse_expression(tokens: list[Token]) -> ExpressionResult:
     parser = _ExpressionParser(stream)
     expression = parser.parse()
     return ExpressionResult(expression=expression, errors=parser.errors, consumed=stream.position())
+
+
+def verify_expression_consumed(tokens: list[Token], result: ExpressionResult) -> bool:
+    """Whether the expression was read in full.
+
+    Parameters
+    ----------
+    tokens : list[Token]
+        The slice handed to ``parse_expression``.
+    result : ExpressionResult
+        What it returned.
+
+    Returns
+    -------
+    bool
+        True when every token was consumed by the tree or by an error. False
+        signals truncation — the failure mode this invariant exists to make
+        impossible.
+    """
+    return result.consumed == len(tokens)
