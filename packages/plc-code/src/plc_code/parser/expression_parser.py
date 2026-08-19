@@ -18,10 +18,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from plc_code.parser.expressions import Expression, FunctionCall, Index, Literal, Member, VariableRef
+from plc_code.parser.expressions import (
+    Expression,
+    FunctionCall,
+    Index,
+    Literal,
+    Member,
+    TypedLiteral,
+    VariableRef,
+)
 from plc_code.parser.lexer import Token, TokenType
 from plc_code.parser.statements import ParseError
-from plc_code.parser.token_stream import TokenStream
+from plc_code.parser.token_stream import TokenStream, adjacent
 
 #: Identifier spellings that read as a boolean literal rather than a name.
 _BOOLEAN_LITERALS = {"TRUE", "FALSE"}
@@ -151,6 +159,46 @@ class _ExpressionParser:
 
         return node
 
+    def _try_typed_literal(self) -> TypedLiteral | None:
+        """Read ``T#5s`` / ``16#FF`` if the cursor is on one, else nothing.
+
+        The lexer does not know these literals: ``16#FF`` comes out as
+        ``NUMBER('16') HASH('#') IDENTIFIER('FF')``, which is also the shape of
+        a number followed by a variable access. Only adjacency separates them,
+        hence ``adjacent`` rather than a test on token types.
+
+        Returns
+        -------
+        TypedLiteral | None
+            The literal, or None when the cursor is not on this shape (the
+            stream has then not moved).
+        """
+        prefix = self._stream.peek()
+        if prefix.type not in (TokenType.NUMBER, TokenType.IDENTIFIER):
+            return None
+        hash_token = self._stream.peek(1)
+        if hash_token.type is not TokenType.HASH or not adjacent(prefix, hash_token):
+            return None
+
+        self._stream.advance()  # the prefix
+        self._stream.advance()  # the '#'
+
+        # The value is the longest run of tokens touching one another:
+        # `5` `s` -> "5s", `1` `h` `30` `m` -> "1h30m".
+        parts: list[str] = []
+        previous = hash_token
+        while not self._stream.at_end() and adjacent(previous, self._stream.peek()):
+            token = self._stream.advance()
+            parts.append(token.value)
+            previous = token
+
+        return TypedLiteral(
+            line=prefix.line,
+            column=prefix.column,
+            prefix=prefix.value,
+            value="".join(parts),
+        )
+
     def _parse_primary(self) -> Expression | None:
         """Parse a literal, variable reference, function call, or grouping.
 
@@ -160,6 +208,10 @@ class _ExpressionParser:
             The parsed expression; ``None`` when the cursor is on a
             construct this parser cannot read (an error was recorded).
         """
+        typed = self._try_typed_literal()
+        if typed is not None:
+            return typed
+
         token = self._stream.peek()
 
         if token.type is TokenType.NUMBER:
