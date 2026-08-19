@@ -103,3 +103,30 @@ class TestErrors:
         assert result.expression is None
         assert len(result.errors) == 1
         assert result.errors[0].line == 1
+
+    def test_a_dangling_member_access_yields_no_tree(self) -> None:
+        """A partial tree presented as complete is worse than no tree.
+
+        Task 5's invariant reads `consumed`; returning the base built so far
+        alongside a full `consumed` would let a caller conclude the parse
+        succeeded.
+        """
+        result = _parse("#a.")
+        assert result.errors != []
+        assert result.expression is None
+
+    def test_an_unclosed_index_yields_no_tree(self) -> None:
+        result = _parse("#a[#i")
+        assert result.errors != []
+        assert result.expression is None
+
+    def test_an_unclosed_call_yields_no_tree(self) -> None:
+        result = _parse("ABS(#x")
+        assert result.errors != []
+        assert result.expression is None
+
+    def test_a_good_parse_still_returns_its_tree(self) -> None:
+        """The rule must not swallow successful parses."""
+        result = _parse('"Data".arms[#i].status')
+        assert result.errors == []
+        assert result.expression is not None

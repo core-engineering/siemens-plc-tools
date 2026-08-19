@@ -112,7 +112,13 @@ class _ExpressionParser:
         Expression | None
             The parsed expression, with every trailing member access and
             indexing operation folded in left-to-right; ``None`` when no
-            primary expression could be read at the cursor.
+            primary expression could be read at the cursor, or when a `.`
+            or `[` opened a continuation that could not be completed (an
+            error was recorded either way). A malformed continuation never
+            returns the base built so far — a partial tree presented as a
+            complete one would defeat any caller checking ``consumed``
+            against the expression alone to decide whether parsing
+            succeeded.
         """
         node = self._parse_primary()
         if node is None:
@@ -126,7 +132,7 @@ class _ExpressionParser:
                 name_token = self._stream.peek()
                 if name_token.type is not TokenType.IDENTIFIER:
                     self._error(name_token, "a member name after '.'")
-                    return node
+                    return None
                 self._stream.advance()
                 node = Member(line=token.line, column=token.column, base=node, name=name_token.value)
                 continue
@@ -135,8 +141,9 @@ class _ExpressionParser:
                 self._stream.advance()
                 index = self._parse_expression()
                 if index is None:
-                    return node
-                self._expect(TokenType.RBRACKET, "']'")
+                    return None
+                if not self._expect(TokenType.RBRACKET, "']'"):
+                    return None
                 node = Index(line=token.line, column=token.column, base=node, index=index)
                 continue
 
@@ -209,9 +216,12 @@ class _ExpressionParser:
         Returns
         -------
         Expression | None
-            The parsed ``FunctionCall``. Always succeeds once entered — a
-            malformed argument produces its own recorded error and the call
-            is still returned with whatever arguments were read so far.
+            The parsed ``FunctionCall``; ``None`` when an argument could not
+            be read or the closing `)` is missing (an error was recorded
+            either way). Matches ``_parse_postfix``: a malformed call never
+            returns a partial node built from whatever arguments were read
+            so far — a caller reading ``consumed`` alone must not be able to
+            mistake it for a complete parse.
         """
         name_token = self._stream.advance()  # IDENTIFIER
         self._stream.advance()  # LPAREN
@@ -221,14 +231,15 @@ class _ExpressionParser:
             while True:
                 argument = self._parse_expression()
                 if argument is None:
-                    break
+                    return None
                 arguments.append(argument)
                 if self._stream.match(TokenType.COMMA):
                     self._stream.advance()
                     continue
                 break
 
-        self._expect(TokenType.RPAREN, "')'")
+        if not self._expect(TokenType.RPAREN, "')'"):
+            return None
         return FunctionCall(
             line=name_token.line, column=name_token.column, name=name_token.value, arguments=arguments
         )
@@ -244,16 +255,18 @@ class _ExpressionParser:
         -------
         Expression | None
             The inner expression; ``None`` when nothing readable followed
-            the `(` (an error was recorded by the inner parse).
+            the `(`, or when the closing `)` is missing (an error was
+            recorded either way).
         """
         self._stream.advance()  # LPAREN
         inner = self._parse_expression()
         if inner is None:
             return None
-        self._expect(TokenType.RPAREN, "')'")
+        if not self._expect(TokenType.RPAREN, "')'"):
+            return None
         return inner
 
-    def _expect(self, token_type: TokenType, expected: str) -> None:
+    def _expect(self, token_type: TokenType, expected: str) -> bool:
         """Consume ``token_type`` at the cursor, recording an error if absent.
 
         Unlike ``TokenStream.expect``, which raises on a mismatch, this
@@ -267,11 +280,20 @@ class _ExpressionParser:
             The token type expected at the cursor.
         expected : str
             What would have been valid there, in plain words.
+
+        Returns
+        -------
+        bool
+            True when ``token_type`` was at the cursor and consumed; False
+            when a ``ParseError`` was recorded instead. Every caller must
+            treat False as "the construct being built cannot be completed"
+            and return ``None`` rather than the node built so far.
         """
         if self._stream.match(token_type):
             self._stream.advance()
-            return
+            return True
         self._error(self._stream.peek(), expected)
+        return False
 
     def _error(self, token: Token, expected: str) -> None:
         """Record a ``ParseError`` for ``token`` and what was expected there.
