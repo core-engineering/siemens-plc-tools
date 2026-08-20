@@ -105,9 +105,7 @@ class TestBuildReport:
     def test_region_and_network_tokens_are_not_double_counted(self) -> None:
         block = parse_scl_file(CLEAN_BLOCK)
         report = build_report([(CLEAN_BLOCK, block)])
-        region_tokens = sum(
-            len(region.tokens) for network in block.networks for region in network.regions
-        )
+        region_tokens = sum(len(region.tokens) for network in block.networks for region in network.regions)
         network_tokens = sum(len(network.tokens) for network in block.networks)
         assert report.tokens == region_tokens + network_tokens
 

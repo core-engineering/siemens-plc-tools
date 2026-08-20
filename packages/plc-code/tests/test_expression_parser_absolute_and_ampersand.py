@@ -99,9 +99,7 @@ class TestAbsoluteAddress:
         assert isinstance(node.base, Member)
         assert node.base.name == "DBX31"
         assert node.base.is_absolute is True
-        assert node.base.base == VariableRef(
-            line=1, column=1, name="DB150", is_local=False, is_absolute=True
-        )
+        assert node.base.base == VariableRef(line=1, column=1, name="DB150", is_local=False, is_absolute=True)
 
     def test_a_direct_input_address_is_read(self) -> None:
         result = _parse("%I0.0")
