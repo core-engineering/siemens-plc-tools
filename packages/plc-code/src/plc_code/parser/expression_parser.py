@@ -31,11 +31,24 @@ from plc_code.parser.expressions import (
     UnaryOp,
     VariableRef,
 )
-from plc_code.parser.lexer import Token, TokenType
+from plc_code.parser.lexer import KEYWORDS, Token, TokenType
 from plc_code.parser.statements import ParseError
 from plc_code.parser.token_stream import TokenStream, adjacent, composite_operator
 
 #: Identifier spellings that read as a boolean literal rather than a name.
+_NAME_TOKEN_TYPES = frozenset({TokenType.IDENTIFIER, *KEYWORDS.values()})
+"""Token types that may stand for a name in an expression.
+
+The lexer's 25 keywords are all block and declaration structure —
+``FUNCTION_BLOCK``, ``VAR_INPUT``, ``STRUCT``, ``REGION`` — so none of them can
+legitimately appear inside a REGION body, and one that does is a name the
+programmer chose: `#function`, `.type`. Together those cost 76 of the corpus's
+expression errors. This is fixed here rather than in the lexer on purpose: the
+lexer also feeds ``Region.content``, which 27 rules and the transpiler read byte
+for byte.
+"""
+
+
 _BOOLEAN_LITERALS = {"TRUE", "FALSE"}
 
 #: Single-character operator tokens, mapped to their SCL spelling. Distinct
@@ -342,7 +355,7 @@ class _ExpressionParser:
                     self._stream.advance()
                     is_local = True
                 name_token = self._stream.peek()
-                if name_token.type is not TokenType.IDENTIFIER:
+                if name_token.type not in _NAME_TOKEN_TYPES:
                     self._error(name_token, "a member name after '.'")
                     return None
                 self._stream.advance()
@@ -475,7 +488,7 @@ class _ExpressionParser:
         """
         hash_token = self._stream.advance()  # HASH
         name_token = self._stream.peek()
-        if name_token.type is not TokenType.IDENTIFIER:
+        if name_token.type not in _NAME_TOKEN_TYPES:
             self._error(name_token, "an identifier after '#'")
             return None
         self._stream.advance()
