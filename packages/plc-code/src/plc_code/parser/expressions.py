@@ -96,6 +96,11 @@ class Member:
         times, and it is different source from `.name` — a consumer that cannot
         tell them apart cannot render either one back. Follows
         `VariableRef.is_local`, where `#` already means local.
+    is_absolute : bool
+        True when the member was written `.%name` — SCL's direct access to a bit,
+        byte or word of the base: `.%X0`, `.%B1`, `.%DBX0`. The corpus writes 77
+        of them. The `%` is not part of the name, but dropping it would make the
+        access indistinguishable from an ordinary member.
     """
 
     line: int
@@ -103,6 +108,7 @@ class Member:
     base: Expression
     name: str
     is_local: bool = False
+    is_absolute: bool = False
 
 
 @dataclass(frozen=True)

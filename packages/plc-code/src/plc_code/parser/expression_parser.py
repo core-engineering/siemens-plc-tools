@@ -354,8 +354,23 @@ class _ExpressionParser:
                 if self._stream.peek().type is TokenType.HASH:
                     self._stream.advance()
                     is_local = True
+                # SCL reads a bit, byte or word of the base directly:
+                # `"QuayData".rcu.input.statusByte.%X0`. The lexer has no token
+                # for `%`, so the selector arrives as UNKNOWN('%') followed by an
+                # ordinary name, and only adjacency separates that from a stray
+                # character — the same rule the binary operators use.
+                is_absolute = False
+                percent = self._stream.peek()
+                if percent.type is TokenType.UNKNOWN and percent.value == "%":
+                    if not adjacent(percent, self._stream.peek(1)):
+                        self._error(self._stream.peek(1), "a selector attached to '%'")
+                        return None
+                    self._stream.advance()
+                    is_absolute = True
                 name_token = self._stream.peek()
-                if name_token.type not in _NAME_TOKEN_TYPES:
+                # A numeric member is a bit index written without the `%`:
+                # `#word.0`, and the `.0` tail of `"Data".%DBX0.0`.
+                if name_token.type not in _NAME_TOKEN_TYPES and name_token.type is not TokenType.NUMBER:
                     self._error(name_token, "a member name after '.'")
                     return None
                 self._stream.advance()
@@ -365,6 +380,7 @@ class _ExpressionParser:
                     base=node,
                     name=name_token.value,
                     is_local=is_local,
+                    is_absolute=is_absolute,
                 )
                 continue
 
