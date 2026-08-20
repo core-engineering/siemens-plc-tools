@@ -26,9 +26,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from plc_code.parser.expressions import Expression
+from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block
 from plc_code.parser.statement_parser import ParseResult, parse_statements, verify_no_silent_loss
-from plc_code.parser.statements import ParseError
+from plc_code.parser.statements import Assignment, Call, Case, For, If, ParseError, Statement, While
 
 
 def _unread_token_indices(result: ParseResult) -> set[int]:
@@ -64,6 +66,89 @@ def _unread_token_indices(result: ParseResult) -> set[int]:
     for start, end in result.unattributed_spans:
         unread.update(range(start, end))
     return unread
+
+
+def _expression_slice_counts(statements: list[Statement]) -> tuple[int, int]:
+    """Count expression-bearing slices and how many of them parsed, recursively.
+
+    Walks every statement field wired to a ``*_expr`` counterpart in
+    ``statements.py`` (``statement_parser.py`` is what actually populated
+    those fields, at parse time) plus every nested body — an ``If``'s
+    ``branches`` **and its separate** ``else_body``, a ``Case``'s
+    ``branches`` **and its separate** ``default`` — since missing either
+    under-counts the corpus by 12%.
+
+    An empty slice (e.g. a ``For`` loop with no ``BY`` clause) is not
+    counted at all: it never held an expression to parse, so counting it as
+    an unparsed one would understate the rate for a reason that has nothing
+    to do with what the parser can read. This mirrors ``StatementParser.
+    _parse_expr``'s own treatment of an empty slice.
+
+    Parameters
+    ----------
+    statements : list[Statement]
+        Statements to walk, typically ``ParseResult.statements`` for one
+        region.
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(slices, slices_parsed)`` — how many non-empty expression slices
+        were found, and how many of those have a non-``None`` tree.
+    """
+    slices = 0
+    parsed = 0
+
+    def _count(tokens: list[Token], expr: Expression | None) -> None:
+        nonlocal slices, parsed
+        if not tokens:
+            return
+        slices += 1
+        if expr is not None:
+            parsed += 1
+
+    for statement in statements:
+        if isinstance(statement, Assignment):
+            _count(statement.target, statement.target_expr)
+            _count(statement.value, statement.value_expr)
+        elif isinstance(statement, Call):
+            _count(statement.callee, statement.callee_expr)
+            for argument in statement.arguments:
+                _count(argument.value, argument.value_expr)
+        elif isinstance(statement, If):
+            for branch in statement.branches:
+                _count(branch.condition, branch.condition_expr)
+                inner_slices, inner_parsed = _expression_slice_counts(branch.body)
+                slices += inner_slices
+                parsed += inner_parsed
+            inner_slices, inner_parsed = _expression_slice_counts(statement.else_body)
+            slices += inner_slices
+            parsed += inner_parsed
+        elif isinstance(statement, Case):
+            _count(statement.selector, statement.selector_expr)
+            for case_branch in statement.branches:
+                for value, value_expr in zip(case_branch.values, case_branch.values_expr, strict=True):
+                    _count(value, value_expr)
+                inner_slices, inner_parsed = _expression_slice_counts(case_branch.body)
+                slices += inner_slices
+                parsed += inner_parsed
+            inner_slices, inner_parsed = _expression_slice_counts(statement.default)
+            slices += inner_slices
+            parsed += inner_parsed
+        elif isinstance(statement, For):
+            _count(statement.start, statement.start_expr)
+            _count(statement.end, statement.end_expr)
+            _count(statement.step, statement.step_expr)
+            inner_slices, inner_parsed = _expression_slice_counts(statement.body)
+            slices += inner_slices
+            parsed += inner_parsed
+        elif isinstance(statement, While):
+            _count(statement.condition, statement.condition_expr)
+            inner_slices, inner_parsed = _expression_slice_counts(statement.body)
+            slices += inner_slices
+            parsed += inner_parsed
+
+    return slices, parsed
 
 
 @dataclass
@@ -109,6 +194,21 @@ class ConformanceReport:
         rather than being read, rejected, or flagged as unattributed, and is
         surfaced here rather than hidden, since that is exactly the kind of
         loss this report exists to catch.
+    expression_slices : int
+        Non-empty expression-bearing token slices found across every
+        statement examined (an ``Assignment.value``, a ``Branch.condition``,
+        one entry per ``CaseBranch`` label value, ...), counted once each. An
+        absent optional slice (a ``For`` loop with no ``BY`` clause) is not
+        counted — see ``_expression_slice_counts``.
+    expression_slices_parsed : int
+        How many of ``expression_slices`` have a non-``None`` ``*_expr``
+        tree.
+    expression_errors : list[tuple[str, ParseError]]
+        Each expression-parse failure with the name of the block it came
+        from. Kept separate from ``errors``: an expression the parser
+        cannot yet read is not a statement-parser failure, and folding the
+        two together would drop statement conformance for a reason that
+        belongs to a different, still-in-progress grammar.
     """
 
     blocks: int = 0
@@ -121,11 +221,19 @@ class ConformanceReport:
     errors: list[tuple[str, ParseError]] = field(default_factory=list)
     by_statement_kind: dict[str, int] = field(default_factory=dict)
     silent_loss: list[str] = field(default_factory=list)
+    expression_slices: int = 0
+    expression_slices_parsed: int = 0
+    expression_errors: list[tuple[str, ParseError]] = field(default_factory=list)
 
     @property
     def coverage(self) -> float:
         """Share of tokens the parser could read, 0.0 when there are none."""
         return self.consumed / self.tokens if self.tokens else 0.0
+
+    @property
+    def expression_rate(self) -> float:
+        """Share of expression slices that parsed, 0.0 when there are none."""
+        return self.expression_slices_parsed / self.expression_slices if self.expression_slices else 0.0
 
     @property
     def block_clean_rate(self) -> float:
@@ -177,6 +285,11 @@ def build_report(blocks: list[tuple[Path, Block]]) -> ConformanceReport:
                     f"{block.name}, region {region.name!r}: {problem}"
                     for problem in verify_no_silent_loss(region.tokens, result)
                 )
+
+                slices, slices_parsed = _expression_slice_counts(result.statements)
+                report.expression_slices += slices
+                report.expression_slices_parsed += slices_parsed
+                report.expression_errors.extend((block.name, e) for e in result.expression_errors)
 
                 if result.errors:
                     block_has_error = True

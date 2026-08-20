@@ -288,14 +288,26 @@ def test_weak_form_never_catches_the_old_case_label_defect() -> None:
                 branches.append(CaseBranch(values=[], body=self._parse_case_body()))
                 continue
             body = self._parse_case_body()
-            branches.append(CaseBranch(values=values, body=body))"""
+            branches.append(
+                CaseBranch(
+                    values=values,
+                    body=body,
+                    values_expr=[self._parse_expr(value) for value in values],
+                )
+            )"""
     new_parse_case_branch_loop = """\
         while not self._stream.at_end() and self._keyword_ahead() not in {"ELSE", "END_CASE"}:
             values = self._parse_case_labels()
             if values is None:
                 break
             body = self._parse_case_body()
-            branches.append(CaseBranch(values=values, body=body))"""
+            branches.append(
+                CaseBranch(
+                    values=values,
+                    body=body,
+                    values_expr=[self._parse_expr(value) for value in values],
+                )
+            )"""
     assert old_parse_case_branch_loop in source_text, "the _parse_case branch loop was not found"
 
     old_parse_case_labels = """        if not self._at_case_label():

@@ -452,6 +452,19 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
                             for name, e in report.errors
                         ],
                         "silent_loss": report.silent_loss,
+                        "expression_slices": report.expression_slices,
+                        "expression_slices_parsed": report.expression_slices_parsed,
+                        "expression_rate": round(report.expression_rate, 4),
+                        "expression_errors": [
+                            {
+                                "block": name,
+                                "line": e.line,
+                                "column": e.column,
+                                "token": e.token_value,
+                                "expected": e.expected,
+                            }
+                            for name, e in report.expression_errors
+                        ],
                     },
                     indent=2,
                 )
@@ -475,12 +488,22 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
                 console.print("\n[bold]Statements read[/bold]")
                 for kind, count in report.by_statement_kind.items():
                     console.print(f"  {count:6}  {kind}")
+            console.print(
+                f"\nexpression rate: [bold]{report.expression_rate:.1%}[/bold] "
+                f"({report.expression_slices_parsed}/{report.expression_slices})"
+            )
             if report.errors:
                 console.print(f"\n[bold]Not read[/bold] ({len(report.errors)})")
                 for name, error in report.errors[:40]:
                     console.print(f"  {name}: {error.message}")
                 if len(report.errors) > 40:
                     console.print(f"  ... and {len(report.errors) - 40} more", style="dim")
+            if report.expression_errors:
+                console.print(f"\n[bold]Expressions not read[/bold] ({len(report.expression_errors)})")
+                for name, error in report.expression_errors[:40]:
+                    console.print(f"  {name}: {error.message}")
+                if len(report.expression_errors) > 40:
+                    console.print(f"  ... and {len(report.expression_errors) - 40} more", style="dim")
             if report.silent_loss:
                 console.print(
                     f"\n[bold red]Silent loss[/bold red] ({len(report.silent_loss)}) "

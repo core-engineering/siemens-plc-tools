@@ -7,15 +7,22 @@ CONTINUE do not occur at all and have no node here — the parser reports them a
 errors, which is the honest answer for a construct the toolchain cannot
 translate.
 
-Expressions are not parsed in this phase. Every field that holds one holds the
-``list[Token]`` slice it occupies, so the shape of a statement is resolved
-without committing to an expression grammar.
+Every field that holds an expression holds two things side by side: the
+``list[Token]`` slice it occupies in the source, unchanged from phase 1, and
+a ``*_expr`` field carrying the parsed tree from
+``plc_code.parser.expression_parser.parse_expression``. The slice keeps its
+name and type so every phase-1 consumer is untouched; the tree is ``None``
+when the slice could not be read as an expression (the reason lives in the
+statement parser's separate expression-error list, not mixed into
+``ParseResult.errors``) — never a partial tree standing in for a failed
+parse.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from plc_code.parser.expressions import Expression
 from plc_code.parser.lexer import Token
 
 
@@ -66,11 +73,15 @@ class Argument:
     is_output : bool, optional
         Whether this binding uses ``=>`` (output, True) or ``:=`` (input, False).
         Default is False.
+    value_expr : Expression | None, optional
+        Parsed tree for ``value``, or ``None`` when the slice could not be
+        read as an expression. Default is None.
     """
 
     name: str
     value: list[Token]
     is_output: bool = False
+    value_expr: Expression | None = None
 
 
 @dataclass(frozen=True)
@@ -89,11 +100,19 @@ class Assignment:
         Unparsed expression slice for the right-hand side, as it appears in
         the source. Phase 1 does not parse expressions; this slice carries the
         raw tokens and their original line/column positions.
+    target_expr : Expression | None, optional
+        Parsed tree for ``target``, or ``None`` when the slice could not be
+        read as an expression. Default is None.
+    value_expr : Expression | None, optional
+        Parsed tree for ``value``, or ``None`` when the slice could not be
+        read as an expression. Default is None.
     """
 
     line: int
     target: list[Token]
     value: list[Token]
+    target_expr: Expression | None = None
+    value_expr: Expression | None = None
 
 
 @dataclass(frozen=True)
@@ -112,11 +131,15 @@ class Call:
         Bindings passed to the callee. Each argument records its parameter name,
         value (as an unparsed token slice), and binding direction (input `:=` or
         output `=>`). Default is an empty list.
+    callee_expr : Expression | None, optional
+        Parsed tree for ``callee``, or ``None`` when the slice could not be
+        read as an expression. Default is None.
     """
 
     line: int
     callee: list[Token]
     arguments: list[Argument] = field(default_factory=list)
+    callee_expr: Expression | None = None
 
 
 @dataclass(frozen=True)
@@ -131,10 +154,14 @@ class Branch:
         carries the raw tokens and their original line/column positions.
     body : list[Statement]
         Statements that execute when the condition is true.
+    condition_expr : Expression | None, optional
+        Parsed tree for ``condition``, or ``None`` when the slice could not
+        be read as an expression. Default is None.
     """
 
     condition: list[Token]
     body: list[Statement]
+    condition_expr: Expression | None = None
 
 
 @dataclass(frozen=True)
@@ -177,10 +204,15 @@ class CaseBranch:
     body : list[Statement]
         Statements that execute when the case selector matches one of the
         values.
+    values_expr : list[Expression | None], optional
+        Parsed tree for each entry in ``values``, same length and order.
+        An entry is ``None`` when that value's slice could not be read as an
+        expression. Default is an empty list.
     """
 
     values: list[list[Token]]
     body: list[Statement]
+    values_expr: list[Expression | None] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -201,12 +233,16 @@ class Case:
     default : list[Statement], optional
         Statements that execute if no branch label matches (the ELSE arm).
         Default is an empty list.
+    selector_expr : Expression | None, optional
+        Parsed tree for ``selector``, or ``None`` when the slice could not be
+        read as an expression. Default is None.
     """
 
     line: int
     selector: list[Token]
     branches: list[CaseBranch]
     default: list[Statement] = field(default_factory=list)
+    selector_expr: Expression | None = None
 
 
 @dataclass(frozen=True)
@@ -240,6 +276,15 @@ class For:
         their original line/column positions. Default is an empty list.
     body : list[Statement], optional
         Statements executed in each loop iteration. Default is an empty list.
+    start_expr : Expression | None, optional
+        Parsed tree for ``start``, or ``None`` when the slice could not be
+        read as an expression. Default is None.
+    end_expr : Expression | None, optional
+        Parsed tree for ``end``, or ``None`` when the slice could not be read
+        as an expression. Default is None.
+    step_expr : Expression | None, optional
+        Parsed tree for ``step``, or ``None`` when there is no BY clause, or
+        when the slice could not be read as an expression. Default is None.
     """
 
     line: int
@@ -248,6 +293,9 @@ class For:
     end: list[Token]
     step: list[Token] = field(default_factory=list)
     body: list[Statement] = field(default_factory=list)
+    start_expr: Expression | None = None
+    end_expr: Expression | None = None
+    step_expr: Expression | None = None
 
 
 @dataclass(frozen=True)
@@ -264,11 +312,15 @@ class While:
         carries the raw tokens and their original line/column positions.
     body : list[Statement], optional
         Statements executed in each loop iteration. Default is an empty list.
+    condition_expr : Expression | None, optional
+        Parsed tree for ``condition``, or ``None`` when the slice could not
+        be read as an expression. Default is None.
     """
 
     line: int
     condition: list[Token]
     body: list[Statement] = field(default_factory=list)
+    condition_expr: Expression | None = None
 
 
 @dataclass(frozen=True)

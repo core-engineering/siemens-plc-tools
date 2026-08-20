@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from plc_code.parser.expression_parser import parse_expression, verify_expression_consumed
+from plc_code.parser.expressions import Expression
 from plc_code.parser.lexer import Token, TokenType
 from plc_code.parser.statements import (
     Argument,
@@ -93,6 +95,14 @@ class ParseResult:
         recording *that it happened* here, without changing behaviour, is
         what lets ``verify_no_silent_loss`` see it anyway. Always a defect
         when non-empty. Default is an empty list.
+    expression_errors : list[ParseError]
+        One entry per expression slice (an ``Assignment.value``, a
+        ``Branch.condition``, ...) that could not be read as an expression,
+        in the order the parser encountered them. Kept separate from
+        ``errors`` on purpose: an expression failure is not a statement
+        failure, and mixing the two would drop statement conformance for a
+        reason that is not the statement parser's own. Default is an empty
+        list.
     """
 
     statements: list[Statement] = field(default_factory=list)
@@ -101,6 +111,7 @@ class ParseResult:
     error_spans: list[tuple[int, int]] = field(default_factory=list)
     separator_spans: list[tuple[int, int]] = field(default_factory=list)
     unattributed_spans: list[tuple[int, int]] = field(default_factory=list)
+    expression_errors: list[ParseError] = field(default_factory=list)
 
 
 class StatementParser:
@@ -234,10 +245,13 @@ class StatementParser:
             # unchanged, and the generator needs no special case. SCL targets
             # are lvalues without side effects, so evaluating the target twice
             # is sound. One occurrence in the whole observed corpus.
+            desugared_value = [*target, operator, *value]
             return Assignment(
                 line=first.line,
                 target=target,
-                value=[*target, operator, *value],
+                value=desugared_value,
+                target_expr=self._parse_expr(target),
+                value_expr=self._parse_expr(desugared_value),
             )
 
         if assign_at is not None and (paren_at is None or assign_at < paren_at):
@@ -245,14 +259,22 @@ class StatementParser:
             self._stream.expect(TokenType.ASSIGN)
             value = self._take_until(TokenType.SEMICOLON)
             self._consume_semicolon()
-            return Assignment(line=first.line, target=target, value=value)
+            return Assignment(
+                line=first.line,
+                target=target,
+                value=value,
+                target_expr=self._parse_expr(target),
+                value_expr=self._parse_expr(value),
+            )
 
         if paren_at is not None:
             callee = self._take_until(TokenType.LPAREN)
             self._stream.expect(TokenType.LPAREN)
             arguments = self._parse_arguments()
             self._consume_semicolon()
-            return Call(line=first.line, callee=callee, arguments=arguments)
+            return Call(
+                line=first.line, callee=callee, arguments=arguments, callee_expr=self._parse_expr(callee)
+            )
 
         self._error(first, "an assignment or a call")
         self._recover_and_record()
@@ -404,13 +426,25 @@ class StatementParser:
         branches: list[Branch] = []
         condition = self._take_until_keyword("THEN")
         self._expect_keyword("THEN")
-        branches.append(Branch(condition=condition, body=self._parse_body("ELSIF", "ELSE", "END_IF")))
+        branches.append(
+            Branch(
+                condition=condition,
+                body=self._parse_body("ELSIF", "ELSE", "END_IF"),
+                condition_expr=self._parse_expr(condition),
+            )
+        )
 
         while self._keyword_ahead() == "ELSIF":
             self._stream.advance()
             condition = self._take_until_keyword("THEN")
             self._expect_keyword("THEN")
-            branches.append(Branch(condition=condition, body=self._parse_body("ELSIF", "ELSE", "END_IF")))
+            branches.append(
+                Branch(
+                    condition=condition,
+                    body=self._parse_body("ELSIF", "ELSE", "END_IF"),
+                    condition_expr=self._parse_expr(condition),
+                )
+            )
 
         else_body: list[Statement] = []
         if self._keyword_ahead() == "ELSE":
@@ -465,7 +499,13 @@ class StatementParser:
                 branches.append(CaseBranch(values=[], body=self._parse_case_body()))
                 continue
             body = self._parse_case_body()
-            branches.append(CaseBranch(values=values, body=body))
+            branches.append(
+                CaseBranch(
+                    values=values,
+                    body=body,
+                    values_expr=[self._parse_expr(value) for value in values],
+                )
+            )
 
         if self._keyword_ahead() == "ELSE":
             position = self._stream.position()
@@ -476,7 +516,13 @@ class StatementParser:
 
         self._expect_keyword("END_CASE")
         self._consume_semicolon()
-        return Case(line=line, selector=selector, branches=branches, default=default)
+        return Case(
+            line=line,
+            selector=selector,
+            branches=branches,
+            default=default,
+            selector_expr=self._parse_expr(selector),
+        )
 
     def _parse_case_labels(self) -> list[list[Token]] | None:
         """Read `v1, v2:` — one token slice per value.
@@ -653,7 +699,17 @@ class StatementParser:
         body = self._parse_body("END_FOR")
         self._expect_keyword("END_FOR")
         self._consume_semicolon()
-        return For(line=line, variable=variable, start=start, end=end, step=step, body=body)
+        return For(
+            line=line,
+            variable=variable,
+            start=start,
+            end=end,
+            step=step,
+            body=body,
+            start_expr=self._parse_expr(start),
+            end_expr=self._parse_expr(end),
+            step_expr=self._parse_expr(step),
+        )
 
     def _parse_while(self) -> Statement:
         """Parse a WHILE loop.
@@ -671,7 +727,7 @@ class StatementParser:
         body = self._parse_body("END_WHILE")
         self._expect_keyword("END_WHILE")
         self._consume_semicolon()
-        return While(line=line, condition=condition, body=body)
+        return While(line=line, condition=condition, body=body, condition_expr=self._parse_expr(condition))
 
     def _expect_keyword(self, keyword: str) -> None:
         """Consume ``keyword``, recording an error when it is absent.
@@ -740,12 +796,17 @@ class StatementParser:
                     TokenType.RPAREN,
                     initial_depth=1 if name_token.type is TokenType.LPAREN else 0,
                 )
-                arguments.append(Argument(name="", value=[name_token, *value]))
+                positional_value = [name_token, *value]
+                arguments.append(
+                    Argument(name="", value=positional_value, value_expr=self._parse_expr(positional_value))
+                )
                 self._skip_comma()
                 continue
 
             value = self._take_until(TokenType.COMMA, TokenType.RPAREN)
-            arguments.append(Argument(name=name, value=value, is_output=is_output))
+            arguments.append(
+                Argument(name=name, value=value, is_output=is_output, value_expr=self._parse_expr(value))
+            )
             self._skip_comma()
 
         if self._stream.match(TokenType.RPAREN):
@@ -970,6 +1031,59 @@ class StatementParser:
                 expected=expected,
             )
         )
+
+    def _parse_expr(self, tokens: list[Token]) -> Expression | None:
+        """Parse one statement field's token slice into an expression tree.
+
+        Failures are recorded into ``self._result.expression_errors`` —
+        never into ``self._result.errors`` — so an expression that this
+        toolchain cannot yet read does not count against statement
+        conformance, which is a separate, already-100% figure.
+
+        An empty slice (e.g. a ``For`` loop with no ``BY`` clause) is not a
+        failed parse: nothing was there to read, so ``None`` is returned
+        without calling ``parse_expression`` and without recording an error.
+        Calling it anyway would record a spurious error at a synthetic
+        line-0 position for a perfectly ordinary absence.
+
+        A non-empty slice that ``parse_expression`` reads without error but
+        does not consume in full is also treated as unparsed: per the
+        branch-wide invariant, a partial tree is never returned in place of
+        a complete one, so trailing tokens left over after a clean parse are
+        recorded as an expression error (positioned at the first
+        unconsumed token) and ``None`` is returned, exactly as if
+        ``parse_expression`` itself had failed.
+
+        Parameters
+        ----------
+        tokens : list[Token]
+            The token slice occupied by one expression-bearing field, e.g.
+            an ``Assignment.value`` or a ``Branch.condition``.
+
+        Returns
+        -------
+        Expression | None
+            The parsed tree, or ``None`` when the slice is empty or could
+            not be read in full as one expression.
+        """
+        if not tokens:
+            return None
+        result = parse_expression(tokens)
+        if result.errors:
+            self._result.expression_errors.extend(result.errors)
+            return None
+        if not verify_expression_consumed(tokens, result):
+            trailing = tokens[result.consumed] if result.consumed < len(tokens) else tokens[-1]
+            self._result.expression_errors.append(
+                ParseError(
+                    line=trailing.line,
+                    column=trailing.column,
+                    token_value=trailing.value,
+                    expected="the end of the expression (trailing tokens after a complete parse)",
+                )
+            )
+            return None
+        return result.expression
 
 
 def parse_statements(tokens: list[Token]) -> ParseResult:
