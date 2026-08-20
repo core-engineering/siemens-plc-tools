@@ -84,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   still-in-progress grammar should not move a figure that is not about it.
 
   Measured over five real PLC projects (`project-A` … `project-E`): **23,279
-  expression slices, 23,189 parsed, 99.61%, 90 errors** — across 649 blocks,
+  expression slices, 23,263 parsed, 99.93%, 16 errors** — across 649 blocks,
   439 regions and 155 networks, with token coverage exactly 1.0000 and every
   block, region and network clean of statement errors.
 
@@ -104,6 +104,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   used as a name (`#function`, `.type`), a multi-dimensional array index
   (`#m[#i, #j]`), direct bit access (`.%X0`), the implicit enable output
   (`ENO`), and a quoted name in either name position (`."type"`, `"x" := #A`).
+  Three more followed once `Network.tokens` made the rest of the SCL visible: a
+  chained typed literal (`b#16#FF`), `&` written for `AND`, and an absolute
+  address in leading position (`%DB150.%DBX31.1`).
 
   The first two removed 331 errors, not the 469 their individual counts
   predicted, and the gap is worth recording: the counts are of error *sites
@@ -127,11 +130,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   always were. The defect was a quoted region *name*, reported as its own fix
   below.
 
-  The 90 errors that remain are four shapes, and all of them live in the SCL
-  outside REGION blocks that the pipeline could not see until now — which is why
-  no earlier measurement showed them: a chained typed literal (`b#16#FF`, 51),
-  the lexer's `-` folding (16), `&` written for `AND` (13), and an absolute
-  address in leading position (`%DB150.%DBX31.1`, 10).
+  All 16 errors that remain are one shape, and it is the only one whose fix
+  reaches into the lexer: an unspaced `-` before a digit is folded into a single
+  `NUMBER` token, so `("MLA10"-1)` and `armParams[#arm_index-1]` cannot parse.
+  See the paragraph below on that fold.
 
   Also pre-existing and out of scope: the lexer folds an unspaced `-` before a
   digit into one `NUMBER` token (`#a-2` lexes as `#a`, `-2`, not `#a`, `-`,
@@ -398,6 +400,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and every block stays clean. Only the expression rate moves, 100.00% over
   16,069 slices to **99.61% over 23,279**, because 90 errors that were always
   there became visible.
+
+- **plc-code (parser)** — the three shapes `Network.tokens` made visible and the
+  grammar had no branch for. 74 of the 90 remaining expression errors.
+
+  **A typed literal with chained prefixes** (51) — `b#16#FF` is byte,
+  hexadecimal, FF. The value run stopped at the second `#`, leaving `#FF`
+  trailing. It now crosses a `#` as well, but only one adjacent on both sides,
+  so `16#FF + #a` still reads as a literal plus a local. `TypedLiteral` is
+  unchanged: its `value` is already what follows the first `#`, as written.
+
+  **`&` written for `AND`** (13) — `IF "ESD".ESD1[#b] & "PMS".mla_valid[#b] AND
+  (...)`. It joins the AND precedence level as its own spelling, not an alias:
+  `BinaryOp.operator` reads `"&"` where `&` was written, the way `<>` and `<=`
+  keep theirs.
+
+  **An absolute address in leading position** (10 reached, 211 written) —
+  `%DB150.%DBX31.1`, `%I0.0`. `VariableRef.is_absolute` follows
+  `Member.is_absolute`, which already marks the same `%` mid-chain; everything
+  after it is folded in by `_parse_postfix` as for any primary.
+
+  Neither `&` nor `%` has a token of its own, so both arrive as `UNKNOWN` and
+  are recognised by value and adjacency — never by token type, which is the
+  lexer's catch-all and would match anything.
+
+  Measured: **99.61% to 99.93%**, 90 errors down to 16, exactly the 74 counted.
+  Nothing was masking these three, and every error left is the lexer's `-` fold.
 
 - **plc-code (parser)** — an argument value containing parentheses ended at the
   wrong one, desynchronising the rest of the call.
