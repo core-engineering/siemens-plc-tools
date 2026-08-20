@@ -757,20 +757,21 @@ class SCLParser:
         # must consume *everything* up to the end of the line rather than only
         # IDENTIFIER tokens — otherwise the tail leaks into the region content and is
         # later mistranslated as code.
+        # A quoted name may itself be followed by more words: TIA Portal accepts
+        # ``REGION "RCU" Default Management``. Stopping at the closing quote left
+        # the tail in the region's content and tokens, where the transpiler read
+        # it as code. The quotes are stripped, then the same end-of-line scan
+        # runs for both spellings.
         name_parts = []
-        if self._current().type == TokenType.STRING:
-            name_parts.append(self._current().value.strip('"'))
+        while self._current().type not in (
+            TokenType.NEWLINE,
+            TokenType.EOF,
+            TokenType.COMMENT,
+            TokenType.BLOCK_COMMENT,
+        ):
+            token = self._current()
+            name_parts.append(token.value.strip('"') if token.type == TokenType.STRING else token.value)
             self._advance()
-        else:
-            # Collect all tokens until the end of the line (or an inline comment).
-            while self._current().type not in (
-                TokenType.NEWLINE,
-                TokenType.EOF,
-                TokenType.COMMENT,
-                TokenType.BLOCK_COMMENT,
-            ):
-                name_parts.append(self._current().value)
-                self._advance()
 
         name = " ".join(part for part in name_parts if part).strip()
         self._skip_newlines()

@@ -285,6 +285,83 @@ END_FUNCTION_BLOCK
         assert len(outer.nested_regions) == 1
         assert outer.nested_regions[0].name == "Inner"
 
+    def test_a_quoted_region_name_may_be_followed_by_more_words(self) -> None:
+        """The rest of the header is part of the name, not part of the code.
+
+        TIA Portal accepts `REGION "RCU" Default Management`. Stopping the name
+        at the closing quote left `Default Management` in the region's content
+        and tokens, where the transpiler read it as code.
+        """
+        source = """
+FUNCTION_BLOCK "Test"
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION "RCU" Default Management
+            #a := TRUE;
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK
+"""
+        block = SCLParser(tokenize_with_newlines(source)).parse()
+
+        region = block.networks[0].regions[0]
+        assert region.name == "RCU Default Management"
+        assert [token.value for token in region.tokens] == ["#", "a", ":=", "TRUE", ";"]
+        assert "Default" not in region.content
+
+    def test_a_quoted_region_name_on_its_own_is_unchanged(self) -> None:
+        source = """
+FUNCTION_BLOCK "Test"
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION "Logic"
+            #a := TRUE;
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK
+"""
+        block = SCLParser(tokenize_with_newlines(source)).parse()
+
+        region = block.networks[0].regions[0]
+        assert region.name == "Logic"
+        assert [token.value for token in region.tokens] == ["#", "a", ":=", "TRUE", ";"]
+
+    def test_a_trailing_comment_is_not_part_of_the_name(self) -> None:
+        source = """
+FUNCTION_BLOCK "Test"
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION "RCU" Management // why it exists
+            #a := TRUE;
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK
+"""
+        block = SCLParser(tokenize_with_newlines(source)).parse()
+
+        region = block.networks[0].regions[0]
+        assert region.name == "RCU Management"
+
+    def test_a_region_nested_under_a_quoted_multi_word_name_is_read(self) -> None:
+        source = """
+FUNCTION_BLOCK "Test"
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION "RCU" Default Management
+            REGION "Inner" Part Two
+                #a := TRUE;
+            END_REGION
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK
+"""
+        block = SCLParser(tokenize_with_newlines(source)).parse()
+
+        outer = block.networks[0].regions[0]
+        assert outer.name == "RCU Default Management"
+        assert [nested.name for nested in outer.nested_regions] == ["Inner Part Two"]
+        assert [token.value for token in outer.tokens] == ["#", "a", ":=", "TRUE", ";"]
+
 
 class TestNetworks:
     """Tests for parsing NETWORK blocks."""

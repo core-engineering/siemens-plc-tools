@@ -81,7 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   still-in-progress grammar should not move a figure that is not about it.
 
   Measured over five real PLC projects (`project-A` … `project-E`): **16,069
-  expression slices, 16,068 parsed, 99.99%, 1 error.**
+  expression slices, all 16,069 parsed, 100.00%, zero errors.**
 
   The first measurement was 96.30% with 594 errors. Seven grammar gaps were then
   closed, each reported below as its own fix: a call whose callee is a quoted
@@ -105,31 +105,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   closed, exactly. Nothing was masking them, which is what the counting lesson
   above predicts once the shapes that hid the others are read.
 
-  One error remains in the whole corpus, and it is not an expression at all:
+  The one error that outlived those seven was not an expression at all, and the
+  diagnosis first published here was wrong. It read:
 
       REGION "RCU" Default Management
-          #InstRcuAlarmManagement(rcuRawInput := #rcuRawInput, ...);
-      END_REGION
 
-  `parse_scl_file` does not handle a REGION nested inside a REGION, so the inner
-  header stays in the outer region's token slice and the statement parser reads
-  it as code. That is a region-splitting defect, not a grammar gap, and it is
-  left for its own fix.
+  and was recorded as a nested-REGION defect. Nested REGIONs are handled and
+  always were. The defect was a quoted region *name*, reported as its own fix
+  below.
 
-  The qualifier that makes that rate honest: `parse_scl_file` only tokenises
-  `REGION` contents, so SCL written directly inside a `NETWORK` is an
+  The qualifier without which that rate misleads: `parse_scl_file` only
+  tokenises `REGION` contents, so SCL written directly inside a `NETWORK` is an
   untokenised string this pipeline never sees at all. Measured across the same
-  corpus: 123 of 649 blocks (19%) contain such SCL — 49,151 tokens against
-  126,456 inside regions, 28% of the corpus SCL. So the rate above is 99.99% of
-  the expression slices in SCL that lives inside REGION blocks, not 99.99% of
-  the SCL in these five projects.
+  corpus: 168 of 649 blocks (26%) contain such SCL — 52,288 tokens against
+  126,456 inside regions, 29% of the corpus SCL. **So 100.00% means every
+  expression slice in SCL that lives inside a REGION block, not every expression
+  slice in these five projects.** Closing that hole needs `Network.tokens`
+  alongside `Network.content`, the same additive pair `Region` already carries;
+  it is not done here.
 
   Also pre-existing and out of scope: the lexer folds an unspaced `-` before a
   digit into one `NUMBER` token (`#a-2` lexes as `#a`, `-2`, not `#a`, `-`,
   `2`), so `#a-2`, `1-2`, `ABS(#x-1)` and `#arr[#i-1]` all fail to parse today.
-  Zero occurrences across the five projects is why the published rate does not
-  show it, not evidence it does not happen — a project that writes `x := a-1`
-  would see this rate drop sharply.
+  An earlier revision of this entry said there were zero occurrences across the
+  five projects. That was zero occurrences *inside REGION blocks*, which is the
+  only SCL the measurement could see. Outside them the corpus writes 16 —
+  `FOR #page := "MLA1" TO ("MLA10"-1)`, `armParams[#arm_index-1]` — so the
+  construct does happen, and the rate above does not show it only because the
+  slices carrying it never reach this pipeline.
 - **plc-code (executor/diagnostics, CLI)** — new `plc code transpile` command and
   the `plc_code.executor.diagnostics` module behind it.
 
@@ -299,6 +302,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Measured: 99.39% to **99.99%**, 98 errors down to 1. The statement layer is
   unchanged at 100% token coverage over 649 blocks, every block and region
   clean.
+
+- **plc-code (parser)** — a quoted REGION name stopped at its closing quote, and
+  the rest of the header line was read as code.
+
+      REGION "RCU" Default Management
+          #InstRcuAlarmManagement(rcuRawInput := #rcuRawInput, ...);
+      END_REGION
+
+  The name came out `RCU`, and `Default Management` stayed in the region's
+  `content` and `tokens` — so the transpiler, which reads `content`, was handed
+  two words of prose as the first statement of the region. A bare name already
+  scanned to the end of the line (`REGION Set 7 phases`); only the quoted
+  spelling stopped early. Both now run the same scan, and the quotes are
+  stripped from whichever part carries them: the name is `RCU Default
+  Management`.
+
+  This was previously recorded, here and in a commit message, as a nested-REGION
+  defect. That was wrong: `_parse_region` recurses into a nested REGION and
+  flattens its tokens into the parent, and always did. One region in the whole
+  corpus is written with a quoted name, and it was the one that failed.
+
+  With it, the corpus measures **16,069 expression slices, all parsed, 100.00%,
+  zero errors** — across 649 blocks with token coverage 1.0000 and every block
+  and region clean. That figure still covers only the SCL inside REGION blocks;
+  see the qualifier in the expression-AST entry above.
 
 - **plc-code (parser)** — an argument value containing parentheses ended at the
   wrong one, desynchronising the rest of the call.
