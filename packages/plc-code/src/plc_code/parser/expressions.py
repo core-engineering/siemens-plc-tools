@@ -107,7 +107,12 @@ class Member:
 
 @dataclass(frozen=True)
 class Index:
-    """An indexing operation: `base[index]`.
+    """An indexing operation: `base[i]`, `base[i, j]`.
+
+    SCL arrays may have several dimensions, and the corpus indexes two of them
+    at once — `#matrixResult[#tempCounterRows, #tempCounterColumns]`. The
+    subscripts are therefore a list, one-dimensional access being a list of one,
+    so a consumer walks one shape rather than two.
 
     Attributes
     ----------
@@ -115,14 +120,15 @@ class Index:
         Position of the `[` in the source.
     base : Expression
         The expression being indexed.
-    index : Expression
-        The index, itself an expression.
+    indices : list[Expression]
+        One subscript per dimension, in source order. Never empty: `base[]` is
+        not read.
     """
 
     line: int
     column: int
     base: Expression
-    index: Expression
+    indices: list[Expression]
 
 
 @dataclass(frozen=True)

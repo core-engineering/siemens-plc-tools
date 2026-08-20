@@ -59,7 +59,7 @@ class TestPostfix:
     def test_indexing(self) -> None:
         node = _parse("#arms[#i]").expression
         assert isinstance(node, Index)
-        assert isinstance(node.index, VariableRef)
+        assert isinstance(node.indices[0], VariableRef)
 
     def test_the_production_shape(self) -> None:
         """`"Data".arms[#armNumber].status.ersState`, transcribed from the corpus."""

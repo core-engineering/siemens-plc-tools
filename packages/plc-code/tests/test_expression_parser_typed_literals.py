@@ -86,7 +86,7 @@ class TestTypedLiteralsAwayFromPositionZero:
         assert result.errors == []
         node = result.expression
         assert isinstance(node, Index)
-        assert isinstance(node.index, TypedLiteral)
+        assert isinstance(node.indices[0], TypedLiteral)
 
     def test_inside_parentheses(self) -> None:
         result = _parse("(T#5s)")

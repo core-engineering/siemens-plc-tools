@@ -370,12 +370,23 @@ class _ExpressionParser:
 
             if token.type is TokenType.LBRACKET:
                 self._stream.advance()
-                index = self._parse_expression()
-                if index is None:
-                    return None
+                # A multi-dimensional array is indexed in one pair of brackets:
+                # `#matrixResult[#rows, #columns]`. Reading only the first
+                # subscript left the comma trailing, and cost 12 of the corpus's
+                # expression errors.
+                indices: list[Expression] = []
+                while True:
+                    index = self._parse_expression()
+                    if index is None:
+                        return None
+                    indices.append(index)
+                    if self._stream.match(TokenType.COMMA):
+                        self._stream.advance()
+                        continue
+                    break
                 if not self._expect(TokenType.RBRACKET, "']'"):
                     return None
-                node = Index(line=token.line, column=token.column, base=node, index=index)
+                node = Index(line=token.line, column=token.column, base=node, indices=indices)
                 continue
 
             break

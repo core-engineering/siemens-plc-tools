@@ -10,6 +10,7 @@ import pytest
 
 from plc_code.parser.expressions import (
     BinaryOp,
+    CallArgument,
     FunctionCall,
     Index,
     Literal,
@@ -44,7 +45,7 @@ class TestNodesCarryPosition:
                 line=3,
                 column=7,
                 base=VariableRef(line=3, column=7, name="a", is_local=True),
-                index=Literal(line=3, column=9, value="0"),
+                indices=[Literal(line=3, column=9, value="0")],
             ),
             UnaryOp(line=3, column=7, operator="NOT", operand=Literal(line=3, column=11, value="TRUE")),
             BinaryOp(
@@ -54,7 +55,12 @@ class TestNodesCarryPosition:
                 left=Literal(line=3, column=7, value="1"),
                 right=Literal(line=3, column=11, value="2"),
             ),
-            FunctionCall(line=3, column=7, name="ABS", arguments=[Literal(line=3, column=11, value="1")]),
+            FunctionCall(
+                line=3,
+                column=7,
+                name="ABS",
+                arguments=[CallArgument(value=Literal(line=3, column=11, value="1"))],
+            ),
         ]
         for node in nodes:
             assert node.line == 3
