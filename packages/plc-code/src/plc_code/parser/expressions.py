@@ -1,7 +1,8 @@
 """Expression AST for SCL.
 
-Sized on measurement, not on the language reference: across 16,201 expression
-slices in five production projects, access (`#`, `.`, `[]`) dominates, followed
+Sized on measurement, not on the language reference: across 16,069 expression
+slices in five production projects (as counted by the conformance walker;
+see ``parser/conformance.py``), access (`#`, `.`, `[]`) dominates, followed
 by arithmetic, then boolean. `XOR` does not occur once and has no node here —
 the parser reports it as an error, which is the honest answer for a construct
 the toolchain cannot translate.

@@ -60,11 +60,18 @@ class ExpressionResult:
     Attributes
     ----------
     expression : Expression | None
-        The parsed expression, or ``None`` when the slice could not be read
-        as one (the reason is in ``errors``).
+        The parsed expression, or ``None`` when the slice was not read as one
+        in full — either because a construct in it was unreadable, or
+        because the parse completed on a leading part of the slice and
+        tokens remained after it. Both cases record a ``ParseError`` in
+        ``errors``; a partial tree is never returned in its place, so
+        ``expression is not None`` alone is safe for a caller to trust
+        without also checking ``consumed``.
     errors : list[ParseError]
         One entry per construct the parser could not read, in the order the
-        parser encountered them. Default is an empty list.
+        parser encountered them, plus a final entry when the slice was not
+        fully consumed despite an otherwise clean parse. Default is an empty
+        list.
     consumed : int
         How many tokens the parser advanced past, out of the slice it was
         given. Equal to the length of the slice on a clean parse; shorter
@@ -561,6 +568,17 @@ class _ExpressionParser:
 def parse_expression(tokens: list[Token]) -> ExpressionResult:
     """Parse one expression from a token slice.
 
+    A construct the parser cannot read at all is the obvious failure and was
+    always reported. The other failure this also guards against is quieter:
+    the parser can reach a valid expression and simply stop, leaving tokens
+    unread after it (`` #a #b`` reads as `` #a`` and stops; ``B#16#01`` reads
+    as the typed literal ``B#16`` and stops before the trailing ``#01``). Left
+    unchecked, that reads as a clean parse — no error, a real tree — and a
+    caller trusting ``.expression`` alone would silently act on a wrong
+    result built from a prefix of its input. This function checks the
+    stream's final position itself, so that case is turned into the same
+    outcome as an unreadable construct: an error and ``expression is None``.
+
     Parameters
     ----------
     tokens : list[Token]
@@ -572,13 +590,31 @@ def parse_expression(tokens: list[Token]) -> ExpressionResult:
     Returns
     -------
     ExpressionResult
-        The parsed expression (or ``None``), any errors encountered, and how
-        many tokens of the slice were consumed.
+        The parsed expression, or ``None`` when the slice could not be read
+        as one in full; any errors encountered (see above); and how many
+        tokens of the slice were consumed. ``consumed`` is unaffected by this
+        check — it still reports the cursor's own final position, not
+        ``len(tokens)`` — so ``verify_expression_consumed`` keeps working
+        exactly as before.
     """
     stream = TokenStream(tokens)
     parser = _ExpressionParser(stream)
     expression = parser.parse()
-    return ExpressionResult(expression=expression, errors=parser.errors, consumed=stream.position())
+    errors = parser.errors
+    consumed = stream.position()
+    if expression is not None and consumed < len(tokens):
+        trailing = tokens[consumed]
+        errors = [
+            *errors,
+            ParseError(
+                line=trailing.line,
+                column=trailing.column,
+                token_value=trailing.value,
+                expected="the end of the expression (trailing tokens after a complete parse)",
+            ),
+        ]
+        expression = None
+    return ExpressionResult(expression=expression, errors=errors, consumed=consumed)
 
 
 def verify_expression_consumed(tokens: list[Token], result: ExpressionResult) -> bool:

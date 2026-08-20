@@ -55,6 +55,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   messages that can precede the payload, now go to stderr in JSON mode —
   text mode is unchanged. `--conformance` always exits 0 regardless: it is a
   report, not a gate.
+- **plc-code (parser, CLI)** — an expression AST alongside the statement one, and
+  `plc code transpile --conformance`'s report grows an expression section to
+  measure it.
+
+  The statement parser above left every `Assignment.value`, `Branch.condition`,
+  `Argument.value` and the rest as an unparsed token slice — the statement shape
+  was known, but not what was inside it. `parser/expressions.py` adds eight frozen
+  node types (`Literal`, `TypedLiteral`, `VariableRef`, `Member`, `Index`,
+  `UnaryOp`, `BinaryOp`, `FunctionCall`) and `parser/expression_parser.py` a
+  recursive-descent parser over them: the full IEC precedence chain (`OR`, `AND`,
+  comparisons, `+`/`-`, `*`/`/`/`MOD`, right-associative `**`, unary `NOT`/`-`),
+  typed literals (`T#5s`, `16#FF`) the lexer itself does not know how to
+  recognise, and the same no-silent-loss rule as the statement parser: a
+  construct the parser cannot read becomes a `ParseError`, never a guess.
+
+  Every statement type gains a parallel `*_expr` field next to the token slice
+  it is derived from (`Assignment.target_expr`, `Case.selector_expr`, ...) — no
+  existing field changes name or type, which is why the executor needed no
+  change and nothing generates from the tree yet; it is read-only wiring ahead
+  of the code generator that will eventually consume it. Expression parse
+  failures are counted in their own `expression_errors`/`expression_slices`
+  channel, separate from `errors`, so an expression this toolchain cannot yet
+  read does not cost the statement parser its 100% conformance — a different,
+  still-in-progress grammar should not move a figure that is not about it.
+
+  Measured over five real PLC projects (`project-A` … `project-E`): **16,069
+  expression slices, 15,475 parsed, 96.30%, 594 errors.** All 594 are one of six
+  named, counted, confirmed-against-real-SCL causes, none an implementation
+  bug — each is SCL the grammar does not cover yet, deliberately left for its
+  own follow-up rather than folded in here without review: 235 a call by
+  quoted block name (`"ConvertAngleSafetyProcess"(...)`), 234 a member name
+  prefixed with `#` (`"QuayData".arms[#n].input.#percCollarSwitch`), 76 a name
+  that collides with a keyword token (`#function`, `.type`), 30 a named
+  argument inside an in-expression call (`RD_SYS_T(OUT => #localTime)`), 12 a
+  multi-dimensional array index (`arr[i, j]`), 7 direct bit access on a member
+  (`"QuayData".rcu.input.statusByte.%X0`).
+
+  The qualifier that makes 96.30% honest: `parse_scl_file` only tokenises
+  `REGION` contents, so SCL written directly inside a `NETWORK` is an
+  untokenised string this pipeline never sees at all. Measured across the same
+  corpus: 123 of 649 blocks (19%) contain such SCL — 49,151 tokens against
+  126,456 inside regions, 28% of the corpus SCL. So the rate above is 96.30% of
+  the expression slices in SCL that lives inside REGION blocks, not 96.30% of
+  the SCL in these five projects.
+
+  Also pre-existing and out of scope: the lexer folds an unspaced `-` before a
+  digit into one `NUMBER` token (`#a-2` lexes as `#a`, `-2`, not `#a`, `-`,
+  `2`), so `#a-2`, `1-2`, `ABS(#x-1)` and `#arr[#i-1]` all fail to parse today.
+  Zero occurrences across the five projects is why the published rate does not
+  show it, not evidence it does not happen — a project that writes `x := a-1`
+  would see this rate drop sharply.
 - **plc-code (executor/diagnostics, CLI)** — new `plc code transpile` command and
   the `plc_code.executor.diagnostics` module behind it.
 

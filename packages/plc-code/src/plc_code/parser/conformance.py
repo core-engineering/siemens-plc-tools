@@ -127,7 +127,14 @@ def _expression_slice_counts(statements: list[Statement]) -> tuple[int, int]:
         elif isinstance(statement, Case):
             _count(statement.selector, statement.selector_expr)
             for case_branch in statement.branches:
-                for value, value_expr in zip(case_branch.values, case_branch.values_expr, strict=True):
+                # `values_expr` is documented as optional (default: an empty list), so
+                # a `CaseBranch` built without it must not crash here: an index past
+                # its end is treated as an unparsed entry, not a length mismatch to
+                # raise on. Every other index pairs exactly, same as `zip(strict=True)`.
+                for index, value in enumerate(case_branch.values):
+                    value_expr = (
+                        case_branch.values_expr[index] if index < len(case_branch.values_expr) else None
+                    )
                     _count(value, value_expr)
                 inner_slices, inner_parsed = _expression_slice_counts(case_branch.body)
                 slices += inner_slices

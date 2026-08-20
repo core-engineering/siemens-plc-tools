@@ -31,7 +31,9 @@ class TestConsumption:
     def test_a_trailing_unreadable_token_is_not_silently_dropped(self) -> None:
         tokens = _tokens("#a + 1 @")
         result = parse_expression(tokens)
-        assert result.errors != [] or verify_expression_consumed(tokens, result) is False
+        assert result.errors != []
+        assert result.expression is None
+        assert verify_expression_consumed(tokens, result) is False
 
 
 class TestDeepNesting:
@@ -49,3 +51,5 @@ class TestDeepNesting:
         tokens = _tokens(source)
         result = parse_expression(tokens)
         assert result.errors == []
+        assert result.expression is not None
+        assert verify_expression_consumed(tokens, result) is True
