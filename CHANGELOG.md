@@ -81,36 +81,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   still-in-progress grammar should not move a figure that is not about it.
 
   Measured over five real PLC projects (`project-A` … `project-E`): **16,069
-  expression slices, 15,806 parsed, 98.36%, 263 errors.**
+  expression slices, 15,971 parsed, 99.39%, 98 errors.**
 
-  The first measurement was 96.30% with 594 errors. Two grammar gaps were then
+  The first measurement was 96.30% with 594 errors. Three grammar gaps were then
   closed — a call whose callee is a quoted block name
-  (`"ConvertAngleSafetyProcess"(...)`) and a member name carrying its own `#`
-  (`#armSetpoint.#angularSpeeds["SLEWING"]`) — and they are reported below as
-  their own fix.
+  (`"ConvertAngleSafetyProcess"(...)`), a member name carrying its own `#`
+  (`#armSetpoint.#angularSpeeds["SLEWING"]`), and a named argument binding
+  (`"PolyEval"(p := #p)`, `RD_SYS_T(OUT => #localTime)`) — each reported below as
+  its own fix.
 
-  Closing them removed 331 errors, not the 469 their individual counts
+  The first two removed 331 errors, not the 469 their individual counts
   predicted, and the gap is worth recording: the counts are of error *sites
   reached*, not of independent causes. A quoted call that failed at its name
   never reached the named argument inside it, so `"ScalingAnalogicInput"(input
   := ...)` was counted once as a quoted-call error and reappeared as a
-  named-argument error once the call parsed. Named arguments are therefore more
-  common than the 30 first attributed to them.
+  named-argument error once the call parsed. Named arguments were therefore far
+  more common than the 30 first attributed to them — 165 sites once the quoted
+  calls parsed.
 
   What remains is SCL the grammar does not cover, none of it an implementation
   bug, each deliberately left for its own follow-up rather than folded in
-  without review: a named argument inside an in-expression call
-  (`"Scaling"(input := #x)`, `RD_SYS_T(OUT => #localTime)`), a name that
-  collides with a keyword token (`#function`, `.type`), a multi-dimensional
-  array index (`arr[i, j]`), and direct bit access on a member
-  (`"QuayData".rcu.input.statusByte.%X0`).
+  without review: a name that collides with a keyword token (`#function` 63
+  sites, `.type` 13), a multi-dimensional array index (`arr[i, j]`, 12), direct
+  bit access on a member (`"QuayData".rcu.input.statusByte.%X0`, 7), and a bare
+  identifier standing for an implicit variable (`ENO`, `Default`, 3).
 
   The qualifier that makes that rate honest: `parse_scl_file` only tokenises
   `REGION` contents, so SCL written directly inside a `NETWORK` is an
   untokenised string this pipeline never sees at all. Measured across the same
   corpus: 123 of 649 blocks (19%) contain such SCL — 49,151 tokens against
-  126,456 inside regions, 28% of the corpus SCL. So the rate above is 98.36% of
-  the expression slices in SCL that lives inside REGION blocks, not 98.36% of
+  126,456 inside regions, 28% of the corpus SCL. So the rate above is 99.39% of
+  the expression slices in SCL that lives inside REGION blocks, not 99.39% of
   the SCL in these five projects.
 
   Also pre-existing and out of scope: the lexer folds an unspaced `-` before a
@@ -236,6 +237,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Measured: 96.30% to **98.36%**, 594 errors down to 263. That is 331 closed,
   not the 469 predicted — see the expression-AST entry above for why the two
   counts were not independent.
+
+- **plc-code (parser)** — a call inside an expression could not bind its
+  arguments by name, which is how SCL calls most blocks.
+
+      #fl := "PolyEval"(p := #p, n := #n, x := #ll);
+      #returnCode := RD_SYS_T(OUT => #localTime);
+
+  The parameter name is a bare identifier, not a valid expression on its own, so
+  the argument failed at its own name — before the `:=` was ever reached. 165 of
+  the 263 remaining expression errors were this one shape.
+
+  `FunctionCall.arguments` is now a list of `CallArgument`, wrapping positional
+  arguments too so a consumer walks one list of one type in source order.
+  `is_output` keeps `=>` distinct from `:=`: an output binding names a
+  destination the call writes to, and a translator that collapses the two drops
+  the write — the same defect already recorded for statement-level calls.
+
+  Measured: 98.36% to **99.39%**, 263 errors down to 98. No new error class
+  appeared behind the closed one; the 98 that remain are the four gaps listed in
+  the expression-AST entry above.
 
 - **plc-code (parser)** — an argument value containing parentheses ended at the
   wrong one, desynchronising the rest of the call.

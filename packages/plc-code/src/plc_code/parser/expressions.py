@@ -168,6 +168,35 @@ class BinaryOp:
 
 
 @dataclass(frozen=True)
+class CallArgument:
+    """One argument of a call, with the parameter name when it was written.
+
+    SCL binds arguments by name more often than by position — `#fl :=
+    "PolyEval"(p := #p, n := #n, x := #ll)` — and the direction of the binding
+    is part of the source: `:=` passes a value in, `=>` names a destination the
+    call writes to. Both are kept, because a translator that collapses them to
+    the same thing drops the writes.
+
+    Every argument is wrapped, positional ones included, so that a consumer
+    walks one list of one type in source order rather than a union.
+
+    Attributes
+    ----------
+    value : Expression
+        The argument's expression. Its own ``line``/``column`` locate the
+        argument in the source, so this node carries no position of its own.
+    name : str
+        The parameter name, or an empty string for a positional argument.
+    is_output : bool
+        True when the binding was written `name => value`.
+    """
+
+    value: Expression
+    name: str = ""
+    is_output: bool = False
+
+
+@dataclass(frozen=True)
 class FunctionCall:
     """A function call in an expression: `ABS(#x)`, `INT_TO_REAL(#n)`.
 
@@ -177,8 +206,9 @@ class FunctionCall:
         Position of the function name.
     name : str
         The name, without the surrounding quotes when there were any.
-    arguments : list[Expression]
-        The arguments, in source order.
+    arguments : list[CallArgument]
+        The arguments, in source order, each wrapped so that a named binding
+        keeps its parameter name and direction.
     is_quoted : bool
         True when the callee was written `"Name"(...)` rather than bare. The
         corpus calls user blocks that way 235 times, and a generator has to tell
@@ -189,7 +219,7 @@ class FunctionCall:
     line: int
     column: int
     name: str
-    arguments: list[Expression] = field(default_factory=list)
+    arguments: list[CallArgument] = field(default_factory=list)
     is_quoted: bool = False
 
 

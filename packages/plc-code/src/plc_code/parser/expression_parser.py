@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 
 from plc_code.parser.expressions import (
     BinaryOp,
+    CallArgument,
     Expression,
     FunctionCall,
     Index,
@@ -507,10 +508,10 @@ class _ExpressionParser:
         is_quoted = name_token.type is TokenType.STRING
         name = name_token.value[1:-1] if is_quoted else name_token.value
 
-        arguments: list[Expression] = []
+        arguments: list[CallArgument] = []
         if not self._stream.match(TokenType.RPAREN):
             while True:
-                argument = self._parse_expression()
+                argument = self._parse_argument()
                 if argument is None:
                     return None
                 arguments.append(argument)
@@ -528,6 +529,39 @@ class _ExpressionParser:
             arguments=arguments,
             is_quoted=is_quoted,
         )
+
+    def _parse_argument(self) -> CallArgument | None:
+        """Parse one call argument, named (`IN := #x`, `OUT => #y`) or positional.
+
+        A parameter name is a bare identifier, which is not an expression on its
+        own, so the binding has to be recognised before the value is read: the
+        corpus writes named arguments far more often than positional ones, and
+        without this the argument fails at its own name.
+
+        Returns
+        -------
+        CallArgument | None
+            The argument; ``None`` when its value could not be read (an error
+            was recorded). ``name`` is empty and ``is_output`` false for a
+            positional argument.
+        """
+        name = ""
+        is_output = False
+        if self._stream.peek().type is TokenType.IDENTIFIER:
+            follower = self._stream.peek(1)
+            if follower.type is TokenType.ASSIGN:
+                name = self._stream.advance().value
+                self._stream.advance()
+            elif composite_operator(follower, self._stream.peek(2)) == "=>":
+                name = self._stream.advance().value
+                self._stream.advance()
+                self._stream.advance()
+                is_output = True
+
+        value = self._parse_expression()
+        if value is None:
+            return None
+        return CallArgument(value=value, name=name, is_output=is_output)
 
     def _parse_grouping(self) -> Expression | None:
         """Parse `(expression)`, the cursor already on the `(`.

@@ -79,7 +79,7 @@ class TestTypedLiteralsAwayFromPositionZero:
         assert result.errors == []
         call = result.expression
         assert isinstance(call, FunctionCall)
-        assert isinstance(call.arguments[0], TypedLiteral)
+        assert isinstance(call.arguments[0].value, TypedLiteral)
 
     def test_as_an_array_index(self) -> None:
         result = _parse("#arr[16#FF]")
