@@ -81,23 +81,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   still-in-progress grammar should not move a figure that is not about it.
 
   Measured over five real PLC projects (`project-A` … `project-E`): **16,069
-  expression slices, 15,475 parsed, 96.30%, 594 errors.** All 594 are one of six
-  named, counted, confirmed-against-real-SCL causes, none an implementation
-  bug — each is SCL the grammar does not cover yet, deliberately left for its
-  own follow-up rather than folded in here without review: 235 a call by
-  quoted block name (`"ConvertAngleSafetyProcess"(...)`), 234 a member name
-  prefixed with `#` (`"QuayData".arms[#n].input.#percCollarSwitch`), 76 a name
-  that collides with a keyword token (`#function`, `.type`), 30 a named
-  argument inside an in-expression call (`RD_SYS_T(OUT => #localTime)`), 12 a
-  multi-dimensional array index (`arr[i, j]`), 7 direct bit access on a member
+  expression slices, 15,806 parsed, 98.36%, 263 errors.**
+
+  The first measurement was 96.30% with 594 errors. Two grammar gaps were then
+  closed — a call whose callee is a quoted block name
+  (`"ConvertAngleSafetyProcess"(...)`) and a member name carrying its own `#`
+  (`#armSetpoint.#angularSpeeds["SLEWING"]`) — and they are reported below as
+  their own fix.
+
+  Closing them removed 331 errors, not the 469 their individual counts
+  predicted, and the gap is worth recording: the counts are of error *sites
+  reached*, not of independent causes. A quoted call that failed at its name
+  never reached the named argument inside it, so `"ScalingAnalogicInput"(input
+  := ...)` was counted once as a quoted-call error and reappeared as a
+  named-argument error once the call parsed. Named arguments are therefore more
+  common than the 30 first attributed to them.
+
+  What remains is SCL the grammar does not cover, none of it an implementation
+  bug, each deliberately left for its own follow-up rather than folded in
+  without review: a named argument inside an in-expression call
+  (`"Scaling"(input := #x)`, `RD_SYS_T(OUT => #localTime)`), a name that
+  collides with a keyword token (`#function`, `.type`), a multi-dimensional
+  array index (`arr[i, j]`), and direct bit access on a member
   (`"QuayData".rcu.input.statusByte.%X0`).
 
-  The qualifier that makes 96.30% honest: `parse_scl_file` only tokenises
+  The qualifier that makes that rate honest: `parse_scl_file` only tokenises
   `REGION` contents, so SCL written directly inside a `NETWORK` is an
   untokenised string this pipeline never sees at all. Measured across the same
   corpus: 123 of 649 blocks (19%) contain such SCL — 49,151 tokens against
-  126,456 inside regions, 28% of the corpus SCL. So the rate above is 96.30% of
-  the expression slices in SCL that lives inside REGION blocks, not 96.30% of
+  126,456 inside regions, 28% of the corpus SCL. So the rate above is 98.36% of
+  the expression slices in SCL that lives inside REGION blocks, not 98.36% of
   the SCL in these five projects.
 
   Also pre-existing and out of scope: the lexer folds an unspaced `-` before a
@@ -205,6 +218,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   numbers directly.
 
 ### Fixed
+- **plc-code (parser)** — two SCL constructs the expression grammar did not read.
+
+  A call whose callee is a quoted block name — `"ConvertAngleSafetyProcess"(#x)` —
+  parsed the quoted name as a variable and then choked on the `(`. A member name
+  carrying its own `#` — `#armSetpoint.#angularSpeeds["SLEWING"]` — was rejected
+  because a bare identifier was expected after the dot. Between them they
+  accounted for 469 of the 594 expression errors in the corpus.
+
+  Both are recorded rather than flattened, because a consumer that cannot tell
+  the forms apart cannot render either one back: `FunctionCall.is_quoted` is
+  True when the callee was written `"Name"(...)`, and `Member.is_local` is True
+  when the member was written `.#name`, following `VariableRef.is_local` where
+  `#` already means local. Both fields are additive with defaults, so no
+  existing consumer changes.
+
+  Measured: 96.30% to **98.36%**, 594 errors down to 263. That is 331 closed,
+  not the 469 predicted — see the expression-AST entry above for why the two
+  counts were not independent.
+
 - **plc-code (parser)** — an argument value containing parentheses ended at the
   wrong one, desynchronising the rest of the call.
 

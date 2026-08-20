@@ -90,13 +90,19 @@ class Member:
     base : Expression
         The expression being accessed.
     name : str
-        The name of the member.
+        The name of the member, without any leading `#`.
+    is_local : bool
+        True when the member was written `.#name`. The corpus uses that form 234
+        times, and it is different source from `.name` — a consumer that cannot
+        tell them apart cannot render either one back. Follows
+        `VariableRef.is_local`, where `#` already means local.
     """
 
     line: int
     column: int
     base: Expression
     name: str
+    is_local: bool = False
 
 
 @dataclass(frozen=True)
@@ -170,15 +176,21 @@ class FunctionCall:
     line, column : int
         Position of the function name.
     name : str
-        The name, as written.
+        The name, without the surrounding quotes when there were any.
     arguments : list[Expression]
         The arguments, in source order.
+    is_quoted : bool
+        True when the callee was written `"Name"(...)` rather than bare. The
+        corpus calls user blocks that way 235 times, and a generator has to tell
+        such a call from a builtin like `ABS`. Named for what was written rather
+        than for what it means, because the semantics are not established here.
     """
 
     line: int
     column: int
     name: str
     arguments: list[Expression] = field(default_factory=list)
+    is_quoted: bool = False
 
 
 Expression = Literal | TypedLiteral | VariableRef | Member | Index | UnaryOp | BinaryOp | FunctionCall

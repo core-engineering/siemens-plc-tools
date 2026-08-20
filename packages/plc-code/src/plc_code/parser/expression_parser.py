@@ -333,12 +333,25 @@ class _ExpressionParser:
 
             if token.type is TokenType.DOT:
                 self._stream.advance()
+                # A member may carry its own `#`: `#armSetpoint.#angularSpeeds`.
+                # Rejecting it cost 234 of the corpus's expression errors. The
+                # flag is kept because `.name` and `.#name` are different source.
+                is_local = False
+                if self._stream.peek().type is TokenType.HASH:
+                    self._stream.advance()
+                    is_local = True
                 name_token = self._stream.peek()
                 if name_token.type is not TokenType.IDENTIFIER:
                     self._error(name_token, "a member name after '.'")
                     return None
                 self._stream.advance()
-                node = Member(line=token.line, column=token.column, base=node, name=name_token.value)
+                node = Member(
+                    line=token.line,
+                    column=token.column,
+                    base=node,
+                    name=name_token.value,
+                    is_local=is_local,
+                )
                 continue
 
             if token.type is TokenType.LBRACKET:
@@ -434,6 +447,13 @@ class _ExpressionParser:
             return self._parse_local_variable()
 
         if token.type is TokenType.STRING:
+            # A quoted name followed by `(` is a call on a user block, not a
+            # variable: `"ConvertAngleSafetyProcess"(...)`. Reading it as a
+            # variable left the `(` trailing and cost 235 of the corpus's
+            # expression errors. Unlike a typed literal, this does not depend on
+            # adjacency — `"Name" (x)` is the same call.
+            if self._stream.peek(1).type is TokenType.LPAREN:
+                return self._parse_function_call()
             self._stream.advance()
             return VariableRef(line=token.line, column=token.column, name=token.value[1:-1], is_local=False)
 
@@ -465,8 +485,9 @@ class _ExpressionParser:
     def _parse_function_call(self) -> Expression | None:
         """Parse `name(args)`, the cursor already on the name.
 
-        Only reached once the caller has confirmed an `(` immediately
-        follows the identifier.
+        The name is a bare identifier for a builtin (`ABS(#x)`) or a quoted
+        block name for a user block (`"Scaling"(#x)`). Only reached once the
+        caller has confirmed an `(` follows it.
 
         Returns
         -------
@@ -478,8 +499,13 @@ class _ExpressionParser:
             so far — a caller reading ``consumed`` alone must not be able to
             mistake it for a complete parse.
         """
-        name_token = self._stream.advance()  # IDENTIFIER
+        name_token = self._stream.advance()  # IDENTIFIER or STRING
         self._stream.advance()  # LPAREN
+        # A quoted callee names a user block; a bare one is a builtin such as
+        # ABS. The quotes are stripped from the name and the distinction kept in
+        # the flag, matching how VariableRef stores a quoted name.
+        is_quoted = name_token.type is TokenType.STRING
+        name = name_token.value[1:-1] if is_quoted else name_token.value
 
         arguments: list[Expression] = []
         if not self._stream.match(TokenType.RPAREN):
@@ -496,7 +522,11 @@ class _ExpressionParser:
         if not self._expect(TokenType.RPAREN, "')'"):
             return None
         return FunctionCall(
-            line=name_token.line, column=name_token.column, name=name_token.value, arguments=arguments
+            line=name_token.line,
+            column=name_token.column,
+            name=name,
+            arguments=arguments,
+            is_quoted=is_quoted,
         )
 
     def _parse_grouping(self) -> Expression | None:
