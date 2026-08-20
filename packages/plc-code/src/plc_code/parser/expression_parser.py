@@ -167,7 +167,7 @@ class _ExpressionParser:
         """
         return self._binary_level(0)
 
-    def _binary_level(self, level: int) -> Expression | None:
+    def _binary_level(self, level: int, seed: Expression | None = None) -> Expression | None:
         """One left-associative binary level.
 
         Parameters
@@ -190,14 +190,27 @@ class _ExpressionParser:
             failed lookup only returns ``left`` when no new error appeared.
         """
         if level >= len(self._LEVELS):
-            return self._parse_power()
-        left = self._binary_level(level + 1)
+            return self._parse_power(seed)
+        left = self._binary_level(level + 1, seed)
         if left is None:
             return None
         while True:
             error_count = len(self._errors)
             operator = self._peek_operator_in(self._LEVELS[level])
             if operator is None:
+                folded = self._split_folded_minus(self._LEVELS[level])
+                if folded is not None:
+                    right = self._binary_level(level + 1, seed=folded)
+                    if right is None:
+                        return None
+                    left = BinaryOp(
+                        line=folded.line,
+                        column=folded.column - 1,
+                        operator="-",
+                        left=left,
+                        right=right,
+                    )
+                    continue
                 return None if len(self._errors) > error_count else left
             token = self._stream.peek()
             self._consume_operator(operator)
@@ -212,11 +225,58 @@ class _ExpressionParser:
                 right=right,
             )
 
-    def _parse_power(self) -> Expression | None:
+    def _split_folded_minus(self, names: frozenset[str]) -> Literal | None:
+        """Split a `NUMBER` the lexer folded a leading `-` into.
+
+        The lexer turns `-` followed by a digit into one `NUMBER` token
+        whatever precedes it, spacing included: `#a-1` and `#a -1` both come
+        out as ``IDENTIFIER:'a' NUMBER:'-1'``. It cannot do better, because the
+        two readings are told apart by whether an operand precedes —
+        ``f(#a, -1)`` passes a negative literal, ``f(#a -1)`` passes a
+        subtraction — and that is the parser's knowledge, not the lexer's.
+
+        Called only when the operator lookup failed inside ``_binary_level``'s
+        loop, which by construction runs after a left operand has been read.
+        Everywhere else a folded token reaches ``_parse_primary`` and stays the
+        negative literal it is. Fixing it here rather than in the lexer also
+        leaves ``Region.content`` untouched, which 27 rules and the transpiler
+        read byte for byte.
+
+        Parameters
+        ----------
+        names : frozenset[str]
+            The precedence level's operator set. The split applies at the
+            additive level only; every other level must leave the token alone
+            so precedence still binds the subtraction where it belongs.
+
+        Returns
+        -------
+        Literal | None
+            The number without its sign, positioned one column right of the
+            `-`; None when the cursor is not on a folded token or the level is
+            not the additive one. Nothing is consumed in that case.
+        """
+        if "-" not in names:
+            return None
+        token = self._stream.peek()
+        if token.type is not TokenType.NUMBER or not token.value.startswith("-"):
+            return None
+        self._stream.advance()
+        return Literal(line=token.line, column=token.column + 1, value=token.value[1:])
+
+    def _parse_power(self, seed: Expression | None = None) -> Expression | None:
         """``**``, the only RIGHT-associative operator.
 
         ``2 ** 3 ** 2`` is ``2 ** (3 ** 2)`` = 512, not 64. Hence recursing
         into itself on the right rather than looping.
+
+        Parameters
+        ----------
+        seed : Expression | None
+            An operand already read, used in place of reading one here. Only
+            ``_split_folded_minus`` supplies it: the number it recovered has to
+            enter the chain at the bottom so `#a-1*2` binds `1*2`, exactly as
+            the spaced `#a - 1 * 2` does.
 
         Returns
         -------
@@ -226,7 +286,7 @@ class _ExpressionParser:
             after a consumed ``**``, or an error surfaced by
             ``_peek_operator_in`` itself).
         """
-        left = self._parse_unary()
+        left = self._parse_unary() if seed is None else seed
         if left is None:
             return None
         error_count = len(self._errors)

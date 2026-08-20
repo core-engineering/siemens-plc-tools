@@ -84,9 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   still-in-progress grammar should not move a figure that is not about it.
 
   Measured over five real PLC projects (`project-A` … `project-E`): **23,279
-  expression slices, 23,263 parsed, 99.93%, 16 errors** — across 649 blocks,
-  439 regions and 155 networks, with token coverage exactly 1.0000 and every
-  block, region and network clean of statement errors.
+  expression slices, all 23,279 parsed, 100.00%, zero errors** — across 649
+  blocks, 439 regions and 155 networks, with token coverage exactly 1.0000 over
+  178,742 tokens and every block, region and network clean.
 
   That measurement covers all the SCL in those projects. An earlier revision
   published 100.00% over 16,069 slices, which was every slice the pipeline could
@@ -105,8 +105,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (`#m[#i, #j]`), direct bit access (`.%X0`), the implicit enable output
   (`ENO`), and a quoted name in either name position (`."type"`, `"x" := #A`).
   Three more followed once `Network.tokens` made the rest of the SCL visible: a
-  chained typed literal (`b#16#FF`), `&` written for `AND`, and an absolute
-  address in leading position (`%DB150.%DBX31.1`).
+  chained typed literal (`b#16#FF`), `&` written for `AND`, an absolute address
+  in leading position (`%DB150.%DBX31.1`), and the lexer's folded `-`
+  (`("MLA10"-1)`).
 
   The first two removed 331 errors, not the 469 their individual counts
   predicted, and the gap is worth recording: the counts are of error *sites
@@ -130,20 +131,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   always were. The defect was a quoted region *name*, reported as its own fix
   below.
 
-  All 16 errors that remain are one shape, and it is the only one whose fix
-  reaches into the lexer: an unspaced `-` before a digit is folded into a single
-  `NUMBER` token, so `("MLA10"-1)` and `armParams[#arm_index-1]` cannot parse.
-  See the paragraph below on that fold.
+  Nothing in the corpus is unread. Every expression slice in every block of
+  those five projects has a tree, and the statement layer accounts for every
+  token.
 
-  Also pre-existing and out of scope: the lexer folds an unspaced `-` before a
-  digit into one `NUMBER` token (`#a-2` lexes as `#a`, `-2`, not `#a`, `-`,
-  `2`), so `#a-2`, `1-2`, `ABS(#x-1)` and `#arr[#i-1]` all fail to parse today.
-  An earlier revision of this entry said there were zero occurrences across the
-  five projects. That was zero occurrences *inside REGION blocks*, which is the
-  only SCL the measurement could see. Outside them the corpus writes 16 —
-  `FOR #page := "MLA1" TO ("MLA10"-1)`, `armParams[#arm_index-1]` — so the
-  construct does happen, and the rate above does not show it only because the
-  slices carrying it never reach this pipeline.
+  The lexer still folds an unspaced `-` before a digit into one `NUMBER` token
+  (`#a-2` lexes as `#a`, `-2`), and it always will: the two readings are told
+  apart by whether an operand precedes, which is the parser's knowledge. Two
+  earlier revisions of this entry got this wrong — first claiming zero
+  occurrences across the five projects (it was zero *inside REGION blocks*, the
+  only SCL the measurement could then see; outside them the corpus writes 16),
+  then calling the fix a lexer change. It is neither; see the split below.
 - **plc-code (executor/diagnostics, CLI)** — new `plc code transpile` command and
   the `plc_code.executor.diagnostics` module behind it.
 
@@ -426,6 +424,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
   Measured: **99.61% to 99.93%**, 90 errors down to 16, exactly the 74 counted.
   Nothing was masking these three, and every error left is the lexer's `-` fold.
+
+- **plc-code (parser)** — an unspaced `-` before a digit, which the lexer folds
+  into the number. The last 16 expression errors in the corpus.
+
+      FOR #page := "MLA1" TO ("MLA10"-1) DO
+      "QuayParameters".quayParam.armParams[#arm_index-1].cpmsSensorParams[...]
+
+  `#a-1` lexes as `IDENTIFIER:'a' NUMBER:'-1'`, and so does `#a -1`: the fold
+  ignores spacing. It cannot be corrected in the lexer, because the lexer cannot
+  know which reading applies — `f(#a, -1)` passes a negative literal, `f(#a -1)`
+  passes a subtraction, and only whether an operand precedes tells them apart.
+  That is the parser's knowledge.
+
+  So the split happens in `_binary_level`, at the additive precedence level
+  only, and only when the operator lookup has already failed — which by
+  construction is after a left operand was read. Everywhere else the folded
+  token reaches `_parse_primary` and stays the negative literal it is:
+  `#arr[-1]`, `#a * -1`, `"CONV".IN[#b] <> -32768`, `(-1)` are all unchanged.
+
+  The recovered number re-enters the chain one level up rather than being used
+  as the right operand directly, so `#a-1*2` binds `1*2` exactly as the spaced
+  `#a - 1 * 2` does. One token still yields both the operator and the operand,
+  so the consumption invariant holds untouched.
+
+  No lexer change, therefore no change to `Region.content` or
+  `Network.content`, which 27 rules and the transpiler read byte for byte.
+
+  Measured: **99.93% to 100.00%**, 16 errors down to zero. With it the corpus
+  is fully read: 23,279 expression slices all parsed, 178,742 tokens all
+  accounted for, 649 blocks, 439 regions and 155 networks clean.
 
 - **plc-code (parser)** — an argument value containing parentheses ended at the
   wrong one, desynchronising the rest of the call.
