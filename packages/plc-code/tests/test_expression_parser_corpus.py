@@ -30,12 +30,18 @@ def _slices(statement, out):
                 out.append(branch.condition)
             for inner in branch.body:
                 _slices(inner, out)
+        # `else_body` is a separate field from `branches`; missing it silently
+        # under-counts the corpus by 12%.
+        for inner in statement.else_body:
+            _slices(inner, out)
     elif kind == "Case":
         out.append(statement.selector)
         for branch in statement.branches:
             out += list(branch.values)
             for inner in branch.body:
                 _slices(inner, out)
+        for inner in statement.default:
+            _slices(inner, out)
     elif kind == "For":
         out += [statement.variable, statement.start, statement.end]
         if statement.step:

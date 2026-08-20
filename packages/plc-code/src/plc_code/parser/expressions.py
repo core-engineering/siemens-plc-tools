@@ -1,6 +1,6 @@
 """Expression AST for SCL.
 
-Sized on measurement, not on the language reference: across 14,217 expression
+Sized on measurement, not on the language reference: across 16,201 expression
 slices in five production projects, access (`#`, `.`, `[]`) dominates, followed
 by arithmetic, then boolean. `XOR` does not occur once and has no node here —
 the parser reports it as an error, which is the honest answer for a construct
