@@ -168,8 +168,8 @@ class ConformanceReport:
         Blocks examined (blocks with a name; unparsable files are skipped by
         the caller before this report is built).
     clean_blocks : int
-        Blocks in which every region parsed with zero errors. A block with
-        no non-empty top-level regions counts as clean vacuously.
+        Blocks in which every region and every network parsed with zero
+        errors. A block with nothing to parse counts as clean vacuously.
     regions : int
         Non-empty top-level regions examined (``block.networks[*].regions``
         only — ``region.nested_regions`` is not descended into, because a
@@ -178,10 +178,18 @@ class ConformanceReport:
         every count in this report).
     clean_regions : int
         Regions that parsed with zero errors.
+    networks : int
+        Networks carrying SCL outside any REGION (a non-empty
+        ``Network.tokens``). Counted separately from ``regions`` because a
+        network is not a region; the token, statement and expression totals
+        below cover both populations.
+    clean_networks : int
+        Networks whose out-of-region SCL parsed with zero errors.
     statements : int
         Statements successfully parsed, across all regions.
     tokens : int
-        Tokens offered to the parser, summed over every region examined.
+        Tokens offered to the parser, summed over every region and every
+        network examined.
     consumed : int
         Tokens the parser actually accounted for as a statement, an error's
         own token, or a separator — i.e. ``tokens`` minus the size of the
@@ -222,6 +230,8 @@ class ConformanceReport:
     clean_blocks: int = 0
     regions: int = 0
     clean_regions: int = 0
+    networks: int = 0
+    clean_networks: int = 0
     statements: int = 0
     tokens: int = 0
     consumed: int = 0
@@ -252,9 +262,19 @@ class ConformanceReport:
         """Share of regions that parsed with zero errors, 0.0 when there are none."""
         return self.clean_regions / self.regions if self.regions else 0.0
 
+    @property
+    def network_clean_rate(self) -> float:
+        """Share of networks that parsed with zero errors, 0.0 when there are none."""
+        return self.clean_networks / self.networks if self.networks else 0.0
+
 
 def build_report(blocks: list[tuple[Path, Block]]) -> ConformanceReport:
-    """Parse every top-level region of every block and total the results.
+    """Parse every top-level region and every network of every block, and total.
+
+    Both populations are measured. SCL written directly inside a ``NETWORK``,
+    outside any ``REGION``, is 29% of the corpus SCL; before ``Network.tokens``
+    existed it was an untokenised string this report could not see at all, and
+    every rate it published silently meant "of the SCL inside REGION blocks".
 
     Parameters
     ----------
@@ -302,6 +322,32 @@ def build_report(blocks: list[tuple[Path, Block]]) -> ConformanceReport:
                     block_has_error = True
                 else:
                     report.clean_regions += 1
+
+            if not network.tokens:
+                continue
+            report.networks += 1
+            result = parse_statements(network.tokens)
+
+            n_tokens = len(network.tokens)
+            report.tokens += n_tokens
+            report.consumed += n_tokens - len(_unread_token_indices(result))
+            report.statements += len(result.statements)
+            kinds.update(type(s).__name__ for s in result.statements)
+            report.errors.extend((block.name, e) for e in result.errors)
+            report.silent_loss.extend(
+                f"{block.name}, network SCL outside any region: {problem}"
+                for problem in verify_no_silent_loss(network.tokens, result)
+            )
+
+            slices, slices_parsed = _expression_slice_counts(result.statements)
+            report.expression_slices += slices
+            report.expression_slices_parsed += slices_parsed
+            report.expression_errors.extend((block.name, e) for e in result.expression_errors)
+
+            if result.errors:
+                block_has_error = True
+            else:
+                report.clean_networks += 1
 
         if not block_has_error:
             report.clean_blocks += 1

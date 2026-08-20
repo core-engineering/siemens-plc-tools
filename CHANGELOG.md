@@ -35,10 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   exactly one statement or one error — the guarantee whose absence let a whole
   `CASE` be dropped in silence.
 
-  Measured over 648 blocks in five real PLC projects: **100.00% token coverage,
-  every block clean, zero errors and zero silent loss.** The first measurement
-  reported 99.96% with 51 errors; both remaining constructs are read now — see
-  the argument-depth fix below. The one silent case a
+  Measured over 649 blocks in five real PLC projects — 439 regions and, since
+  `Network.tokens` landed, the 155 networks holding SCL outside any region:
+  **100.00% token coverage over 178,742 tokens, every block, region and network
+  clean, zero errors and zero silent loss.** The first measurement reported
+  99.96% with 51 errors over the regions alone; both remaining constructs are
+  read now — see the argument-depth fix below. Widening the population to all
+  the SCL in those projects did not cost this layer a single error. The one silent case a
   final review found is fixed: `_at_case_label` accepted a nested
   `CASE`/`IF`/`FOR`/`WHILE` at the head of an outer CASE arm as ordinary label
   content, so the nested construct's own header was scanned for a colon that
@@ -80,17 +83,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   read does not cost the statement parser its 100% conformance — a different,
   still-in-progress grammar should not move a figure that is not about it.
 
-  Measured over five real PLC projects (`project-A` … `project-E`): **16,069
-  expression slices, all 16,069 parsed, 100.00%, zero errors.**
+  Measured over five real PLC projects (`project-A` … `project-E`): **23,279
+  expression slices, 23,189 parsed, 99.61%, 90 errors** — across 649 blocks,
+  439 regions and 155 networks, with token coverage exactly 1.0000 and every
+  block, region and network clean of statement errors.
 
-  The first measurement was 96.30% with 594 errors. Seven grammar gaps were then
-  closed, each reported below as its own fix: a call whose callee is a quoted
+  That measurement covers all the SCL in those projects. An earlier revision
+  published 100.00% over 16,069 slices, which was every slice the pipeline could
+  then see — REGION contents only. `Network.tokens` closed that hole; the rate
+  went down because the population went up, and the qualifier that had to
+  accompany every figure until now is gone.
+
+  Restricted to the same population as the first measurements — SCL inside
+  REGION blocks — the rate is 100.00% over 16,069 slices, from 96.30% with 594
+  errors. Eight grammar gaps were closed to get there, each reported below as
+  its own fix: a call whose callee is a quoted
   block name (`"ConvertAngleSafetyProcess"(...)`), a member name carrying its own
   `#` (`#armSetpoint.#angularSpeeds["SLEWING"]`), a named argument binding
   (`"PolyEval"(p := #p)`, `RD_SYS_T(OUT => #localTime)`), a structural keyword
   used as a name (`#function`, `.type`), a multi-dimensional array index
-  (`#m[#i, #j]`), direct bit access (`.%X0`), and the implicit enable output
-  (`ENO`).
+  (`#m[#i, #j]`), direct bit access (`.%X0`), the implicit enable output
+  (`ENO`), and a quoted name in either name position (`."type"`, `"x" := #A`).
 
   The first two removed 331 errors, not the 469 their individual counts
   predicted, and the gap is worth recording: the counts are of error *sites
@@ -114,15 +127,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   always were. The defect was a quoted region *name*, reported as its own fix
   below.
 
-  The qualifier without which that rate misleads: `parse_scl_file` only
-  tokenises `REGION` contents, so SCL written directly inside a `NETWORK` is an
-  untokenised string this pipeline never sees at all. Measured across the same
-  corpus: 168 of 649 blocks (26%) contain such SCL — 52,288 tokens against
-  126,456 inside regions, 29% of the corpus SCL. **So 100.00% means every
-  expression slice in SCL that lives inside a REGION block, not every expression
-  slice in these five projects.** Closing that hole needs `Network.tokens`
-  alongside `Network.content`, the same additive pair `Region` already carries;
-  it is not done here.
+  The 90 errors that remain are four shapes, and all of them live in the SCL
+  outside REGION blocks that the pipeline could not see until now — which is why
+  no earlier measurement showed them: a chained typed literal (`b#16#FF`, 51),
+  the lexer's `-` folding (16), `&` written for `AND` (13), and an absolute
+  address in leading position (`%DB150.%DBX31.1`, 10).
 
   Also pre-existing and out of scope: the lexer folds an unspaced `-` before a
   digit into one `NUMBER` token (`#a-2` lexes as `#a`, `-2`, not `#a`, `-`,
@@ -357,6 +366,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Only 12 of the 82 sites closed, and the reason is the counting lesson again:
   most `."type"` lines also carry `armParams[#arm_index-1]`, which fails first.
   They will not count until the lexer's `-` folding is fixed.
+
+- **plc-code (parser, CLI)** — a `Network` now carries its tokens, so SCL
+  written outside any `REGION` reaches the statement parser at all.
+
+  `Region.tokens` was added because `Region.content` is a lossy
+  re-serialisation. SCL that sits directly inside a `NETWORK` had no
+  equivalent: it reached `Network.content` as the same lossy string and its
+  tokens were dropped on the floor. 168 of 649 blocks in five production
+  projects are written that way — 52,288 tokens, 29% of the corpus SCL — and
+  none of it could be measured, parsed, or checked.
+
+  `Network.tokens` is the same additive pair `Region` already carries.
+  `Network.content` is unchanged, byte for byte, verified across the fixture
+  corpus and locked by a test beside the one that locks `Region.content`.
+  Comments and newlines stay out of the tokens, matching `Region.tokens`, and a
+  REGION's own tokens stay with that REGION, so a caller may walk both without
+  counting one twice. A LADDER network collects nothing: RUNG elements are read
+  by their own branch.
+
+  `build_report` gains a network pass, with `networks` / `clean_networks` /
+  `network_clean_rate` reported separately — a network is not a region, and
+  folding them would misreport both. Token, statement and expression totals
+  cover both populations, and `plc code transpile --conformance` prints the new
+  counts in both formats.
+
+  What this changes about every figure this project has published: they all
+  silently meant "of the SCL inside REGION blocks". Now they mean all of it.
+  The statement layer needed no work to earn it — **155 of 155 networks parse
+  with zero errors**, token coverage stays exactly 1.0000 over 178,742 tokens,
+  and every block stays clean. Only the expression rate moves, 100.00% over
+  16,069 slices to **99.61% over 23,279**, because 90 errors that were always
+  there became visible.
 
 - **plc-code (parser)** — an argument value containing parentheses ended at the
   wrong one, desynchronising the rest of the call.

@@ -28,11 +28,13 @@ from plc_code.parser.lexer import TokenType, tokenize
 from plc_code.parser.models import Block, Network, Region
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-# SignalDebounce.s7dcl (the brief's suggested fixture) has no code REGION at
-# all — its network content sits outside any region, so region.tokens is
-# empty everywhere and build_report has nothing to measure. PumpControl.s7dcl
-# has a real 201-token logic region and parses with zero errors.
+# PumpControl.s7dcl has a real 201-token logic region and parses with zero
+# errors. SignalDebounce.s7dcl is the opposite shape: no code REGION at all,
+# its SCL sitting directly in the network. That used to make it invisible to
+# this report; `Network.tokens` is what changed, so it is now the fixture for
+# the network pass.
 CLEAN_BLOCK = FIXTURES / "PumpControl.s7dcl"
+NETWORK_ONLY_BLOCK = FIXTURES / "SignalDebounce.s7dcl"
 
 
 def _region_block(name: str, source: str) -> Block:
@@ -82,11 +84,39 @@ class TestBuildReport:
         report = build_report([(CLEAN_BLOCK, block)])
         assert sum(report.by_statement_kind.values()) == report.statements
 
+    def test_scl_outside_any_region_is_measured(self) -> None:
+        block = parse_scl_file(NETWORK_ONLY_BLOCK)
+        report = build_report([(NETWORK_ONLY_BLOCK, block)])
+        assert report.regions == 0
+        assert report.networks == 1
+        assert report.tokens > 0
+        assert report.statements > 0
+        assert report.errors == []
+        assert report.coverage == pytest.approx(1.0)
+        assert report.network_clean_rate == pytest.approx(1.0)
+
+    def test_a_block_with_only_region_scl_counts_no_networks(self) -> None:
+        block = parse_scl_file(CLEAN_BLOCK)
+        report = build_report([(CLEAN_BLOCK, block)])
+        assert report.regions > 0
+        assert report.networks == 0
+        assert report.network_clean_rate == 0.0
+
+    def test_region_and_network_tokens_are_not_double_counted(self) -> None:
+        block = parse_scl_file(CLEAN_BLOCK)
+        report = build_report([(CLEAN_BLOCK, block)])
+        region_tokens = sum(
+            len(region.tokens) for network in block.networks for region in network.regions
+        )
+        network_tokens = sum(len(network.tokens) for network in block.networks)
+        assert report.tokens == region_tokens + network_tokens
+
     def test_coverage_is_zero_for_no_tokens(self) -> None:
         report = build_report([])
         assert report.coverage == 0.0
         assert report.block_clean_rate == 0.0
         assert report.region_clean_rate == 0.0
+        assert report.network_clean_rate == 0.0
 
     def test_coverage_drops_on_unreadable_input(self) -> None:
         """The acceptance bar: GOTO has no node type, by design, and must error."""

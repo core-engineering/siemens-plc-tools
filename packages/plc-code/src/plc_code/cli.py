@@ -436,6 +436,9 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
                         "regions": report.regions,
                         "clean_regions": report.clean_regions,
                         "region_clean_rate": round(report.region_clean_rate, 4),
+                        "networks": report.networks,
+                        "clean_networks": report.clean_networks,
+                        "network_clean_rate": round(report.network_clean_rate, 4),
                         "statements": report.statements,
                         "tokens": report.tokens,
                         "consumed": report.consumed,
@@ -473,6 +476,7 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
             console.print(
                 f"[bold]{report.blocks}[/bold] block(s), "
                 f"[bold]{report.regions}[/bold] region(s), "
+                f"[bold]{report.networks}[/bold] network(s) with SCL outside any region, "
                 f"[bold]{report.statements}[/bold] statement(s) parsed"
             )
             console.print(
@@ -482,7 +486,9 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
                 f"clean blocks: [bold]{report.block_clean_rate:.1%}[/bold] "
                 f"({report.clean_blocks}/{report.blocks}); "
                 f"clean regions: [bold]{report.region_clean_rate:.1%}[/bold] "
-                f"({report.clean_regions}/{report.regions})"
+                f"({report.clean_regions}/{report.regions}); "
+                f"clean networks: [bold]{report.network_clean_rate:.1%}[/bold] "
+                f"({report.clean_networks}/{report.networks})"
             )
             if report.by_statement_kind:
                 console.print("\n[bold]Statements read[/bold]")

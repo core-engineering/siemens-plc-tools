@@ -725,12 +725,19 @@ class SCLParser:
                 #    preprocessor splits on "\n"; without newlines after ";",
                 #    all statements would be merged into one line and only the
                 #    first assignment would be translated).
+                # ``tokens`` is the same SCL, unflattened. Comments and newlines
+                # are excluded, matching ``Region.tokens``: what the statement
+                # parser reads is code, and ``content`` keeps the prose.
                 if self._current().type in (TokenType.COMMENT, TokenType.BLOCK_COMMENT):
                     network.content += self._current().value + "\n"
                 elif self._current().type == TokenType.SEMICOLON:
                     network.content += self._current().value + "\n"
+                    network.tokens.append(self._current())
+                elif self._current().type == TokenType.NEWLINE:
+                    network.content += self._current().value + " "
                 else:
                     network.content += self._current().value + " "
+                    network.tokens.append(self._current())
                 self._advance()
 
             self._skip_newlines()

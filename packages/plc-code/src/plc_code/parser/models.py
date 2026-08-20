@@ -180,7 +180,16 @@ class Network:
     regions : list[Region]
         REGION blocks within the network.
     content : str
-        Raw content of the network (for LADDER: RUNG elements).
+        Raw content of the network (for LADDER: RUNG elements). SCL written
+        directly here, outside any REGION, is flattened the same lossy way
+        ``Region.content`` is: `#a` reads as `# a`. Kept unchanged because the
+        analyzer and the executor both consume it.
+    tokens : list[Token]
+        The SCL that fed ``content``, unflattened, carrying the original line
+        and column of every token. Empty for a LADDER network and for one that
+        holds nothing but comments. A REGION's tokens are not here — they
+        belong to that ``Region`` — so a caller may walk both without counting
+        a token twice.
     ladder_elements : list[str]
         Parsed LADDER elements (Contact, Coil, etc.).
     rungs_raw : list
@@ -194,6 +203,7 @@ class Network:
     attributes: NetworkAttributes = field(default_factory=NetworkAttributes)
     regions: list[Region] = field(default_factory=list)
     content: str = ""
+    tokens: list[Token] = field(default_factory=list)
     ladder_elements: list[str] = field(default_factory=list)
     rungs_raw: list = field(default_factory=list)  # list[dict]: open_wire/elements/close_wire
 
