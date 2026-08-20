@@ -51,6 +51,17 @@ for byte.
 
 _BOOLEAN_LITERALS = {"TRUE", "FALSE"}
 
+_IMPLICIT_VARIABLES = {"ENO"}
+"""Bare identifiers SCL defines itself, which are variables despite having no
+`#` or quotes.
+
+`ENO` is the implicit enable output every block carries; the corpus assigns it
+directly (`ENO := TRUE;`). The set is deliberately this small: the
+bare-identifier error is what catches every construct the grammar cannot read,
+so widening it past the names SCL actually defines would empty the grammar of
+its ability to refuse.
+"""
+
 #: Single-character operator tokens, mapped to their SCL spelling. Distinct
 #: from ``token_stream._OPERATOR_TYPES``: that module owns the adjacent
 #: composite table (``>=``, ``<=`` ...), this is only the fallback for a
@@ -481,6 +492,9 @@ class _ExpressionParser:
                 return Literal(line=token.line, column=token.column, value=token.value)
             if self._stream.peek(1).type is TokenType.LPAREN:
                 return self._parse_function_call()
+            if token.value.upper() in _IMPLICIT_VARIABLES:
+                self._stream.advance()
+                return VariableRef(line=token.line, column=token.column, name=token.value, is_local=False)
             self._error(token, "an expression")
             return None
 

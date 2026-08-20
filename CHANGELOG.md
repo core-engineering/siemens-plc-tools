@@ -81,14 +81,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   still-in-progress grammar should not move a figure that is not about it.
 
   Measured over five real PLC projects (`project-A` … `project-E`): **16,069
-  expression slices, 15,971 parsed, 99.39%, 98 errors.**
+  expression slices, 16,068 parsed, 99.99%, 1 error.**
 
-  The first measurement was 96.30% with 594 errors. Three grammar gaps were then
-  closed — a call whose callee is a quoted block name
-  (`"ConvertAngleSafetyProcess"(...)`), a member name carrying its own `#`
-  (`#armSetpoint.#angularSpeeds["SLEWING"]`), and a named argument binding
-  (`"PolyEval"(p := #p)`, `RD_SYS_T(OUT => #localTime)`) — each reported below as
-  its own fix.
+  The first measurement was 96.30% with 594 errors. Seven grammar gaps were then
+  closed, each reported below as its own fix: a call whose callee is a quoted
+  block name (`"ConvertAngleSafetyProcess"(...)`), a member name carrying its own
+  `#` (`#armSetpoint.#angularSpeeds["SLEWING"]`), a named argument binding
+  (`"PolyEval"(p := #p)`, `RD_SYS_T(OUT => #localTime)`), a structural keyword
+  used as a name (`#function`, `.type`), a multi-dimensional array index
+  (`#m[#i, #j]`), direct bit access (`.%X0`), and the implicit enable output
+  (`ENO`).
 
   The first two removed 331 errors, not the 469 their individual counts
   predicted, and the gap is worth recording: the counts are of error *sites
@@ -99,19 +101,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   more common than the 30 first attributed to them — 165 sites once the quoted
   calls parsed.
 
-  What remains is SCL the grammar does not cover, none of it an implementation
-  bug, each deliberately left for its own follow-up rather than folded in
-  without review: a name that collides with a keyword token (`#function` 63
-  sites, `.type` 13), a multi-dimensional array index (`arr[i, j]`, 12), direct
-  bit access on a member (`"QuayData".rcu.input.statusByte.%X0`, 7), and a bare
-  identifier standing for an implicit variable (`ENO`, `Default`, 3).
+  The last four gaps behaved the opposite way: 76 + 12 + 7 + 2 counted, 97
+  closed, exactly. Nothing was masking them, which is what the counting lesson
+  above predicts once the shapes that hid the others are read.
+
+  One error remains in the whole corpus, and it is not an expression at all:
+
+      REGION "RCU" Default Management
+          #InstRcuAlarmManagement(rcuRawInput := #rcuRawInput, ...);
+      END_REGION
+
+  `parse_scl_file` does not handle a REGION nested inside a REGION, so the inner
+  header stays in the outer region's token slice and the statement parser reads
+  it as code. That is a region-splitting defect, not a grammar gap, and it is
+  left for its own fix.
 
   The qualifier that makes that rate honest: `parse_scl_file` only tokenises
   `REGION` contents, so SCL written directly inside a `NETWORK` is an
   untokenised string this pipeline never sees at all. Measured across the same
   corpus: 123 of 649 blocks (19%) contain such SCL — 49,151 tokens against
-  126,456 inside regions, 28% of the corpus SCL. So the rate above is 99.39% of
-  the expression slices in SCL that lives inside REGION blocks, not 99.39% of
+  126,456 inside regions, 28% of the corpus SCL. So the rate above is 99.99% of
+  the expression slices in SCL that lives inside REGION blocks, not 99.99% of
   the SCL in these five projects.
 
   Also pre-existing and out of scope: the lexer folds an unspaced `-` before a
@@ -257,6 +267,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Measured: 98.36% to **99.39%**, 263 errors down to 98. No new error class
   appeared behind the closed one; the 98 that remain are the four gaps listed in
   the expression-AST entry above.
+
+- **plc-code (parser)** — the last four expression shapes the grammar refused,
+  all of them ordinary SCL: 97 of the 98 remaining errors.
+
+  **A structural keyword used as a name** (76 sites) — `AND #function =
+  "RCU_FUNCTION_HPU"`, `#params["SLEWING_AXIS"].type = 'coder'`. `FUNCTION` and
+  `TYPE` are two of the lexer's 25 keywords, and all 25 are block and
+  declaration structure, so none can legitimately appear inside a REGION body: a
+  token of one of those types in a name position is unambiguously a name.
+  Widened in the parser, at the two positions that ask for a name — after `#`
+  and after `.` — and not in the lexer, which also feeds `Region.content`. A
+  bare keyword in expression position stays the error it was.
+
+  **A multi-dimensional array index** (12) — `#matrixResult[#tempCounterRows,
+  #tempCounterColumns]`. `Index.index` becomes `Index.indices`, a list;
+  one-dimensional access is a list of one. `base[]` and `base[i,]` stay errors.
+
+  **Direct bit, byte and word access** (7 reached, 77 written in the corpus) —
+  `"QuayData".rcu.input.statusByte.%X0`, `#tempSwapValue.%B0`, `"Data".%DBX0.0`.
+  The lexer has no token for `%`, so the selector arrives as UNKNOWN('%')
+  followed by a name and only adjacency separates it from a stray character;
+  `.% X0` stays an error. `Member.is_absolute` records that the `%` was written.
+  A numeric member is accepted too: `#word.0` is bit 0 without the prefix.
+
+  **The implicit enable output** (2) — `ENO := TRUE;`. An allow-list of exactly
+  one name. The bare-identifier error is what catches every construct the
+  grammar cannot read, so widening it past what SCL itself defines would empty
+  the grammar of its ability to refuse.
+
+  Measured: 99.39% to **99.99%**, 98 errors down to 1. The statement layer is
+  unchanged at 100% token coverage over 649 blocks, every block and region
+  clean.
 
 - **plc-code (parser)** — an argument value containing parentheses ended at the
   wrong one, desynchronising the rest of the call.
