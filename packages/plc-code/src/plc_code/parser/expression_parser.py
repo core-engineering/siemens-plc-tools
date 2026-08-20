@@ -150,7 +150,7 @@ class _ExpressionParser:
     #: level's operators; the chain is walked by _binary_level.
     _LEVELS: tuple[frozenset[str], ...] = (
         frozenset({"OR"}),
-        frozenset({"AND"}),
+        frozenset({"AND", "&"}),
         frozenset({"=", "<>", "<", ">", "<=", ">="}),
         frozenset({"+", "-"}),
         frozenset({"*", "/", "MOD"}),
@@ -312,6 +312,14 @@ class _ExpressionParser:
             if word in names:
                 return word
             return None
+
+        # `&` is SCL's other spelling of AND. The lexer has no token for it, so
+        # it arrives as UNKNOWN and is recognised by its value — never by the
+        # type, which is the lexer's catch-all. The spelling is returned as
+        # itself rather than folded into "AND": both are real source, and a
+        # consumer that cannot tell them apart cannot render either one back.
+        if first.type is TokenType.UNKNOWN and first.value == "&" and "&" in names:
+            return "&"
 
         simple = _SIMPLE_OPERATOR_TYPES.get(first.type)
         if simple is not None and simple in names:
@@ -541,6 +549,9 @@ class _ExpressionParser:
         if token.type is TokenType.HASH:
             return self._parse_local_variable()
 
+        if token.type is TokenType.UNKNOWN and token.value == "%":
+            return self._parse_absolute_address()
+
         if token.type is TokenType.STRING:
             # A quoted name followed by `(` is a call on a user block, not a
             # variable: `"ConvertAngleSafetyProcess"(...)`. Reading it as a
@@ -557,6 +568,36 @@ class _ExpressionParser:
 
         self._error(token, "an expression")
         return None
+
+    def _parse_absolute_address(self) -> Expression | None:
+        """Parse `%name`, the cursor already on the `%`.
+
+        SCL addresses memory directly — `%DB150.%DBX31.1`, `%I0.0`, `%M10.2` —
+        and the corpus writes 211 of them. The `%` has no token of its own, so
+        adjacency is what separates an address from a stray character, the same
+        rule the binary operators use.
+
+        Returns
+        -------
+        Expression | None
+            A ``VariableRef`` with ``is_absolute=True``; ``None`` when `%` is
+            not immediately followed by a name (an error was recorded). Any
+            `.member` or `[index]` after it is folded in by ``_parse_postfix``,
+            as for any other primary.
+        """
+        percent = self._stream.advance()  # '%'
+        name_token = self._stream.peek()
+        if not adjacent(percent, name_token) or name_token.type not in _NAME_TOKEN_TYPES:
+            self._error(name_token, "a name attached to '%'")
+            return None
+        self._stream.advance()
+        return VariableRef(
+            line=percent.line,
+            column=percent.column,
+            name=name_token.value,
+            is_local=False,
+            is_absolute=True,
+        )
 
     def _parse_local_variable(self) -> Expression | None:
         """Parse `#name`, the cursor already on the `#`.

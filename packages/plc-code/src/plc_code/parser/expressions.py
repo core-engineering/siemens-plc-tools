@@ -71,12 +71,19 @@ class VariableRef:
         True for `#name` (block variable), False for `"name"` (data block or
         global block). The distinction determines whether code generation
         chooses an instance attribute or a global lookup.
+    is_absolute : bool
+        True for `%name` — SCL's absolute address, as in `%DB150.%DBX31.1` or
+        `%I0.0`. The corpus writes 211 of them. Neither `#` nor quotes apply, so
+        without this flag an absolute address would be indistinguishable from a
+        global read. Follows `Member.is_absolute`, which marks the same `%` in
+        the middle of a chain.
     """
 
     line: int
     column: int
     name: str
     is_local: bool
+    is_absolute: bool = False
 
 
 @dataclass(frozen=True)
