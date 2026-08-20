@@ -458,14 +458,23 @@ class _ExpressionParser:
         # enough to stop the run: real SCL puts no space before a closing
         # delimiter either, so `ABS(T#5s)`'s `)` and `T#5s+1`'s `+` are both
         # adjacent to the last value token and must be excluded by type.
+        # SCL also chains the prefixes: `b#16#FF` is byte, hexadecimal, FF. The
+        # run therefore crosses a `#` too — but only one that is adjacent on
+        # both sides, so a spaced `#` still belongs to the operand after it and
+        # `16#FF + #a` stays readable.
         parts: list[str] = []
         previous = hash_token
-        while (
-            not self._stream.at_end()
-            and adjacent(previous, self._stream.peek())
-            and self._stream.peek().type in (TokenType.NUMBER, TokenType.IDENTIFIER)
-        ):
-            token = self._stream.advance()
+        while not self._stream.at_end():
+            token = self._stream.peek()
+            if not adjacent(previous, token):
+                break
+            if token.type in (TokenType.NUMBER, TokenType.IDENTIFIER):
+                pass
+            elif token.type is TokenType.HASH and self._continues_typed_literal(token):
+                pass
+            else:
+                break
+            self._stream.advance()
             parts.append(token.value)
             previous = token
 
@@ -474,6 +483,28 @@ class _ExpressionParser:
             column=prefix.column,
             prefix=prefix.value,
             value="".join(parts),
+        )
+
+    def _continues_typed_literal(self, hash_token: Token) -> bool:
+        """Whether a `#` inside a typed literal's value has a value behind it.
+
+        Parameters
+        ----------
+        hash_token : Token
+            The `#` at the cursor, already known to be adjacent to what precedes
+            it.
+
+        Returns
+        -------
+        bool
+            True when an adjacent ``NUMBER`` or ``IDENTIFIER`` follows, which is
+            what makes `b#16#FF` one literal. False for a `#` with nothing
+            usable behind it, so it is left for the caller rather than swallowed.
+        """
+        following = self._stream.peek(1)
+        return adjacent(hash_token, following) and following.type in (
+            TokenType.NUMBER,
+            TokenType.IDENTIFIER,
         )
 
     def _parse_primary(self) -> Expression | None:

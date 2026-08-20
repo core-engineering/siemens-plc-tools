@@ -108,3 +108,60 @@ class TestTypedLiteralsAwayFromPositionZero:
         assert node.left.value == "5s"
         assert isinstance(node.right, Literal)
         assert node.right.value == "1"
+
+
+class TestChainedTypedLiteral:
+    """`b#16#FF` — a typed literal whose value is itself a based literal.
+
+    SCL writes the type and the base as two prefixes: `b#16#FF` is byte,
+    hexadecimal, FF. Reading only as far as the second `#` left `#FF` trailing
+    and cost 51 of the corpus's expression errors — `b#16#` 44 times, `B#16#`
+    eight, `W#16#` once.
+    """
+
+    def test_a_chained_literal_keeps_its_whole_value(self) -> None:
+        result = _parse("b#16#FF")
+        assert result.errors == []
+        assert result.expression == TypedLiteral(line=1, column=1, prefix="b", value="16#FF")
+
+    def test_the_word_sized_form_is_read(self) -> None:
+        result = _parse("W#16#FFFF")
+        assert result.errors == []
+        assert result.expression == TypedLiteral(line=1, column=1, prefix="W", value="16#FFFF")
+
+    def test_a_chained_literal_works_inside_an_expression(self) -> None:
+        result = _parse('"SUPERVISEUR".ARM_NUMBER = b#16#FF')
+        assert result.errors == []
+        node = result.expression
+        assert isinstance(node, BinaryOp)
+        assert node.right == TypedLiteral(line=1, column=28, prefix="b", value="16#FF")
+
+    def test_an_unchained_literal_is_unchanged(self) -> None:
+        result = _parse("16#FF")
+        assert result.errors == []
+        assert result.expression == TypedLiteral(line=1, column=1, prefix="16", value="FF")
+
+    def test_a_detached_hash_does_not_continue_the_value(self) -> None:
+        # The run only crosses a `#` that is adjacent on both sides. A spaced
+        # one belongs to the next operand, which is what keeps `16#FF + #a`
+        # readable.
+        result = _parse("16#FF + #a")
+        assert result.errors == []
+        node = result.expression
+        assert isinstance(node, BinaryOp)
+        assert node.left == TypedLiteral(line=1, column=1, prefix="16", value="FF")
+        assert node.right == VariableRef(line=1, column=9, name="a", is_local=True)
+
+    def test_a_spaced_second_prefix_is_not_chained(self) -> None:
+        result = _parse("b#16 + #FF")
+        assert result.errors == []
+        node = result.expression
+        assert isinstance(node, BinaryOp)
+        assert node.left == TypedLiteral(line=1, column=1, prefix="b", value="16")
+
+    def test_a_hash_with_nothing_behind_it_is_not_swallowed(self) -> None:
+        result = _parse("ABS(b#16#FF)")
+        assert result.errors == []
+        call = result.expression
+        assert isinstance(call, FunctionCall)
+        assert call.arguments[0].value == TypedLiteral(line=1, column=5, prefix="b", value="16#FF")
