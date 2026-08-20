@@ -101,6 +101,11 @@ class Member:
         byte or word of the base: `.%X0`, `.%B1`, `.%DBX0`. The corpus writes 77
         of them. The `%` is not part of the name, but dropping it would make the
         access indistinguishable from an ordinary member.
+    is_quoted : bool
+        True when the member was written `."name"`. TIA Portal quotes a name that
+        collides with a keyword — the corpus writes `."type"` 80 times — so this
+        is the second spelling of the same thing `#function` and `.type` are the
+        first of. Follows `FunctionCall.is_quoted`.
     """
 
     line: int
@@ -109,6 +114,7 @@ class Member:
     name: str
     is_local: bool = False
     is_absolute: bool = False
+    is_quoted: bool = False
 
 
 @dataclass(frozen=True)
@@ -198,14 +204,21 @@ class CallArgument:
         The argument's expression. Its own ``line``/``column`` locate the
         argument in the source, so this node carries no position of its own.
     name : str
-        The parameter name, or an empty string for a positional argument.
+        The parameter name, without quotes, or an empty string for a positional
+        argument.
     is_output : bool
         True when the binding was written `name => value`.
+    is_quoted_name : bool
+        True when the parameter name was written `"name" := value`. TIA Portal
+        quotes it and leaves its neighbour bare in the same call — `"Atan2"("x"
+        := #A, y := #B)` — so both spellings are real and the difference is
+        source a consumer has to be able to render back.
     """
 
     value: Expression
     name: str = ""
     is_output: bool = False
+    is_quoted_name: bool = False
 
 
 @dataclass(frozen=True)

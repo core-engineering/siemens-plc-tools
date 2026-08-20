@@ -380,8 +380,16 @@ class _ExpressionParser:
                     is_absolute = True
                 name_token = self._stream.peek()
                 # A numeric member is a bit index written without the `%`:
-                # `#word.0`, and the `.0` tail of `"Data".%DBX0.0`.
-                if name_token.type not in _NAME_TOKEN_TYPES and name_token.type is not TokenType.NUMBER:
+                # `#word.0`, and the `.0` tail of `"Data".%DBX0.0`. A quoted one
+                # is TIA Portal's other way of writing a name the lexer reserves
+                # — `."type"`, 80 times in the corpus, alongside the bare `.type`
+                # that `_NAME_TOKEN_TYPES` already covers.
+                is_quoted_member = name_token.type is TokenType.STRING
+                if (
+                    name_token.type not in _NAME_TOKEN_TYPES
+                    and name_token.type is not TokenType.NUMBER
+                    and not is_quoted_member
+                ):
                     self._error(name_token, "a member name after '.'")
                     return None
                 self._stream.advance()
@@ -389,9 +397,10 @@ class _ExpressionParser:
                     line=token.line,
                     column=token.column,
                     base=node,
-                    name=name_token.value,
+                    name=name_token.value[1:-1] if is_quoted_member else name_token.value,
                     is_local=is_local,
                     is_absolute=is_absolute,
+                    is_quoted=is_quoted_member,
                 )
                 continue
 
@@ -601,21 +610,28 @@ class _ExpressionParser:
         """
         name = ""
         is_output = False
-        if self._stream.peek().type is TokenType.IDENTIFIER:
+        is_quoted_name = False
+        # The name may be quoted: TIA Portal writes `"Atan2"("x" := #A, y := #B)`,
+        # quoting one parameter and leaving its neighbour bare in the same call.
+        # Without the `:=` or `=>` behind it a quoted token is an ordinary global
+        # read, so the lookahead decides, not the token type alone.
+        head = self._stream.peek()
+        if head.type in (TokenType.IDENTIFIER, TokenType.STRING):
             follower = self._stream.peek(1)
-            if follower.type is TokenType.ASSIGN:
-                name = self._stream.advance().value
+            arrow = composite_operator(follower, self._stream.peek(2)) == "=>"
+            if follower.type is TokenType.ASSIGN or arrow:
+                is_quoted_name = head.type is TokenType.STRING
+                name = head.value[1:-1] if is_quoted_name else head.value
                 self._stream.advance()
-            elif composite_operator(follower, self._stream.peek(2)) == "=>":
-                name = self._stream.advance().value
                 self._stream.advance()
-                self._stream.advance()
-                is_output = True
+                if arrow:
+                    self._stream.advance()
+                    is_output = True
 
         value = self._parse_expression()
         if value is None:
             return None
-        return CallArgument(value=value, name=name, is_output=is_output)
+        return CallArgument(value=value, name=name, is_output=is_output, is_quoted_name=is_quoted_name)
 
     def _parse_grouping(self) -> Expression | None:
         """Parse `(expression)`, the cursor already on the `(`.

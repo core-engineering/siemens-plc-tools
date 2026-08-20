@@ -177,13 +177,6 @@ class TestMalformedBindings:
         assert result.errors != []
         assert result.expression is None
 
-    def test_a_quoted_parameter_name_is_not_a_binding(self) -> None:
-        # SCL parameter names are bare identifiers. A quoted name here is a
-        # global variable, and `"x" := 1` is not something this grammar reads.
-        result = _parse('"PolyEval"("x" := #ll)')
-        assert result.errors != []
-        assert result.expression is None
-
     def test_the_whole_call_fails_when_one_binding_fails(self) -> None:
         result = _parse('"PolyEval"(p := #p, n := , x := #ll)')
         assert result.errors != []
@@ -195,3 +188,42 @@ class TestConsumption:
         tokens = _tokens('"PolyEval"(p := #p, n := #n, x := #ll)')
         result = parse_expression(tokens)
         assert verify_expression_consumed(tokens, result) is True
+
+
+class TestQuotedParameterName:
+    """A parameter name may be quoted, which an earlier revision denied.
+
+    That revision asserted `"x" := #A` was an error, on the belief that SCL
+    parameter names are always bare identifiers. The corpus disproves it — TIA
+    Portal quotes a parameter name and leaves its neighbour bare in the same
+    call:
+
+        #phase := "Atan2"("x" := #A, y := #B);
+    """
+
+    def test_a_quoted_parameter_name_is_a_binding(self) -> None:
+        result = _parse('"Atan2"("x" := #A, y := #B)')
+        assert result.errors == []
+        call = result.expression
+        assert isinstance(call, FunctionCall)
+        assert [(a.name, a.is_quoted_name) for a in call.arguments] == [("x", True), ("y", False)]
+
+    def test_a_quoted_output_binding_is_read(self) -> None:
+        result = _parse('"Convert"("OUT" => #scaled)')
+        assert result.errors == []
+        call = result.expression
+        assert isinstance(call, FunctionCall)
+        argument = call.arguments[0]
+        assert argument.name == "OUT"
+        assert argument.is_quoted_name is True
+        assert argument.is_output is True
+
+    def test_a_quoted_name_with_no_binding_is_still_a_variable(self) -> None:
+        # Without `:=` or `=>` the quoted name is an ordinary global read, which
+        # is what makes the lookahead necessary rather than optional.
+        result = _parse('"Limit"("Ceiling")')
+        assert result.errors == []
+        call = result.expression
+        assert isinstance(call, FunctionCall)
+        assert call.arguments[0].name == ""
+        assert call.arguments[0].value == VariableRef(line=1, column=9, name="Ceiling", is_local=False)

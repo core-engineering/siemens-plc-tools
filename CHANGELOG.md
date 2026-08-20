@@ -328,6 +328,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and region clean. That figure still covers only the SCL inside REGION blocks;
   see the qualifier in the expression-AST entry above.
 
+- **plc-code (parser)** — a name may be quoted wherever a name is expected, in
+  both positions that ask for one. An earlier revision denied this in writing
+  and in a test.
+
+      #phase := "Atan2"("x" := #A, y := #B);
+      "QuayParameters".quayParam.armParams[0].cpmsSensorParams[0]."type" := ...
+
+  Quoting is TIA Portal's second spelling for a name the lexer reserves — the
+  first being the bare `#function` / `.type` already read. The member form
+  appears 80 times in the corpus; the parameter form twice, and in the same call
+  as a bare neighbour, which is what makes it unmistakably a spelling and not a
+  different construct.
+
+  The commit that added named arguments asserted "SCL parameter names are bare
+  identifiers" and shipped `test_a_quoted_parameter_name_is_not_a_binding` to
+  prove it. Both were wrong; the test is replaced by its opposite. Only the
+  lookahead decides: without `:=` or `=>` behind it, a quoted token in an
+  argument is an ordinary global read, and that case is now covered by its own
+  test.
+
+  `Member.is_quoted` and `CallArgument.is_quoted_name` record the spelling, as
+  `is_local`, `is_absolute` and `FunctionCall.is_quoted` already do.
+
+  Measured: inside REGION blocks the corpus stays at 100.00%. The shapes this
+  fixes live almost entirely outside them, where a throwaway probe of what
+  `Network.tokens` would yield reads 98.59% to **98.75%**, 102 errors down to 90.
+  Only 12 of the 82 sites closed, and the reason is the counting lesson again:
+  most `."type"` lines also carry `armParams[#arm_index-1]`, which fails first.
+  They will not count until the lexer's `-` folding is fixed.
+
 - **plc-code (parser)** — an argument value containing parentheses ended at the
   wrong one, desynchronising the rest of the call.
 

@@ -204,6 +204,42 @@ class TestImplicitEnableOutput:
         assert result.expression is None
 
 
+class TestQuotedMemberName:
+    """TIA Portal quotes a member name that collides with a keyword.
+
+    `#function` and `.type` are one way of writing a name the lexer reserves;
+    quoting is the other, and the corpus uses it 80 times:
+
+        "QuayParameters".quayParam.armParams[0].cpmsSensorParams[0]."type" := ...
+    """
+
+    def test_a_quoted_member_name_is_read(self) -> None:
+        result = _parse('"P".arms[0]."type"')
+        assert result.errors == []
+        node = result.expression
+        assert isinstance(node, Member)
+        assert node.name == "type"
+        assert node.is_quoted is True
+
+    def test_an_unquoted_member_is_not_marked_quoted(self) -> None:
+        result = _parse('"P".arms[0].type')
+        assert result.errors == []
+        node = result.expression
+        assert isinstance(node, Member)
+        assert node.name == "type"
+        assert node.is_quoted is False
+
+    def test_a_quoted_member_chains_like_any_other(self) -> None:
+        result = _parse('"P"."type".value')
+        assert result.errors == []
+        node = result.expression
+        assert isinstance(node, Member)
+        assert node.name == "value"
+        assert isinstance(node.base, Member)
+        assert node.base.name == "type"
+        assert node.base.is_quoted is True
+
+
 class TestConsumption:
     def test_every_repaired_shape_consumes_all_its_tokens(self) -> None:
         for source in (
