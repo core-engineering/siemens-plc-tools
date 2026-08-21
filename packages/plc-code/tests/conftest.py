@@ -2,9 +2,155 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+
+from plc_code.parser.expressions import Expression
+from plc_code.parser.lexer import Token
+from plc_code.parser.models import Block
+from plc_code.parser.statement_parser import parse_statements
+from plc_code.parser.statements import Assignment, Call, Case, For, If, Statement, While
+
+
+def _statement_expression_slices(
+    statements: list[Statement], label_prefix: str
+) -> Iterator[tuple[str, list[Token], Expression | None]]:
+    """Yield one entry per non-empty expression-bearing slice, recursing into nested bodies.
+
+    Mirrors ``plc_code.parser.conformance._expression_slice_counts`` field for field and
+    recursion site for recursion site — an ``If``'s ``branches`` **and its separate**
+    ``else_body``, a ``Case``'s ``branches`` **and its separate** ``default``, a ``For``'s
+    and a ``While``'s ``body`` — so matching that enumeration is how this walker is known
+    not to miss a slice kind, rather than inventing its own and going quiet on one.
+
+    An empty slice (e.g. a ``For`` loop with no ``BY`` clause) never held an expression to
+    parse and is not yielded at all, same as ``_expression_slice_counts`` does not count it.
+
+    Parameters
+    ----------
+    statements : list[Statement]
+        Statements to walk, typically ``ParseResult.statements`` for one region or network.
+    label_prefix : str
+        Human-readable path to these statements (block, network, region), prepended to
+        each yielded label so a divergence can be attributed to where it came from.
+
+    Yields
+    ------
+    tuple[str, list[Token], Expression | None]
+        A label identifying the slice, its token slice, and its parsed tree (``None`` when
+        the slice could not be read as an expression).
+    """
+    for statement in statements:
+        if isinstance(statement, Assignment):
+            if statement.target:
+                yield f"{label_prefix}: Assignment.target", statement.target, statement.target_expr
+            if statement.value:
+                yield f"{label_prefix}: Assignment.value", statement.value, statement.value_expr
+        elif isinstance(statement, Call):
+            if statement.callee:
+                yield f"{label_prefix}: Call.callee", statement.callee, statement.callee_expr
+            for index, argument in enumerate(statement.arguments):
+                if argument.value:
+                    yield (
+                        f"{label_prefix}: Call.arguments[{index}].value",
+                        argument.value,
+                        argument.value_expr,
+                    )
+        elif isinstance(statement, If):
+            for index, branch in enumerate(statement.branches):
+                if branch.condition:
+                    yield (
+                        f"{label_prefix}: If.branches[{index}].condition",
+                        branch.condition,
+                        branch.condition_expr,
+                    )
+                yield from _statement_expression_slices(
+                    branch.body, f"{label_prefix}: If.branches[{index}].body"
+                )
+            yield from _statement_expression_slices(statement.else_body, f"{label_prefix}: If.else_body")
+        elif isinstance(statement, Case):
+            if statement.selector:
+                yield f"{label_prefix}: Case.selector", statement.selector, statement.selector_expr
+            for index, case_branch in enumerate(statement.branches):
+                for value_index, value in enumerate(case_branch.values):
+                    if not value:
+                        continue
+                    value_expr = (
+                        case_branch.values_expr[value_index]
+                        if value_index < len(case_branch.values_expr)
+                        else None
+                    )
+                    yield (
+                        f"{label_prefix}: Case.branches[{index}].values[{value_index}]",
+                        value,
+                        value_expr,
+                    )
+                yield from _statement_expression_slices(
+                    case_branch.body, f"{label_prefix}: Case.branches[{index}].body"
+                )
+            yield from _statement_expression_slices(statement.default, f"{label_prefix}: Case.default")
+        elif isinstance(statement, For):
+            if statement.start:
+                yield f"{label_prefix}: For.start", statement.start, statement.start_expr
+            if statement.end:
+                yield f"{label_prefix}: For.end", statement.end, statement.end_expr
+            if statement.step:
+                yield f"{label_prefix}: For.step", statement.step, statement.step_expr
+            yield from _statement_expression_slices(statement.body, f"{label_prefix}: For.body")
+        elif isinstance(statement, While):
+            if statement.condition:
+                yield f"{label_prefix}: While.condition", statement.condition, statement.condition_expr
+            yield from _statement_expression_slices(statement.body, f"{label_prefix}: While.body")
+
+
+def _block_expression_slices(block: Block) -> Iterator[tuple[str, list[Token], Expression | None]]:
+    """Every expression-bearing slice of a block: every network and every region.
+
+    Walks ``block.networks[*].regions`` (parsing each region's ``tokens``) and each
+    network's own out-of-region ``tokens``, same two populations
+    ``parser.conformance.build_report`` measures.
+
+    Parameters
+    ----------
+    block : Block
+        A parsed block.
+
+    Yields
+    ------
+    tuple[str, list[Token], Expression | None]
+        Same shape as ``_statement_expression_slices``, labelled with the block name,
+        network index, and region name (or "outside any region") the slice came from.
+    """
+    for index, network in enumerate(block.networks):
+        for region in network.regions:
+            if not region.tokens:
+                continue
+            result = parse_statements(region.tokens)
+            label_prefix = f"{block.name} network[{index}] region {region.name!r}"
+            yield from _statement_expression_slices(result.statements, label_prefix)
+        if network.tokens:
+            result = parse_statements(network.tokens)
+            label_prefix = f"{block.name} network[{index}] outside any region"
+            yield from _statement_expression_slices(result.statements, label_prefix)
+
+
+@pytest.fixture
+def expression_slices() -> Callable[[Block], Iterator[tuple[str, list[Token], Expression | None]]]:
+    """Expose the expression-slice walker as a fixture.
+
+    A later differential needs this same walker from a second test module; this
+    repository forbids ``__init__.py`` in a ``tests/`` directory (see ``CLAUDE.md``
+    §6), so a plain cross-file import is not the convention here — a fixture is.
+
+    Returns
+    -------
+    Callable[[Block], Iterator[tuple[str, list[Token], Expression | None]]]
+        ``_block_expression_slices``, so a test calls ``expression_slices(block)`` for
+        one ``(label, tokens, tree)`` entry per non-empty expression-bearing slice.
+    """
+    return _block_expression_slices
 
 
 @pytest.fixture
