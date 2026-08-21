@@ -145,30 +145,32 @@ def test_a_comment_only_snippet_emits_nothing() -> None:
     assert not any("This block does a thing" in line for line in lines)
 
 
-def test_an_if_around_a_nested_region_is_no_longer_dropped_entirely() -> None:
-    """Old showed *no trace at all* of an ``IF`` whose only body was a nested region.
+def test_an_empty_bodied_if_no_longer_vanishes_entirely() -> None:
+    """Old showed *no trace at all* of an ``IF`` whose body produced zero lines.
 
-    When an ``IF``'s entire body is a nested ``REGION`` (a common way to group a
-    single action under a heading), the old path's "outside any region" unit for
-    that network came out completely empty -- not a missing branch inside an
-    otherwise-present ``if``, but the whole ``if self.a and self.b:`` header gone,
-    with zero indication anything had been there. The nested region's own content
-    translated fine on both paths; it was strictly the surrounding control-flow
-    skeleton that old swallowed. The AST path keeps the ``IF`` statement regardless
-    of what its body contains.
+    Task 8's report reaches this defect through an ``IF`` whose entire body is a
+    nested ``REGION`` (a common way to group a single action under a heading): the
+    ``REGION``'s content is parsed and translated as its own separate code unit, so
+    from the surrounding ``IF``'s point of view its own body is empty. That is not
+    reachable through ``generate_statements(_statements(...))`` alone (there is no
+    ``REGION`` machinery at this level), but a plain ``IF`` with a genuinely empty
+    body hits the identical underlying bug: the old path's line-based ``IF`` reader
+    matches ``IF cond THEN`` and, finding nothing but ``END_IF`` glued onto the same
+    line after ``THEN`` (no ``;`` or comment ever separated them), treats that
+    ``END_IF`` text as the branch's *inline body* rather than as the statement's
+    terminator -- so the loop runs out of input before it ever reaches the code path
+    that emits the header, and nothing is emitted at all: not even the ``pass``
+    fallback the old path uses for every other empty branch (see the ``ELSE``
+    no-op test above). The AST path keeps the ``IF`` header regardless of whether
+    its body is empty, exactly as it does when the body is a whole nested region.
     """
-    source = """
-        IF #a AND #b THEN
-            #x := 1;
-        END_IF;
-    """
+    source = "IF #a AND #b THEN END_IF;"
     lines = generate_statements(_statements(source))
-    assert lines == [
-        "if self.a and self.b:",
-        "    self.x = 1",
-    ]
-    # The specific thing the old path showed no trace of at all: the `if` header.
-    assert lines[0] == "if self.a and self.b:"
+    assert lines == ["if self.a and self.b:"]
+    # The specific thing the old path showed no trace of at all: the `if` header
+    # must survive on its own, with no body fabricated to go with it.
+    assert lines == ["if self.a and self.b:"]
+    assert len(lines) == 1
 
 
 def test_dead_code_inside_a_comment_is_no_longer_executed() -> None:
