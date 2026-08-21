@@ -923,16 +923,13 @@ class StatementTranslator:
     def translate_simple_statement(self, line: str) -> list[str]:
         """Translate a simple (non-control-flow) statement.
 
-        This is the statement-level dispatcher shared by both code-generation
-        paths: the legacy text path (``ControlFlowTranslator._translate_statements``,
-        for every line that is not the start of an ``IF``/``CASE``/``WHILE``/``FOR``
-        block) and the AST-driven generator (``plc_code.executor.generator``, for
-        every ``Assignment``, ``Call``, ``Return`` and ``Exit`` node, each rebuilt
-        back into an SCL line before being handed here). Keeping a single
-        implementation is what makes the two paths agree on RETURN/EXIT, the
-        quoted-name block call, compound assignment, the named-call-with-outputs
+        This is the statement-level dispatcher for every non-control-flow
+        construct the AST-driven generator (``plc_code.executor.generator``)
+        produces: each ``Assignment``, ``Call``, ``Return`` and ``Exit`` node is
+        rebuilt back into an SCL line before being handed here, where RETURN/EXIT,
+        the quoted-name block call, compound assignment, the named-call-with-outputs
         special case, the ``#name(...)`` FB call and the bare-expression fallback
-        byte for byte, rather than by re-derivation.
+        are actually dispatched, in that order.
 
         Parameters
         ----------

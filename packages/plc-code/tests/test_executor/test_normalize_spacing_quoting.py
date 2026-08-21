@@ -1,125 +1,35 @@
-"""Regression tests: ``_normalize_spacing`` must not rewrite quoted text.
+"""Regression tests: expression translation must not rewrite quoted text.
 
 Background
 ----------
-``_normalize_spacing`` re-inserts the spaces TIA Portal drops between glued SCL
-tokens (``CASE#state`` -> ``CASE #state``).  It ran ~25 ``re.sub`` calls over the
-*whole* line, with no notion of string literals, so a keyword appearing inside a
-quoted literal was rewritten as if it were code:
+The generator reads SCL from a token stream, so a keyword the tokenizer put
+inside a ``STRING`` token (``'DO WHILE loop'``) can never be mistaken for code
+the way the old text path's ~25 quote-blind ``re.sub`` passes over a whole
+line once could:
 
     ``#msg := 'DO WHILE loop';``   ->  ``#msg := ' DO WHILE loop';``
     ``#msg := 'CASE#1';``          ->  ``#msg := 'CASE #1';``
     ``#msg := 'a  b';``            ->  ``#msg := 'a b';``
 
-The block still compiled, so nothing failed loudly — the program simply carried a
-silently different string, e.g. into an alarm text or a state label.
-
-This is the same class of defect as the ``_INLINE_COMPOUND_SPLIT`` one fixed in
-d119b8d, and was recorded there as a known follow-up.  ``"`` is treated as opaque
-too: in SCL it delimits symbol names (``"ForwardKinematicMdh"``,
-``"DbName".MEMBER``), which must survive normalization just as literally.
+The block still compiled under that defect, so nothing failed loudly — the
+program simply carried a silently different string, e.g. into an alarm text
+or a state label. ``ExpressionTranslator.translate`` still runs its own
+rewriting passes over reconstructed expression text (unchanged by the switch
+to the statement AST — see ``plc_code.executor.generator``'s module
+docstring), so it keeps its own literal-opacity tests here; the end-to-end
+case is the harness test at the bottom, run through the real (AST) pipeline.
 """
 
 from plc_code.executor.codegen import ExpressionTranslator
-from plc_code.executor.control_flow import ControlFlowTranslator
 from plc_code.executor.harness import FBTestHarness
 from plc_code.parser.lexer import tokenize_with_newlines
 from plc_code.parser.parser import SCLParser
-
-
-def _norm(line: str) -> str:
-    """Run the spacing normalizer over a single preprocessed line."""
-    return ControlFlowTranslator()._normalize_spacing(line)
 
 
 def _harness(scl: str) -> FBTestHarness:
     """Compile inline SCL source into a test harness."""
     block = SCLParser(tokenize_with_newlines(scl)).parse()
     return FBTestHarness.from_block(block)
-
-
-class TestSingleQuotedLiteralsAreOpaque:
-    """An SCL string literal is data; no spacing rule may touch it."""
-
-    def test_glued_do_keyword_inside_literal(self) -> None:
-        """``'DO WHILE loop'`` must not gain a space before ``DO``."""
-        line = "#msg := 'DO WHILE loop' ;"
-        assert _norm(line) == line
-
-    def test_glued_of_to_by_keywords_inside_literal(self) -> None:
-        """The ``OF``/``TO``/``BY`` rules are equally quote-blind."""
-        line = "#msg := '1:OF 2:TO 3:BY' ;"
-        assert _norm(line) == line
-
-    def test_keyword_glued_to_hash_inside_literal(self) -> None:
-        """``'CASE#1'`` is a label, not a CASE statement."""
-        line = "#label := 'CASE#1' ;"
-        assert _norm(line) == line
-
-    def test_keyword_glued_to_parenthesis_inside_literal(self) -> None:
-        """``'IF(x)'`` inside a literal keeps its exact shape."""
-        line = "#expr := 'IF(x)' ;"
-        assert _norm(line) == line
-
-    def test_boolean_operators_inside_literal(self) -> None:
-        """``AND#`` / ``ORNOT`` rules must not fire inside a literal."""
-        line = "#expr := 'a AND#b ORNOT c' ;"
-        assert _norm(line) == line
-
-    def test_repeated_spaces_inside_literal_are_preserved(self) -> None:
-        """The trailing double-space cleanup must stop at the quote."""
-        line = "#msg := 'column A    column B' ;"
-        assert _norm(line) == line
-
-    def test_doubled_quote_escape_is_handled(self) -> None:
-        """``''`` escapes a quote; the literal does not end there."""
-        line = "#msg := 'it''s a DO WHILE loop' ;"
-        assert _norm(line) == line
-
-    def test_unterminated_literal_is_left_alone(self) -> None:
-        """A malformed line must degrade quietly, not get mangled."""
-        line = "#msg := 'unterminated DO"
-        assert _norm(line) == line
-
-
-class TestDoubleQuotedNamesAreOpaque:
-    """``"..."`` delimits an SCL symbol name — also opaque."""
-
-    def test_quoted_block_name_with_keyword_head(self) -> None:
-        """The guard that motivated the ``(?<!")`` hack still holds."""
-        line = '"ForwardKinematicMdh"()'
-        assert _norm(line) == line
-
-    def test_quoted_db_member_access(self) -> None:
-        """``"DbSettings".doorOpenTimeout`` survives intact."""
-        line = '#t := "DbSettings" . doorOpenTimeout ;'
-        assert _norm(line) == line
-
-    def test_quoted_name_containing_case_keyword(self) -> None:
-        """A block named ``"CaseSelector"`` is not a CASE statement."""
-        line = '"CaseSelector"(state := #s)'
-        assert _norm(line) == line
-
-
-class TestCodeOutsideQuotesStillNormalized:
-    """Opacity must be scoped to the literal, not the whole line."""
-
-    def test_glued_keyword_before_a_literal(self) -> None:
-        """Code preceding a literal is still normalized."""
-        assert _norm("IF#flag THEN #msg := 'DO nothing' ;").startswith("IF #flag")
-
-    def test_literal_does_not_disable_the_rest_of_the_line(self) -> None:
-        """``CASE#state`` after a literal still gets its space."""
-        out = _norm("#msg := 'DO WHILE loop' ; CASE#state OF")
-        assert "'DO WHILE loop'" in out
-        assert "CASE #state" in out
-
-    def test_two_literals_with_code_between_them(self) -> None:
-        """Every unquoted span is normalized; every quoted span is not."""
-        out = _norm("#a := 'IF(x)' ; IF#flag THEN #b := 'CASE#1' ;")
-        assert "'IF(x)'" in out
-        assert "'CASE#1'" in out
-        assert "IF #flag" in out
 
 
 class TestExpressionTranslatorLeavesLiteralsAlone:

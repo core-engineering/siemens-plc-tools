@@ -666,6 +666,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   handle that form; it is a separate, pre-existing gap and is left alone here.
 
 ### Changed
+- **plc-code (executor)** — `plc code transpile` (and therefore `compile_block`,
+  and every downstream test harness) now generates Python from the statement AST
+  (`plc_code.parser.statement_parser` / `plc_code.executor.generator`) instead of
+  from `ControlFlowTranslator`, which rewrote a region's flattened text with
+  regular expressions. `ControlFlowTranslator` and its differential harness are
+  deleted; `generate_statements` gained a `string_constants` parameter that folds
+  in the CASE-label / symbolic-constant substitution the old path did as a
+  separate text-rewrite-then-repair pass.
+
+  A corpus sweep over 646 real production blocks found 45 diverging code units
+  between the two paths, classified into seven root causes — every one a bug in
+  the deleted text path, never a case where the AST path disagreed and was wrong:
+  a `CASE`'s leading branch dropped, comment text dropped or mis-scanned, a whole
+  `IF` lost, a compound assignment garbled, dead code inside a malformed comment
+  executed as if it were live, a trailing no-op `ELSE` elided, and nested
+  fragments left untranslated. Expression rendering itself
+  (`ExpressionTranslator`) is unchanged by this switch and shared by both the old
+  and new statement layers; only how a statement reaches it changed.
+
+  This is also a behaviour change beyond fixing those 45 units: a block whose
+  tokens the statement parser cannot read now fails transpilation — a located
+  error is appended and `TranspileResult.success` is `False` — instead of the old
+  path copying the unrecognised construct verbatim into the generated Python and
+  reporting success. There is no fallback to the old path for such a block.
+
+  Measured, not estimated: this commit deletes 2,528 lines (`control_flow.py`'s
+  1,113; its three direct unit-test files, 1,166; the two differential test
+  files, 150; and the differential fixtures in `conftest.py`, 99) and 67 lines
+  referencing the `re` module (`grep -c "re\."`: 58 in `control_flow.py`, 9 in
+  the deleted text-substitution-then-repair block `_translate_scl_code` used to
+  run).
 - **workspace** — the Python version (`.python-version`, 3.12) and every dev tool
   version are now pinned exactly. Previously `ruff>=0.1.0` / `black>=23.0.0` /
   `mypy>=1.0.0` floated while the local venv ran a different Python than CI, so

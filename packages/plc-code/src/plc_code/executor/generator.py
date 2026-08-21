@@ -150,7 +150,9 @@ def generate_statements(
                 lines.extend(generate_statements(branch.body, indent + 1, translator, string_constants))
             if statement.else_body:
                 lines.append(f"{prefix}else:")
-                lines.extend(generate_statements(statement.else_body, indent + 1, translator, string_constants))
+                lines.extend(
+                    generate_statements(statement.else_body, indent + 1, translator, string_constants)
+                )
             continue
 
         if isinstance(statement, For):

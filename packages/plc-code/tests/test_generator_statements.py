@@ -98,7 +98,7 @@ def test_a_case_without_an_else_arm() -> None:
 
 
 def test_a_block_call_with_input_and_output_bindings() -> None:
-    # Probed: ControlFlowTranslator()._translate_simple_statement(
+    # Probed: StatementTranslator().translate_simple_statement(
     #     "#tmr ( IN := #x , PT := #t , Q => #q ) ;"
     # ) == ["self.tmr(IN=self.x, PT=self.t)", "self.q = self.tmr.Q"]
     source = "#tmr(IN := #x, PT := #t, Q => #q);"
@@ -110,10 +110,10 @@ def test_a_block_call_with_input_and_output_bindings() -> None:
 
 def test_a_quoted_name_block_call() -> None:
     # A call to a named FUNCTION/FUNCTION_BLOCK (quoted callee, not `#instance`)
-    # routes through the text path's `_translate_named_block_call`, which the
-    # generator only reaches by going through `_translate_simple_statement`
+    # routes through `StatementTranslator._translate_named_block_call`, which the
+    # generator only reaches by going through `translate_simple_statement`
     # rather than `StatementTranslator.translate_fb_call` directly. Probed:
-    # ControlFlowTranslator()._translate_simple_statement(
+    # StatementTranslator().translate_simple_statement(
     #     '"Doubler" ( x := #value , result := #intermediate ) ;'
     # ) == [
     #     '_sub_Doubler_result = self._runtime.call_named_block('
@@ -132,10 +132,10 @@ def test_a_quoted_name_block_call() -> None:
 
 def test_an_assignment_from_a_named_call_with_outputs() -> None:
     # An assignment whose RHS is a quoted-name call that also binds `=>`
-    # outputs. The old path's assignment branch special-cases this (the plain
-    # expression path would silently drop the outputs), so it is only reached
-    # by routing `Assignment` through `_translate_simple_statement` as well.
-    # Probed: ControlFlowTranslator()._translate_simple_statement(
+    # outputs. `translate_simple_statement`'s assignment branch special-cases
+    # this (the plain expression path would silently drop the outputs), so it
+    # is only reached by routing `Assignment` through it as well.
+    # Probed: StatementTranslator().translate_simple_statement(
     #     '#ret := "RetWithOut" ( x := #value , dbl => #doubled , trp => #tripled ) ;'
     # ) == [
     #     '_sub_RetWithOut_result = self._runtime.call_named_block('
@@ -156,12 +156,12 @@ def test_an_assignment_from_a_named_call_with_outputs() -> None:
 
 
 def test_a_return_statement() -> None:
-    # Probed: ControlFlowTranslator()._translate_simple_statement("RETURN ;") == ["return"]
+    # Probed: StatementTranslator().translate_simple_statement("RETURN ;") == ["return"]
     assert generate_statements(_statements("RETURN ;")) == ["return"]
 
 
 def test_an_exit_statement_inside_a_for_loop() -> None:
-    # Probed: ControlFlowTranslator()._translate_simple_statement("EXIT ;") == ["break"]
+    # Probed: StatementTranslator().translate_simple_statement("EXIT ;") == ["break"]
     source = "FOR #i := 1 TO 3 DO EXIT ; END_FOR ;"
     assert generate_statements(_statements(source)) == [
         "for self.i in range(1, 3 + 1):",

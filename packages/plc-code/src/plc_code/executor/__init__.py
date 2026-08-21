@@ -65,10 +65,6 @@ from plc_code.executor.codegen import (
     translate_expression,
     translate_fb_call,
 )
-from plc_code.executor.control_flow import (
-    ControlFlowTranslator,
-    translate_control_flow,
-)
 from plc_code.executor.diagnostics import (
     CODE_SYNTAX,
     CODE_TRANSPILE,
@@ -166,9 +162,6 @@ __all__ = [
     "translate_expression",
     "translate_assignment",
     "translate_fb_call",
-    # Control flow
-    "ControlFlowTranslator",
-    "translate_control_flow",
     # Test harness
     "FBTestHarness",
     "Step",
