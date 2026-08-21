@@ -62,8 +62,11 @@ def translate_new(block: Block) -> list[tuple[str, list[str]]]:
     -------
     list[tuple[str, list[str]]]
         Same labels and order as ``translate_old``. A unit whose statements the
-        generator cannot yet handle yields the sentinel ``["<unsupported>"]``,
-        so a partly-built generator fails one unit loudly instead of silently
+        generator cannot yet handle yields the sentinel ``["<unsupported>"]``; a
+        unit the statement parser could not read yields ``["<unparsed: ...>"]``
+        with the parser's own error text, so the two failure modes are never
+        mistaken for each other in an assertion failure. Either sentinel makes
+        a partly-built generator fail one unit loudly instead of silently
         matching an empty list.
     """
     units: list[tuple[str, list[str]]] = []
@@ -82,7 +85,8 @@ def translate_new(block: Block) -> list[tuple[str, list[str]]]:
 def _generate_or_sentinel(tokens: list[Token]) -> list[str]:
     result = parse_statements(tokens)
     if result.errors:
-        return ["<unparsed>"]
+        errors = "; ".join(error.message for error in result.errors)
+        return [f"<unparsed: {errors}>"]
     try:
         return generate_statements(result.statements)
     except UnsupportedStatement:

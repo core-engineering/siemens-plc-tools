@@ -18,7 +18,6 @@ from plc_code.parser.models import Block
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
-@pytest.mark.xfail(strict=False, reason="generator covers Assignment only until Task 7")
 @pytest.mark.parametrize("path", sorted(FIXTURES.rglob("*.s7dcl")), ids=lambda p: str(p))
 def test_the_two_paths_agree(
     path: Path,
