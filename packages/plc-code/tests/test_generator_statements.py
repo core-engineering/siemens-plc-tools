@@ -57,3 +57,24 @@ def test_a_nested_if_indents_twice() -> None:
         "    if self.b:",
         "        self.c = 1",
     ]
+
+
+def test_a_for_loop_without_a_step() -> None:
+    source = "FOR #i := 1 TO 5 DO #a := #i ; END_FOR ;"
+    assert generate_statements(_statements(source)) == [
+        "for self.i in range(1, 5 + 1):",
+        "    self.a = self.i",
+    ]
+
+
+def test_a_for_loop_with_a_step() -> None:
+    source = "FOR #i := 1 TO 5 BY 2 DO #a := #i ; END_FOR ;"
+    assert generate_statements(_statements(source)) == [
+        "for self.i in range(1, 5 + 1, 2):",
+        "    self.a = self.i",
+    ]
+
+
+def test_a_while_loop() -> None:
+    source = "WHILE #a DO #b := 1 ; END_WHILE ;"
+    assert generate_statements(_statements(source)) == ["while self.a:", "    self.b = 1"]
