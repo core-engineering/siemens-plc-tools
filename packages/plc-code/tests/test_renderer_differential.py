@@ -10,13 +10,14 @@ of those slices both sides of a comparison already exist, on unmodified code::
 
     render(tree)   against   ExpressionTranslator().translate(scl_text(tokens))
 
-There is no ``render`` yet — that is the next task in this plan. Until it exists this
-test compares ``ExpressionTranslator().translate(scl_text(tokens))`` against itself,
-which is green by construction. That is the point: it proves the walker
-(``expression_slices``, in ``conftest.py``) and the comparison itself, over the whole
-corpus, before either side has anything to catch. Once ``render`` lands, only the
-right-hand operand changes here — the left-hand computation, the walker, and the
-corpus traversal stay exactly as they are today.
+``render`` now exists (``plc_code.executor.renderer``) but only has visitors for
+``Literal``, ``TypedLiteral``, ``VariableRef``, ``Member``, ``Index`` and
+``Grouping`` — operators and calls are later tasks in the same plan. A slice whose
+tree needs a visitor that does not exist yet raises ``UnsupportedExpression``, which
+counts as a divergence here rather than failing the test: the point of this test at
+this stage is the *count*, not a green run. Once every visitor lands (the last of
+which is Task 5), the count of divergences must be zero and this test starts
+asserting that.
 
 The shipped fixtures are small and written to exercise specific shapes; the real
 evidence is production SCL. Those projects are read-only siblings of this repository
@@ -35,6 +36,7 @@ import pytest
 
 from plc_code.executor.codegen import ExpressionTranslator
 from plc_code.executor.generator import scl_text
+from plc_code.executor.renderer import UnsupportedExpression, render
 from plc_code.parser import parse_scl_file
 from plc_code.parser.expressions import Expression
 from plc_code.parser.lexer import Token
@@ -83,16 +85,18 @@ def _blocks() -> Iterator[tuple[Path, Block]]:
 def test_expression_level_differential_over_the_corpus(
     expression_slices: Callable[[Block], Iterator[tuple[str, list[Token], Expression | None]]],
 ) -> None:
-    """``translate(scl_text(tokens))`` against itself, over every expression slice found.
+    """``render(tree)`` against ``translate(scl_text(tokens))``, over every slice found.
 
-    Until ``render`` exists (the next task), the left- and right-hand sides of the
-    differential are the *same* computation, run twice, so equality is guaranteed by
-    construction. What this proves today is the plumbing: the corpus walk finds every
-    block, ``expression_slices`` finds every non-empty slice without missing a kind
-    (mirroring ``parser.conformance._expression_slice_counts``), and the comparison
-    itself does not silently pass for a reason that has nothing to do with correctness
-    (e.g. comparing two empty sequences). Parameters and return value are pytest's
-    fixture-injection contract, not this test's own interface.
+    Not yet a pass/fail gate on correctness: ``render`` has visitors for only six of
+    the nine expression node types (see the module docstring), so most slices are
+    still expected to diverge — either because ``render`` raised
+    ``UnsupportedExpression`` for a node it does not cover yet, or because it produced
+    something different from the current translator. Both count as a divergence here;
+    they are not distinguished, because from a caller's perspective they are the same
+    outcome (the new path cannot be trusted for that slice yet). What this run
+    reports is the *count*, printed via ``-s`` — the progress measure for the tasks
+    that add the remaining visitors, until it reaches zero and this test starts
+    asserting that.
 
     Parameters
     ----------
@@ -103,6 +107,7 @@ def test_expression_level_differential_over_the_corpus(
     blocks_seen = 0
     slices_seen = 0
     slices_without_tree = 0
+    agreements = 0
     divergences: list[str] = []
 
     for _path, block in _blocks():
@@ -114,23 +119,26 @@ def test_expression_level_differential_over_the_corpus(
                 continue
             text = scl_text(tokens)
             reference = translator.translate(text)
-            candidate = translator.translate(text)
-            if reference != candidate:
+            try:
+                candidate = render(tree)
+            except UnsupportedExpression:
+                divergences.append(label)
+                continue
+            if reference == candidate:
+                agreements += 1
+            else:
                 divergences.append(label)
 
     if blocks_seen == 0:
         pytest.skip("PLC_CORPUS_ROOTS is unset or names no readable project")
 
-    assert not divergences, (
-        f"{len(divergences)} slice(s) diverged from themselves out of {slices_seen} "
-        f"examined across {blocks_seen} block(s) — this should be impossible before "
-        f"`render` exists:\n" + "\n".join(divergences)
-    )
-
     # Surfaced via `-s`; not asserted on an absolute value (the corpus is external and
-    # regenerated by its owner, so the count moves independently of this repository).
+    # regenerated by its owner, so the count moves independently of this repository,
+    # and — until every visitor lands — divergences are expected, not a failure).
     print(
         f"\nexpression-level differential: {slices_seen} slice(s) examined across "
-        f"{blocks_seen} block(s), {slices_without_tree} without a parsed tree"
+        f"{blocks_seen} block(s), {slices_without_tree} without a parsed tree, "
+        f"{agreements} agree, {len(divergences)} diverge"
     )
+    assert agreements + len(divergences) + slices_without_tree == slices_seen
     assert slices_seen > 0
