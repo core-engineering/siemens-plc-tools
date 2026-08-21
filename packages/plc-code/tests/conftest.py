@@ -2,9 +2,54 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+
+from plc_code.executor.control_flow import ControlFlowTranslator
+from plc_code.parser.models import Block
+
+
+def translate_old(block: Block) -> list[tuple[str, list[str]]]:
+    """Every code unit of a block, translated by the text path.
+
+    Parameters
+    ----------
+    block : Block
+        A parsed block.
+
+    Returns
+    -------
+    list[tuple[str, list[str]]]
+        One entry per non-empty region and per network holding SCL outside any
+        region: a label identifying the unit, and the Python lines the old path
+        emits for it.
+    """
+    units: list[tuple[str, list[str]]] = []
+    for index, network in enumerate(block.networks):
+        for region in network.regions:
+            if not region.content:
+                continue
+            label = f"{block.name} network[{index}] region {region.name!r}"
+            units.append((label, ControlFlowTranslator().translate_block(region.content)))
+        if network.content:
+            label = f"{block.name} network[{index}] outside any region"
+            units.append((label, ControlFlowTranslator().translate_block(network.content)))
+    return units
+
+
+@pytest.fixture
+def differential_old() -> Callable[[Block], list[tuple[str, list[str]]]]:
+    """The text-path translator, for differential comparison against the AST path.
+
+    Returns
+    -------
+    Callable[[Block], list[tuple[str, list[str]]]]
+        ``translate_old``, translating every code unit of a block with the
+        existing text path.
+    """
+    return translate_old
 
 
 @pytest.fixture
