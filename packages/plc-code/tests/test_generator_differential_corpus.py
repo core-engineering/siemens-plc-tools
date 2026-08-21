@@ -59,6 +59,11 @@ def test_the_two_paths_agree_on_the_corpus(
 ) -> None:
     """The AST path and the text path must agree, byte for byte, on every real block.
 
+    Walks the whole corpus rather than stopping at the first mismatch, so a single
+    run reports every diverging unit instead of only the earliest one. A block's
+    file path never lands in the repository: it only ever appears inside a pytest
+    failure message, generated at run time from the corpus the environment names.
+
     Parameters
     ----------
     differential_old : Callable[[Block], list[tuple[str, list[str]]]]
@@ -67,11 +72,16 @@ def test_the_two_paths_agree_on_the_corpus(
         The AST-path translator fixture.
     """
     seen = 0
+    divergences: list[tuple[Path, str, list[str], list[str]]] = []
     for path, block in _blocks():
         seen += 1
         for (label, old_lines), (_, new_lines) in zip(
             differential_old(block), differential_new(block), strict=True
         ):
-            assert old_lines == new_lines, f"{path}: {label}"
+            if old_lines != new_lines:
+                divergences.append((path, label, old_lines, new_lines))
     if seen == 0:
         pytest.skip("PLC_CORPUS_ROOTS is unset or names no readable project")
+    if divergences:
+        summary = "\n".join(f"{path}: {label}" for path, label, _, _ in divergences)
+        pytest.fail(f"{len(divergences)} unit(s) diverged out of {seen} block(s) compared:\n{summary}")
