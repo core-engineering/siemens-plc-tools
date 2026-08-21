@@ -10,24 +10,39 @@ can still mangle. A node this module has no visitor for raises
 :class:`UnsupportedExpression` rather than emitting something plausible.
 
 This module covers ``Literal``, ``TypedLiteral``, ``VariableRef``, ``Member``,
-``Index`` and ``Grouping`` -- the access and literal shapes
-``plc_code.parser.expressions`` documents as dominating the corpus.  ``UnaryOp``,
-``BinaryOp`` and ``FunctionCall`` are later tasks in the same plan (operators, then
-calls); :func:`render` raises :class:`UnsupportedExpression` for those today.
+``Index``, ``Grouping``, ``UnaryOp`` and ``BinaryOp`` -- the access, literal and
+operator shapes ``plc_code.parser.expressions`` documents as dominating the corpus.
+``FunctionCall`` is a later task in the same plan (calls); :func:`render` raises
+:class:`UnsupportedExpression` for it today.
 """
 
 from __future__ import annotations
 
+from plc_code.executor.codegen import ExpressionTranslator
 from plc_code.executor.types import parse_time_literal
 from plc_code.parser.expressions import (
+    BinaryOp,
     Expression,
     Grouping,
     Index,
     Literal,
     Member,
     TypedLiteral,
+    UnaryOp,
     VariableRef,
 )
+
+#: ``ExpressionTranslator.OPERATOR_MAP``, read from an instance because it is a
+#: dataclass field with a ``default_factory`` -- it does not exist on the class
+#: itself. Imported rather than copied so this module's operator table cannot drift
+#: from the regex translator's.
+_OPERATOR_MAP = ExpressionTranslator().OPERATOR_MAP
+
+#: Binary operators the current translator leaves exactly as written -- their SCL
+#: spelling is already valid Python -- because they carry no entry in
+#: ``OPERATOR_MAP``. ``&`` belongs here, not mapped to ``and``: see the module
+#: docstring and :func:`_render_binary_op`.
+_PASSTHROUGH_BINARY_OPERATORS = frozenset({"&", "+", "-", "*", "/", "<", ">", "<=", ">=", "**"})
 
 #: Duration-literal prefixes, matched case-insensitively: ``T#``, ``TIME#``, ``LT#``,
 #: ``LTIME#``. ``ExpressionTranslator._translate_time_literals`` collapses all four to
@@ -93,6 +108,10 @@ def render(expression: Expression) -> str:
         return _render_index(expression)
     if isinstance(expression, Grouping):
         return f"({render(expression.inner)})"
+    if isinstance(expression, UnaryOp):
+        return _render_unary_op(expression)
+    if isinstance(expression, BinaryOp):
+        return _render_binary_op(expression)
     raise UnsupportedExpression(expression)
 
 
@@ -261,3 +280,76 @@ def _render_index(node: Index) -> str:
     """
     base_text = render(node.base)
     return base_text + "".join(f"[{render(index)}]" for index in node.indices)
+
+
+def _render_unary_op(node: UnaryOp) -> str:
+    """``NOT x`` as ``not x``; ``-x`` unchanged, both with a space after the operator.
+
+    Structural equivalent of ``ExpressionTranslator._translate_operators``: ``NOT``
+    is looked up in :data:`_OPERATOR_MAP` (``"not"``); ``-`` has no entry there
+    because its SCL and Python spellings are identical, so it renders as-is. Either
+    way the current translator's regex passes always leave a space between the
+    operator and its operand, so this does too.
+
+    Parameters
+    ----------
+    node : UnaryOp
+        The unary operator to render.
+
+    Returns
+    -------
+    str
+        ``"not"`` or ``"-"``, a space, then the rendered operand.
+
+    Raises
+    ------
+    UnsupportedExpression
+        ``node.operator`` is neither ``NOT`` nor ``-``.
+    """
+    if node.operator in _OPERATOR_MAP:
+        py_operator = _OPERATOR_MAP[node.operator]
+    elif node.operator == "-":
+        py_operator = "-"
+    else:
+        raise UnsupportedExpression(node)
+    return f"{py_operator} {render(node.operand)}"
+
+
+def _render_binary_op(node: BinaryOp) -> str:
+    """One binary operator between its rendered operands.
+
+    Structural equivalent of ``ExpressionTranslator._translate_operators``: looks
+    ``node.operator`` up in :data:`_OPERATOR_MAP` first (``AND``, ``OR``, ``<>``,
+    ``MOD``, ``DIV``), then falls back to the standalone-``=`` rule the current
+    translator applies with its own regex rather than through ``OPERATOR_MAP``
+    (``=`` becomes ``==``), then to :data:`_PASSTHROUGH_BINARY_OPERATORS` for
+    everything the current translator leaves exactly as written -- including
+    ``&``, which stays ``&`` rather than becoming ``and``: see the module
+    docstring.
+
+    Parameters
+    ----------
+    node : BinaryOp
+        The binary operator to render.
+
+    Returns
+    -------
+    str
+        The left operand, the Python spelling of the operator, and the right
+        operand, each separated by a single space.
+
+    Raises
+    ------
+    UnsupportedExpression
+        ``node.operator`` has no entry in :data:`_OPERATOR_MAP`, is not ``=``, and
+        is not one of :data:`_PASSTHROUGH_BINARY_OPERATORS`.
+    """
+    if node.operator == "=":
+        py_operator = "=="
+    elif node.operator in _OPERATOR_MAP:
+        py_operator = _OPERATOR_MAP[node.operator]
+    elif node.operator in _PASSTHROUGH_BINARY_OPERATORS:
+        py_operator = node.operator
+    else:
+        raise UnsupportedExpression(node)
+    return f"{render(node.left)} {py_operator} {render(node.right)}"
