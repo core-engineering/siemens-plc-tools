@@ -705,8 +705,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   checked whether the body it generated was empty. A comment-only branch (an
   ordinary shape in real SCL, since comment tokens never reach the statement
   parser) therefore produced a header with nothing indented under it: `success`
-  was `True` and the generated module still failed to compile. All five sites
-  now emit `pass` when their body generates zero lines. Second,
+  was `True` and the generated module still failed to compile. All six emission
+  sites — the five construct shapes, `CASE` contributing both an arm and its
+  default — now emit `pass` when their body generates zero lines. Second,
   `ParseResult.unattributed_spans` — a token a body loop's last-resort recovery
   swallows without recording it as a statement, error or separator, such as a
   stray `END_WHILE` nested inside a `CASE` branch — was produced by the parser
