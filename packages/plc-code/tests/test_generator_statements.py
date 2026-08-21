@@ -78,3 +78,20 @@ def test_a_for_loop_with_a_step() -> None:
 def test_a_while_loop() -> None:
     source = "WHILE #a DO #b := 1 ; END_WHILE ;"
     assert generate_statements(_statements(source)) == ["while self.a:", "    self.b = 1"]
+
+
+def test_a_case_becomes_an_if_elif_chain() -> None:
+    source = "CASE #s OF 1 : #b := 1 ; 2 , 3 : #b := 2 ; ELSE #b := 9 ; END_CASE ;"
+    assert generate_statements(_statements(source)) == [
+        "if self.s == 1:",
+        "    self.b = 1",
+        "elif self.s in (2, 3):",
+        "    self.b = 2",
+        "else:",
+        "    self.b = 9",
+    ]
+
+
+def test_a_case_without_an_else_arm() -> None:
+    source = "CASE #s OF 1 : #b := 1 ; END_CASE ;"
+    assert generate_statements(_statements(source)) == ["if self.s == 1:", "    self.b = 1"]

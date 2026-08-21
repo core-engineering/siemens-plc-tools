@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from plc_code.executor.codegen import StatementTranslator
 from plc_code.parser.lexer import Token
-from plc_code.parser.statements import Assignment, For, If, Statement, While
+from plc_code.parser.statements import Assignment, Case, For, If, Statement, While
 
 INDENT = "    "
 
@@ -113,6 +113,22 @@ def generate_statements(
             condition = translator.translate_if_condition(scl_text(statement.condition))
             lines.append(f"{prefix}while {condition}:")
             lines.extend(generate_statements(statement.body, indent + 1, translator))
+            continue
+
+        if isinstance(statement, Case):
+            selector = translator.expr_translator.translate(scl_text(statement.selector))
+            for position, arm in enumerate(statement.branches):
+                keyword = "if" if position == 0 else "elif"
+                values = [translator.expr_translator.translate(scl_text(v)) for v in arm.values]
+                if len(values) == 1:
+                    test = f"{selector} == {values[0]}"
+                else:
+                    test = f"{selector} in ({', '.join(values)})"
+                lines.append(f"{prefix}{keyword} {test}:")
+                lines.extend(generate_statements(arm.body, indent + 1, translator))
+            if statement.default:
+                lines.append(f"{prefix}else:")
+                lines.extend(generate_statements(statement.default, indent + 1, translator))
             continue
 
         raise UnsupportedStatement(f"{type(statement).__name__} at line {statement.line}")
