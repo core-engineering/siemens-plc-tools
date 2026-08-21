@@ -5,8 +5,9 @@ Two modes:
 - bare: print the generated Python. This is the debugging move that found the
   July batch of transpiler defects — being able to read what the block actually
   became.
-- ``--check``: report blocks whose generated Python will not load or will raise
-  NameError, and exit non-zero so a downstream project can gate on it.
+- ``--check``: report blocks that fail to transpile, whose generated Python will
+  not load, or will raise NameError, and exit non-zero so a downstream project
+  can gate on it.
 """
 
 from __future__ import annotations
@@ -45,9 +46,10 @@ END_FUNCTION_BLOCK
 # Deliberately broken SCL lives here, not in fixtures/: every block in that
 # directory must stay clean, which is what test_diagnostics_corpus.py asserts.
 #
-# REPEAT/UNTIL has no translation, so the keywords are copied into the
-# generated Python and it stops parsing -> SYNTAX, an error.
-_SYNTAX_DEFECT = _block(
+# REPEAT/UNTIL has no node in the statement AST, so the statement parser
+# rejects it outright and transpilation fails before any Python is generated
+# for that construct -> TRANSPILE, an error.
+_TRANSPILE_DEFECT = _block(
     "RepeatUser",
     "            REPEAT\n                #b := #b + 1;\n            UNTIL #b > 5\n            END_REPEAT;",
 )
@@ -67,9 +69,9 @@ def runner() -> CliRunner:
 
 @pytest.fixture
 def unsupported_block(tmp_path: Path) -> Path:
-    """A block whose generated Python does not parse."""
+    """A block using a construct the statement parser cannot read."""
     path = tmp_path / "RepeatUser.s7dcl"
-    path.write_text(_SYNTAX_DEFECT, encoding="utf-8")
+    path.write_text(_TRANSPILE_DEFECT, encoding="utf-8")
     return path
 
 
@@ -162,10 +164,17 @@ class TestEmitMode:
     def test_emit_mode_succeeds_on_a_defective_block(
         self, runner: CliRunner, unsupported_block: Path
     ) -> None:
-        """Emitting is for reading the output, not judging it."""
+        """Emitting is for reading the output, not judging it.
+
+        REPEAT/UNTIL has no statement-AST node, so the rejected construct
+        contributes no lines rather than being copied into the output — the
+        rest of the block (the class, its fields) still prints, and the
+        keywords the parser could not read do not appear in valid Python.
+        """
         result = runner.invoke(cli, ["transpile", str(unsupported_block)])
         assert result.exit_code == 0
-        assert "UNTIL" in result.output
+        assert "class RepeatUser" in result.output
+        assert "UNTIL" not in result.output
 
     def test_missing_path_is_an_error(self, runner: CliRunner, tmp_path: Path) -> None:
         result = runner.invoke(cli, ["transpile", str(tmp_path / "nope.s7dcl")])
@@ -232,11 +241,11 @@ class TestJsonOutput:
         assert finding["line"] > 0
         assert finding["source"].endswith("SelUser.s7dcl")
 
-    def test_syntax_defect_json_is_an_error(self, runner: CliRunner, unsupported_block: Path) -> None:
+    def test_transpile_defect_json_is_an_error(self, runner: CliRunner, unsupported_block: Path) -> None:
         result = runner.invoke(cli, ["transpile", "--check", "-f", "json", str(unsupported_block)])
         assert result.exit_code == 1
         finding = json.loads(result.output)["diagnostics"][0]
-        assert finding["code"] == "SYNTAX"
+        assert finding["code"] == "TRANSPILE"
         assert finding["severity"] == "error"
 
     def test_json_is_the_only_thing_on_stdout(self, runner: CliRunner) -> None:

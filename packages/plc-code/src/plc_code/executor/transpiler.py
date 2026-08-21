@@ -13,10 +13,12 @@ from plc_code.executor.codegen import (
     ExpressionTranslator,
     StatementTranslator,
 )
-from plc_code.executor.control_flow import ControlFlowTranslator
+from plc_code.executor.generator import generate_statements
 from plc_code.executor.models import CompileResult, TranspileOptions, TranspileResult
 from plc_code.executor.types import ArrayTypeInfo, SCLType, TypeInfo, TypeMapper
+from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block, Network, Region, VariableDeclaration
+from plc_code.parser.statement_parser import parse_statements
 
 
 @dataclass
@@ -42,7 +44,6 @@ class SCLTranspiler:
     fb_type_resolver: Callable[[str], bool] | None = None
     _expr_translator: ExpressionTranslator = field(default_factory=ExpressionTranslator, repr=False)
     _stmt_translator: StatementTranslator = field(default_factory=StatementTranslator, repr=False)
-    _cf_translator: ControlFlowTranslator = field(default_factory=ControlFlowTranslator, repr=False)
     _lines: list[str] = field(default_factory=list, repr=False)
     _ctx: CodeGenContext = field(default_factory=CodeGenContext, repr=False)
     _errors: list[str] = field(default_factory=list, repr=False)
@@ -607,8 +608,8 @@ class SCLTranspiler:
             lines.extend(region_lines)
 
         # Process direct network content
-        if network.content:
-            content_lines = self._translate_scl_code(network.content)
+        if network.tokens:
+            content_lines = self._translate_scl_code(network.tokens)
             lines.extend(content_lines)
 
         return lines
@@ -636,91 +637,43 @@ class SCLTranspiler:
         if region.name and self.options.include_comments:
             lines.append(f"# {region.name}")
 
-        # Collect all SCL code from region and nested regions into one block
-        # This preserves CASE statement structure when bodies are in nested regions
-        combined_scl = self._collect_region_scl(region)
-
-        if combined_scl.strip():
-            content_lines = self._translate_scl_code(combined_scl)
+        # region.tokens already carries the parser's flattening of nested-region
+        # content into the parent region (mirrors region.content, see its
+        # docstring), so nested regions need no separate collection here.
+        if region.tokens:
+            content_lines = self._translate_scl_code(region.tokens)
             lines.extend(content_lines)
 
         return lines
 
-    def _collect_region_scl(self, region: Region) -> str:
-        """Collect all SCL code from a region.
+    def _translate_scl_code(self, tokens: list[Token]) -> list[str]:
+        """Translate a token slice to Python statements via the statement AST.
 
-        The parser now flattens nested region content into the parent region's
-        content field, so this method simply returns the region content directly.
-        Nested regions are preserved for documentation purposes but their content
-        is already included in the parent.
-
-        Parameters
-        ----------
-        region : Region
-            The region to collect code from.
-
-        Returns
-        -------
-        str
-            Combined SCL code.
-        """
-        # The parser already flattens nested region content into the parent's content
-        # so we just return the content directly without re-adding nested content
-        return region.content or ""
-
-    def _translate_scl_code(self, scl_code: str) -> list[str]:
-        """Translate SCL code to Python statements.
+        A unit whose tokens the statement parser cannot read produces a located
+        error appended to ``self._errors`` (making ``TranspileResult.success``
+        False) rather than falling back to any other translation: a transpiler
+        that cannot read its input must say so, not silently emit Python that
+        means something else.
 
         Parameters
         ----------
-        scl_code : str
-            SCL code string.
+        tokens : list[Token]
+            The token slice for one network or region, as ``Network.tokens`` /
+            ``Region.tokens`` carry it.
 
         Returns
         -------
         list[str]
             List of Python statements.
         """
-        import re
-
-        # Replace string constants with appropriate values
-        # For CASE labels: "STRING": -> integer value followed by :
-        # For comparisons/assignments: "STRING" -> self.CONSTANT_NAME
-        processed_code = scl_code
-
-        for const_str, const_val in self._string_constants.items():
-            const_name = const_str.strip('"')
-
-            # Replace CASE labels: "STRING": -> integer:
-            # Pattern matches the string followed by : (case label)
-            case_label_pattern = re.escape(const_str) + r"\s*:"
-            processed_code = re.sub(
-                case_label_pattern,
-                f"{const_val}:",
-                processed_code,
-            )
-
-            # Replace remaining occurrences (comparisons, assignments)
-            # Add spaces around the constant to ensure proper separation from OR/AND keywords
-            processed_code = processed_code.replace(const_str, f" self.{const_name} ")
-
-        # After constant replacement, ensure spacing around OR/AND between self.IDENTIFIER patterns
-        # This handles cases like self.ESD1_ACTIVATIONORself.var -> self.ESD1_ACTIVATION OR self.var
-        # Pattern: self.IDENTIFIER immediately followed by OR/AND and then self.
-        processed_code = re.sub(r"(self\.\w+)(OR)(self\.)", r"\1 \2 \3", processed_code, flags=re.IGNORECASE)
-        processed_code = re.sub(r"(self\.\w+)(AND)(self\.)", r"\1 \2 \3", processed_code, flags=re.IGNORECASE)
-        # Also handle OR/AND followed by # (instance variable)
-        processed_code = re.sub(r"(self\.\w+)(OR)(#)", r"\1 \2 \3", processed_code, flags=re.IGNORECASE)
-        processed_code = re.sub(r"(self\.\w+)(AND)(#)", r"\1 \2 \3", processed_code, flags=re.IGNORECASE)
-        # And handle OR/AND followed by ( for function calls/parens
-        processed_code = re.sub(r"(self\.\w+)(OR)(\()", r"\1 \2 \3", processed_code, flags=re.IGNORECASE)
-        processed_code = re.sub(r"(self\.\w+)(AND)(\()", r"\1 \2 \3", processed_code, flags=re.IGNORECASE)
-
-        # Clean up excessive spaces from constant replacement
-        processed_code = re.sub(r"  +", " ", processed_code)
-
-        # Use the control flow translator which handles all statement types
-        return self._cf_translator.translate_block(processed_code)
+        result = parse_statements(tokens)
+        if result.errors:
+            for error in result.errors:
+                self._errors.append(
+                    f"{self.block.name}: line {error.line} column {error.column}: {error.message}"
+                )
+            return []
+        return generate_statements(result.statements, string_constants=self._string_constants)
 
 
 def build_runtime_globals() -> dict[str, Any]:

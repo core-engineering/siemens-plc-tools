@@ -1,20 +1,20 @@
 """Tests for transpile diagnostics.
 
-The executor transpiles SCL by rewriting text, with no statement-level AST, so
-a construct it does not recognise falls through ``_translate_simple_statement``
-and is emitted as-is. ``transpile_block`` reports ``success=True`` with zero
-errors and zero warnings for such a block — the damage only shows up as a
-``SyntaxError`` at compile time or a ``NameError`` the first time the branch
-runs, in the downstream project.
+The executor transpiles SCL from a statement AST. REPEAT/UNTIL, GOTO and
+CONTINUE have no node in that AST (see ``plc_code.parser.statements``'s module
+docstring); the statement parser rejects them outright, so ``transpile_block``
+reports failure — as ``CODE_TRANSPILE`` — before any Python is generated at
+all, rather than emitting something a downstream project discovers is broken
+only at compile time or the first time a branch runs.
 
-These diagnostics look at the *generated Python* instead of trying to prove
-anything about the SCL:
+Unmapped builtins such as ``SEL`` or ``LIMIT`` are a different case: they
+parse as an ordinary call, so a block using one still transpiles, and the
+generated Python reads a name nothing provides — caught by
+``CODE_UNDEFINED_NAME`` instead, by looking at the *generated Python*:
 
-- it does not parse            -> the block cannot load at all
-- it references a name nothing provides -> NameError when that line runs
-
-Both are cheap, and between them they catch the constructs the translator has
-no support for (REPEAT/UNTIL, GOTO, unmapped builtins like SEL or LIMIT).
+- it does not parse                     -> ``CODE_SYNTAX``, the block cannot load
+- it references a name nothing provides -> ``CODE_UNDEFINED_NAME``, NameError when
+  that line runs
 """
 
 from __future__ import annotations
@@ -140,10 +140,18 @@ class TestSupportedConstructsAreClean:
         assert _check(body) == []
 
 
-class TestGeneratedPythonDoesNotParse:
-    """Constructs that produce Python which cannot even be compiled."""
+class TestConstructsWithNoTranslation:
+    """REPEAT/UNTIL, GOTO and CONTINUE have no statement-AST node.
+
+    The statement parser rejects them at parse time, so no Python is ever
+    generated for a block that uses one — the failure surfaces as
+    ``CODE_TRANSPILE``, naming the rejected construct and its SCL location.
+    """
 
     def test_repeat_until(self) -> None:
+        # UNTIL's condition has no statement boundary of its own, so recovery
+        # re-tries token by token and reports more than one error; every one
+        # of them is still a transpile failure, never a downstream surprise.
         body = (
             "            REPEAT\n"
             "                #b := #b + 1;\n"
@@ -151,22 +159,28 @@ class TestGeneratedPythonDoesNotParse:
             "            END_REPEAT;"
         )
         diagnostics = _check(body)
-        assert [d.code for d in diagnostics] == [CODE_SYNTAX]
-        assert diagnostics[0].severity is Severity.ERROR
+        assert diagnostics
+        assert all(d.code == CODE_TRANSPILE for d in diagnostics)
+        assert all(d.severity is Severity.ERROR for d in diagnostics)
 
-    def test_syntax_diagnostic_points_at_the_generated_line(self) -> None:
+    def test_transpile_diagnostic_names_the_construct(self) -> None:
         body = (
             "            REPEAT\n"
             "                #b := #b + 1;\n"
             "            UNTIL #b > 5\n"
             "            END_REPEAT;"
         )
-        diagnostic = _check(body)[0]
-        assert diagnostic.line is not None and diagnostic.line > 0
-        assert diagnostic.generated_line != ""
+        diagnostics = _check(body)
+        assert any("REPEAT" in d.message for d in diagnostics)
 
     def test_goto(self) -> None:
-        assert CODE_SYNTAX in _codes("            GOTO done;")
+        assert CODE_TRANSPILE in _codes("            GOTO done;")
+
+    def test_continue_statement(self) -> None:
+        body = "            FOR #a := 1 TO 3 DO\n                CONTINUE;\n            END_FOR;"
+        diagnostics = _check(body)
+        assert {d.code for d in diagnostics} == {CODE_TRANSPILE}
+        assert any("CONTINUE" in d.message for d in diagnostics)
 
 
 class TestGeneratedPythonReferencesUnknownNames:
@@ -180,12 +194,6 @@ class TestGeneratedPythonReferencesUnknownNames:
     def test_unmapped_builtin_limit(self) -> None:
         diagnostics = _check("            #b := LIMIT(MN := 0, IN := #a, MX := 9);")
         assert any("LIMIT" in d.message for d in diagnostics)
-
-    def test_continue_statement(self) -> None:
-        body = "            FOR #a := 1 TO 3 DO\n                CONTINUE;\n            END_FOR;"
-        diagnostics = _check(body)
-        assert {d.code for d in diagnostics} == {CODE_UNDEFINED_NAME}
-        assert any("CONTINUE" in d.message for d in diagnostics)
 
     def test_undefined_name_is_a_warning(self) -> None:
         """It only fails if the branch runs, unlike a syntax error."""

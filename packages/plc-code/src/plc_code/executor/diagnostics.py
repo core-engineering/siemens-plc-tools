@@ -2,19 +2,19 @@
 
 Why this exists
 ---------------
-The executor translates SCL by rewriting text: there is no statement-level AST.
-``ControlFlowTranslator._translate_statements`` dispatches on a handful of
-leading keywords, and everything else falls through to
-``_translate_simple_statement``, whose last branch hands the line to the
-expression translator and emits whatever comes back. A construct the translator
-has never heard of is therefore not rejected — it is copied into the generated
-Python and ``transpile_block`` returns ``success=True`` with no errors and no
-warnings.
+The executor translates SCL from a statement AST (``plc_code.parser.statement_parser``
+/ ``plc_code.executor.generator``). REPEAT/UNTIL, GOTO and CONTINUE have no node
+in that AST, so the statement parser rejects them outright and
+``transpile_block`` reports failure before any Python is generated — that
+failure is already surfaced, as ``CODE_TRANSPILE`` below.
 
-That is how ``REPEAT``/``UNTIL``, ``GOTO``, ``CONTINUE`` and unmapped builtins
-such as ``SEL`` or ``LIMIT`` reach a downstream project: they surface as a
-``SyntaxError`` when the block is compiled, or a ``NameError`` the first time
-the branch is taken — a long way from the SCL that caused them.
+What is not rejected up front is an unmapped builtin such as ``SEL`` or
+``LIMIT``: it parses as an ordinary call, so ``translate_simple_statement``
+(the dispatcher shared by the generator and, previously, the now-deleted text
+path) hands it to the expression translator and emits whatever comes back —
+a reference to a name nothing defines. That reaches a downstream project as a
+``NameError`` the first time the branch is taken, a long way from the SCL
+that caused it.
 
 How it works
 ------------

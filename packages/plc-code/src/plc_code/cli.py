@@ -340,7 +340,7 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
 @click.option(
     "--check",
     is_flag=True,
-    help="Report blocks whose generated Python will not load or will raise NameError",
+    help="Report blocks that fail to transpile, will not load, or will raise NameError",
 )
 @click.option(
     "--conformance",
@@ -362,17 +362,15 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
     Without --check, prints the generated Python. That is the fastest way to see
     what a block actually became when it misbehaves in the harness.
 
-    With --check, reports blocks whose generated Python does not parse, or reads
-    a name nothing defines. The transpiler rewrites text rather than building a
-    statement AST, so a construct it does not support is copied through and
-    reported as a successful transpile — this is what surfaces that silence.
+    With --check, reports blocks that fail to transpile (a construct the
+    statement parser cannot read, reported with its SCL location), blocks whose
+    generated Python does not parse, or blocks that read a name nothing defines.
     Exits 1 if anything is reported.
 
     With --conformance, reports how much SCL the token-driven statement parser
-    (a separate, in-progress AST path — not what --check or the transpiler
-    above uses) can read. This is a report, not a gate: nothing generates from
-    the AST yet, so an unparsed statement does not mean a broken block. Always
-    exits 0.
+    can read, in more detail than a --check pass does (per-region and
+    per-network breakdown, a count by statement kind, separate expression-slice
+    coverage). This is a report, not a gate, and always exits 0.
 
     If PATH is not specified, uses source path from plc.yaml.
     """

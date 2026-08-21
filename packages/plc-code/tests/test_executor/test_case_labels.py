@@ -146,22 +146,23 @@ class TestMultiValueLabels:
     def test_comma_separated_values_share_a_branch(self) -> None:
         _run(_MULTI_VALUE, {1: 10, 2: 10, 3: 30, 7: 99})
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Comma-separated quoted labels are not supported end to end. "
-            "_collect_string_constants only maps the name glued to the colon "
-            "(regex '\"NAME\":'), so the other values of the list stay raw "
-            "strings and the branch is emitted with unresolved conditions. The "
-            "label regex deliberately does not match this form either, so the "
-            "line stays visible in the generated Python and `transpile --check` "
-            "reports it rather than the branch vanishing. Real occurrence: "
-            "project-A ArmFinalState.s7dcl. Fixing this means teaching the constant "
-            "collection about the list first."
-        ),
-    )
     def test_comma_separated_symbolic_values_share_a_branch(self) -> None:
-        """``"A", "B":`` — seen in project-A ArmFinalState.s7dcl."""
+        """``"A", "B":`` — seen in production SCL.
+
+        The statement AST parses a comma-separated CASE label as one branch
+        with multiple values structurally, so the branch is no longer lost
+        the way the old text path lost it (its label regex only recognised a
+        single quoted word or a digit list, never this shape, so the line
+        fell through as an ordinary body statement instead of a label).
+
+        ``_collect_string_constants`` still only maps a quoted name glued to
+        its colon (regex ``"NAME":``), so a value that is *never* referenced
+        anywhere else in the block (via ``:=``/``<``/``>``) keeps an
+        untranslated string literal instead of its assigned integer. This
+        case still passes because ``"MODE_TWO"`` is also the assignment's
+        right-hand side, which the constant collector does pick up; it is not
+        a demonstration that the collector's own gap is closed.
+        """
         body = """            #state := "MODE_TWO";
             CASE #state OF
                 "MODE_ONE", "MODE_TWO":

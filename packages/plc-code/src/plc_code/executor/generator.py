@@ -1,27 +1,23 @@
 """Python generation from the statement AST.
 
-The executor used to rewrite SCL as text: `ControlFlowTranslator` split a
-region's flattened content on newlines and matched control-flow keywords with
-regular expressions, so anything it did not recognise was copied verbatim into
-the generated Python while `transpile_block` reported success. This module reads
-the statement tree instead, and a construct it cannot generate raises rather
-than emitting nothing.
+The executor used to rewrite SCL as text: a now-deleted ``ControlFlowTranslator``
+split a region's flattened content on newlines and matched control-flow
+keywords with regular expressions, so anything it did not recognise was copied
+verbatim into the generated Python while ``transpile_block`` reported success.
+This module reads the statement tree instead, and a construct it cannot
+generate raises rather than emitting nothing.
 
-It does not translate expressions. For each statement it rebuilds the SCL string
-the text path would have handed to `ExpressionTranslator` / `StatementTranslator`
-/ `ControlFlowTranslator` and calls those same methods, so the two paths agree
-byte for byte by construction rather than by re-derivation. Replacing them is
-pass 2.
+It does not translate expressions. For each statement it rebuilds the SCL
+string and hands it to `ExpressionTranslator` / `StatementTranslator`, the same
+translators the deleted text path used, so expression rendering itself is
+unchanged by this switch. Replacing them is pass 2.
 
 Every non-control-flow statement (`Assignment`, `Call`, `Return`, `Exit`) is
-routed through `StatementTranslator.translate_simple_statement`, the statement-level
-dispatcher shared by both code-generation paths: it is where RETURN/EXIT, the
-quoted-name block call, compound assignment, the named-call-with-outputs
-special case, the `#name(...)` FB call and the bare-expression fallback are
-actually dispatched, in that order. Reusing the text path's real dispatcher,
-rather than re-deriving a subset of its cases (as an earlier version of this
-module did by calling `translate_fb_call` directly), is what makes the two
-paths agree on constructs like a quoted-name call.
+routed through `StatementTranslator.translate_simple_statement`, the
+statement-level dispatcher: it is where RETURN/EXIT, the quoted-name block
+call, compound assignment, the named-call-with-outputs special case, the
+`#name(...)` FB call and the bare-expression fallback are actually dispatched,
+in that order.
 """
 
 from __future__ import annotations
@@ -60,10 +56,47 @@ def scl_text(tokens: list[Token]) -> str:
     return " ".join(token.value for token in tokens)
 
 
+def _map_string_constants(text: str, string_constants: dict[str, int] | None) -> str:
+    """Replace quoted string-constant literals in ``text`` with ``self.NAME``.
+
+    Mirrors the substitution ``transpiler.py`` used to perform globally, with
+    regex repairs afterwards, before this generator existed: each key (e.g.
+    ``'"NAME"'``) is replaced by ``" self.NAME "`` wherever it occurs in
+    ``text``. Reconstructed text is already single-space-separated per token
+    (see :func:`scl_text`), so — unlike the old blind text rewrite — this
+    substitution never glues an adjacent keyword to the replacement and needs
+    no spacing repair afterwards.
+
+    A CASE label is not routed through this helper: a label position maps a
+    matching literal to its bare integer value instead, which the caller
+    handles directly.
+
+    Parameters
+    ----------
+    text : str
+        Reconstructed SCL source text, as :func:`scl_text` renders it.
+    string_constants : dict[str, int] | None
+        Mapping from quoted literal (with its quotes) to the integer value
+        assigned to it, or ``None``/empty when the block declares none.
+
+    Returns
+    -------
+    str
+        ``text``, with every mapped literal replaced.
+    """
+    if not string_constants:
+        return text
+    for literal in string_constants:
+        name = literal.strip('"')
+        text = text.replace(literal, f" self.{name} ")
+    return text
+
+
 def generate_statements(
     statements: list[Statement],
     indent: int = 0,
     translator: StatementTranslator | None = None,
+    string_constants: dict[str, int] | None = None,
 ) -> list[str]:
     """Generate Python lines for a list of statements.
 
@@ -78,6 +111,13 @@ def generate_statements(
         The translator to render expressions and simple statements with.
         Defaults to a fresh one; passed explicitly so a caller may share state
         across a whole block.
+    string_constants : dict[str, int] | None
+        Mapping from a quoted string literal (e.g. ``'"USER_FREEWHEEL"'``) to
+        the integer value assigned to it, as collected by
+        ``SCLTranspiler._collect_string_constants``. A literal that matches a
+        CASE label is rendered as that bare integer; matching elsewhere it is
+        rendered as ``self.NAME``. ``None`` (the default) renders every string
+        literal as itself.
 
     Returns
     -------
@@ -95,52 +135,71 @@ def generate_statements(
 
     for statement in statements:
         if isinstance(statement, Assignment):
-            text = f"{scl_text(statement.target)} := {scl_text(statement.value)} ;"
+            target = scl_text(statement.target)
+            value = scl_text(statement.value)
+            text = _map_string_constants(f"{target} := {value} ;", string_constants)
             lines.extend(prefix + line for line in translator.translate_simple_statement(text))
             continue
 
         if isinstance(statement, If):
             for position, branch in enumerate(statement.branches):
                 keyword = "if" if position == 0 else "elif"
-                condition = translator.translate_if_condition(scl_text(branch.condition))
+                condition_text = _map_string_constants(scl_text(branch.condition), string_constants)
+                condition = translator.translate_if_condition(condition_text)
                 lines.append(f"{prefix}{keyword} {condition}:")
-                lines.extend(generate_statements(branch.body, indent + 1, translator))
+                lines.extend(generate_statements(branch.body, indent + 1, translator, string_constants))
             if statement.else_body:
                 lines.append(f"{prefix}else:")
-                lines.extend(generate_statements(statement.else_body, indent + 1, translator))
+                lines.extend(generate_statements(statement.else_body, indent + 1, translator, string_constants))
             continue
 
         if isinstance(statement, For):
-            variable = translator.expr_translator.translate(scl_text(statement.variable))
-            start = translator.expr_translator.translate(scl_text(statement.start))
-            end = translator.expr_translator.translate(scl_text(statement.end))
+            variable_text = _map_string_constants(scl_text(statement.variable), string_constants)
+            start_text = _map_string_constants(scl_text(statement.start), string_constants)
+            end_text = _map_string_constants(scl_text(statement.end), string_constants)
+            variable = translator.expr_translator.translate(variable_text)
+            start = translator.expr_translator.translate(start_text)
+            end = translator.expr_translator.translate(end_text)
             bounds = f"{start}, {end} + 1"
             if statement.step:
-                bounds += f", {translator.expr_translator.translate(scl_text(statement.step))}"
+                step_text = _map_string_constants(scl_text(statement.step), string_constants)
+                bounds += f", {translator.expr_translator.translate(step_text)}"
             lines.append(f"{prefix}for {variable} in range({bounds}):")
-            lines.extend(generate_statements(statement.body, indent + 1, translator))
+            lines.extend(generate_statements(statement.body, indent + 1, translator, string_constants))
             continue
 
         if isinstance(statement, While):
-            condition = translator.translate_if_condition(scl_text(statement.condition))
+            condition_text = _map_string_constants(scl_text(statement.condition), string_constants)
+            condition = translator.translate_if_condition(condition_text)
             lines.append(f"{prefix}while {condition}:")
-            lines.extend(generate_statements(statement.body, indent + 1, translator))
+            lines.extend(generate_statements(statement.body, indent + 1, translator, string_constants))
             continue
 
         if isinstance(statement, Case):
-            selector = translator.expr_translator.translate(scl_text(statement.selector))
+            selector_text = _map_string_constants(scl_text(statement.selector), string_constants)
+            selector = translator.expr_translator.translate(selector_text)
             for position, arm in enumerate(statement.branches):
                 keyword = "if" if position == 0 else "elif"
-                values = [translator.expr_translator.translate(scl_text(v)) for v in arm.values]
+                values = []
+                for v in arm.values:
+                    label_text = scl_text(v)
+                    if string_constants and label_text in string_constants:
+                        values.append(str(string_constants[label_text]))
+                    else:
+                        values.append(
+                            translator.expr_translator.translate(
+                                _map_string_constants(label_text, string_constants)
+                            )
+                        )
                 if len(values) == 1:
                     test = f"{selector} == {values[0]}"
                 else:
                     test = f"{selector} in ({', '.join(values)})"
                 lines.append(f"{prefix}{keyword} {test}:")
-                lines.extend(generate_statements(arm.body, indent + 1, translator))
+                lines.extend(generate_statements(arm.body, indent + 1, translator, string_constants))
             if statement.default:
                 lines.append(f"{prefix}else:")
-                lines.extend(generate_statements(statement.default, indent + 1, translator))
+                lines.extend(generate_statements(statement.default, indent + 1, translator, string_constants))
             continue
 
         if isinstance(statement, Call):
@@ -153,7 +212,9 @@ def generate_statements(
                     arguments.append(f"{argument.name} => {value}")
                 else:
                     arguments.append(f"{argument.name} := {value}")
-            call = f"{scl_text(statement.callee)} ( {' , '.join(arguments)} ) ;"
+            call = _map_string_constants(
+                f"{scl_text(statement.callee)} ( {' , '.join(arguments)} ) ;", string_constants
+            )
             lines.extend(prefix + line for line in translator.translate_simple_statement(call))
             continue
 

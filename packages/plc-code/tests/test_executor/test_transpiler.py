@@ -7,12 +7,23 @@ import pytest
 from plc_code.executor.runtime import PLCRuntime
 from plc_code.executor.transpiler import compile_block, transpile_block
 from plc_code.parser import parse_scl_file
+from plc_code.parser.lexer import Token, TokenType, tokenize
 from plc_code.parser.models import (
     Block,
     Network,
     VariableDeclaration,
     VariableSection,
 )
+
+
+def _tokens(source: str) -> list[Token]:
+    """Tokenize `source` the way the real parser fills ``Network.tokens``.
+
+    A hand-built ``Network`` fixture has no parser run over it, so ``tokens``
+    (what the statement parser reads) must be filled in alongside ``content``
+    (kept for the field's other consumers) rather than left empty.
+    """
+    return [token for token in tokenize(source) if token.type != TokenType.EOF]
 
 
 class TestTranspileResult:
@@ -110,7 +121,7 @@ class TestTranspileResult:
                 ),
             ],
             networks=[
-                Network(content="#result := COS(#x);"),
+                Network(content="#result := COS(#x);", tokens=_tokens("#result := COS(#x);")),
             ],
         )
 
@@ -326,7 +337,7 @@ class TestArray2DTranspiler:
                 ),
             ],
             networks=[
-                Network(content=scl_body),
+                Network(content=scl_body, tokens=_tokens(scl_body)),
             ],
         )
 
@@ -415,7 +426,7 @@ class TestUDTStructSupport:
                 ),
             ],
             networks=[
-                Network(content=scl_body),
+                Network(content=scl_body, tokens=_tokens(scl_body)),
             ],
         )
 
@@ -445,7 +456,7 @@ class TestUDTStructSupport:
                 ),
             ],
             networks=[
-                Network(content=scl_body),
+                Network(content=scl_body, tokens=_tokens(scl_body)),
             ],
         )
 
