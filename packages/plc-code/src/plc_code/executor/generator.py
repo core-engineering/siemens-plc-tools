@@ -14,22 +14,19 @@ byte for byte by construction rather than by re-derivation. Replacing them is
 pass 2.
 
 Every non-control-flow statement (`Assignment`, `Call`, `Return`, `Exit`) is
-routed through `ControlFlowTranslator._translate_simple_statement`, the text
-path's own single entry point for such lines: it is where RETURN/EXIT, the
+routed through `StatementTranslator.translate_simple_statement`, the statement-level
+dispatcher shared by both code-generation paths: it is where RETURN/EXIT, the
 quoted-name block call, compound assignment, the named-call-with-outputs
 special case, the `#name(...)` FB call and the bare-expression fallback are
-actually dispatched, in that order. Calling a leading-underscore method from
-here is deliberate — reusing the text path's real dispatcher, rather than
-re-deriving a subset of its cases (as an earlier version of this module did
-by calling `translate_fb_call` directly), is what makes the two paths agree
-on constructs like a quoted-name call. A later task relocates that method;
-this module should follow it when it moves.
+actually dispatched, in that order. Reusing the text path's real dispatcher,
+rather than re-deriving a subset of its cases (as an earlier version of this
+module did by calling `translate_fb_call` directly), is what makes the two
+paths agree on constructs like a quoted-name call.
 """
 
 from __future__ import annotations
 
 from plc_code.executor.codegen import StatementTranslator
-from plc_code.executor.control_flow import ControlFlowTranslator
 from plc_code.parser.lexer import Token
 from plc_code.parser.statements import Assignment, Call, Case, Exit, For, If, Return, Statement, While
 
@@ -67,7 +64,6 @@ def generate_statements(
     statements: list[Statement],
     indent: int = 0,
     translator: StatementTranslator | None = None,
-    control_flow: ControlFlowTranslator | None = None,
 ) -> list[str]:
     """Generate Python lines for a list of statements.
 
@@ -79,13 +75,9 @@ def generate_statements(
         Depth in four-space units. The caller splices the result into a class
         body, so the lines come back already indented.
     translator : StatementTranslator | None
-        The translator to render expressions with. Defaults to a fresh one;
-        passed explicitly so a caller may share state across a whole block.
-    control_flow : ControlFlowTranslator | None
-        The text path's translator, used only for its
-        ``_translate_simple_statement`` entry point (assignment, call, RETURN,
-        EXIT). Defaults to a fresh one; passed explicitly so a caller may share
-        state across a whole block, the same way ``translator`` is.
+        The translator to render expressions and simple statements with.
+        Defaults to a fresh one; passed explicitly so a caller may share state
+        across a whole block.
 
     Returns
     -------
@@ -98,14 +90,13 @@ def generate_statements(
         For a statement kind with no branch here.
     """
     translator = translator if translator is not None else StatementTranslator()
-    control_flow = control_flow if control_flow is not None else ControlFlowTranslator()
     prefix = INDENT * indent
     lines: list[str] = []
 
     for statement in statements:
         if isinstance(statement, Assignment):
             text = f"{scl_text(statement.target)} := {scl_text(statement.value)} ;"
-            lines.extend(prefix + line for line in control_flow._translate_simple_statement(text))
+            lines.extend(prefix + line for line in translator.translate_simple_statement(text))
             continue
 
         if isinstance(statement, If):
@@ -113,10 +104,10 @@ def generate_statements(
                 keyword = "if" if position == 0 else "elif"
                 condition = translator.translate_if_condition(scl_text(branch.condition))
                 lines.append(f"{prefix}{keyword} {condition}:")
-                lines.extend(generate_statements(branch.body, indent + 1, translator, control_flow))
+                lines.extend(generate_statements(branch.body, indent + 1, translator))
             if statement.else_body:
                 lines.append(f"{prefix}else:")
-                lines.extend(generate_statements(statement.else_body, indent + 1, translator, control_flow))
+                lines.extend(generate_statements(statement.else_body, indent + 1, translator))
             continue
 
         if isinstance(statement, For):
@@ -127,13 +118,13 @@ def generate_statements(
             if statement.step:
                 bounds += f", {translator.expr_translator.translate(scl_text(statement.step))}"
             lines.append(f"{prefix}for {variable} in range({bounds}):")
-            lines.extend(generate_statements(statement.body, indent + 1, translator, control_flow))
+            lines.extend(generate_statements(statement.body, indent + 1, translator))
             continue
 
         if isinstance(statement, While):
             condition = translator.translate_if_condition(scl_text(statement.condition))
             lines.append(f"{prefix}while {condition}:")
-            lines.extend(generate_statements(statement.body, indent + 1, translator, control_flow))
+            lines.extend(generate_statements(statement.body, indent + 1, translator))
             continue
 
         if isinstance(statement, Case):
@@ -146,10 +137,10 @@ def generate_statements(
                 else:
                     test = f"{selector} in ({', '.join(values)})"
                 lines.append(f"{prefix}{keyword} {test}:")
-                lines.extend(generate_statements(arm.body, indent + 1, translator, control_flow))
+                lines.extend(generate_statements(arm.body, indent + 1, translator))
             if statement.default:
                 lines.append(f"{prefix}else:")
-                lines.extend(generate_statements(statement.default, indent + 1, translator, control_flow))
+                lines.extend(generate_statements(statement.default, indent + 1, translator))
             continue
 
         if isinstance(statement, Call):
@@ -163,15 +154,15 @@ def generate_statements(
                 else:
                     arguments.append(f"{argument.name} := {value}")
             call = f"{scl_text(statement.callee)} ( {' , '.join(arguments)} ) ;"
-            lines.extend(prefix + line for line in control_flow._translate_simple_statement(call))
+            lines.extend(prefix + line for line in translator.translate_simple_statement(call))
             continue
 
         if isinstance(statement, Return):
-            lines.extend(prefix + line for line in control_flow._translate_simple_statement("RETURN ;"))
+            lines.extend(prefix + line for line in translator.translate_simple_statement("RETURN ;"))
             continue
 
         if isinstance(statement, Exit):
-            lines.extend(prefix + line for line in control_flow._translate_simple_statement("EXIT ;"))
+            lines.extend(prefix + line for line in translator.translate_simple_statement("EXIT ;"))
             continue
 
         raise UnsupportedStatement(f"{type(statement).__name__} at line {statement.line}")
