@@ -47,6 +47,51 @@ class TestVariableRef:
         assert node.is_local is False
 
 
+class TestStringLiteralVsVariableRef:
+    """`'text'` is a string literal; `"Name"` is a symbol reference.
+
+    The lexer emits both quoting conventions as the same STRING token, and it is
+    the parser's job to tell them apart — see `_parse_primary` in
+    `expression_parser.py`. 177 single-quoted literals in the corpus, 45 of them
+    empty, used to come out as `VariableRef`, one with an empty name.
+    """
+
+    def test_a_single_quoted_literal_is_a_literal(self) -> None:
+        node = _parse("'coder'").expression
+        assert isinstance(node, Literal)
+        assert node.value == "'coder'"
+
+    def test_an_empty_single_quoted_literal_is_a_literal_not_a_nameless_variable(self) -> None:
+        node = _parse("''").expression
+        assert isinstance(node, Literal)
+        assert node.value == "''"
+
+    def test_a_double_quoted_name_is_still_a_variable_ref(self) -> None:
+        node = _parse('"Db"').expression
+        assert isinstance(node, VariableRef)
+        assert node.name == "Db"
+
+    def test_a_double_quoted_call_is_still_a_function_call(self) -> None:
+        node = _parse('"Block"(#x)').expression
+        assert isinstance(node, FunctionCall)
+        assert node.name == "Block"
+
+    def test_render_of_a_single_quoted_literal_matches_the_current_translator(self) -> None:
+        """`render` (tree path) reproduces `ExpressionTranslator().translate` (text path).
+
+        The text translator carries a single-quoted literal through unmodified —
+        Python's own single-quoted syntax already matches SCL's — so the tree path
+        has to keep the quotes rather than stripping them, to reach the same text.
+        """
+        from plc_code.executor.codegen import ExpressionTranslator
+        from plc_code.executor.renderer import render
+
+        source = "'coder'"
+        node = _parse(source).expression
+        assert isinstance(node, Literal)
+        assert render(node) == ExpressionTranslator().translate(source)
+
+
 class TestPostfix:
     def test_a_member_chain(self) -> None:
         """`#armSetpoint.profile.status` — 11,057 member accesses in the corpus."""

@@ -614,6 +614,21 @@ class _ExpressionParser:
             return self._parse_absolute_address()
 
         if token.type is TokenType.STRING:
+            # The lexer emits both quoting conventions as the same STRING token,
+            # but they mean different things: `'text'` is a string literal,
+            # `"Name"` is a reference to a global or DB symbol. Only the quote
+            # character at the cursor tells them apart — the lexer keeps no flag
+            # for it, so this reads token.value[0] directly rather than adding
+            # one.
+            if token.value.startswith("'"):
+                # Kept with its quotes rather than stripped: Python's own
+                # single-quoted syntax already matches SCL's, so `value` as
+                # written is already valid Python text, and the renderer's
+                # `_render_literal` returns it unchanged — see
+                # `plc_code.executor.renderer`. `''` is the empty string, a
+                # `Literal` like any other, not a variable with an empty name.
+                self._stream.advance()
+                return Literal(line=token.line, column=token.column, value=token.value)
             # A quoted name followed by `(` is a call on a user block, not a
             # variable: `"ConvertAngleSafetyProcess"(...)`. Reading it as a
             # variable left the `(` trailing and cost 235 of the corpus's
