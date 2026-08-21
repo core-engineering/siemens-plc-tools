@@ -16,6 +16,7 @@ from plc_code.parser.expression_parser import parse_expression
 from plc_code.parser.expressions import (
     BinaryOp,
     FunctionCall,
+    Grouping,
     Index,
     Literal,
     TypedLiteral,
@@ -91,7 +92,9 @@ class TestTypedLiteralsAwayFromPositionZero:
     def test_inside_parentheses(self) -> None:
         result = _parse("(T#5s)")
         assert result.errors == []
-        assert isinstance(result.expression, TypedLiteral)
+        node = result.expression
+        assert isinstance(node, Grouping)
+        assert isinstance(node.inner, TypedLiteral)
 
     def test_the_run_stops_at_an_operator(self) -> None:
         """`T#5s+1` has no spaces at all; the literal must still end at `5s`.

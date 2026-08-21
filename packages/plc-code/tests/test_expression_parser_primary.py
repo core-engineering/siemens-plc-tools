@@ -9,7 +9,7 @@ production, and injecting them here would test something the parser never sees.
 """
 
 from plc_code.parser.expression_parser import parse_expression
-from plc_code.parser.expressions import FunctionCall, Index, Literal, Member, VariableRef
+from plc_code.parser.expressions import FunctionCall, Grouping, Index, Literal, Member, VariableRef
 from plc_code.parser.lexer import TokenType, tokenize
 
 
@@ -91,10 +91,11 @@ class TestFunctionCall:
 
 
 class TestGrouping:
-    def test_parentheses_do_not_appear_in_the_tree(self) -> None:
-        """Grouping is a reading rule, not a node."""
+    def test_parentheses_appear_in_the_tree(self) -> None:
+        """Grouping is source and gets its own node; see test_expression_parser_grouping.py."""
         node = _parse("(#a)").expression
-        assert isinstance(node, VariableRef)
+        assert isinstance(node, Grouping)
+        assert isinstance(node.inner, VariableRef)
 
 
 class TestErrors:

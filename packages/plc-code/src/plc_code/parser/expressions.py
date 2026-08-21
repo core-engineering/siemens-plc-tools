@@ -255,4 +255,29 @@ class FunctionCall:
     is_quoted: bool = False
 
 
-Expression = Literal | TypedLiteral | VariableRef | Member | Index | UnaryOp | BinaryOp | FunctionCall
+@dataclass(frozen=True)
+class Grouping:
+    """A parenthesised expression: `(a + b)`.
+
+    Grouping does not change what an expression means — the tree already binds
+    correctly without it — but it is source, and a consumer rendering the tree
+    back to text has to reproduce it. An earlier revision returned the inner
+    expression, which made `(#a AND #b) OR #c` and `#a AND #b OR #c`
+    indistinguishable.
+
+    Attributes
+    ----------
+    line, column : int
+        Position of the `(` in the source.
+    inner : Expression
+        The expression between the parentheses.
+    """
+
+    line: int
+    column: int
+    inner: Expression
+
+
+Expression = (
+    Literal | TypedLiteral | VariableRef | Member | Index | UnaryOp | BinaryOp | FunctionCall | Grouping
+)

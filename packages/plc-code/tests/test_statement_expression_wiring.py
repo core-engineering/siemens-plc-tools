@@ -6,7 +6,7 @@ No existing field changes type, so no current consumer breaks — which is the
 only reason this task can be small.
 """
 
-from plc_code.parser.expressions import BinaryOp, VariableRef
+from plc_code.parser.expressions import BinaryOp, Grouping, VariableRef
 from plc_code.parser.lexer import TokenType, tokenize
 from plc_code.parser.statement_parser import parse_statements
 from plc_code.parser.statements import Assignment, Call, If
@@ -38,7 +38,9 @@ class TestCall:
     def test_an_argument_value_has_a_tree(self) -> None:
         statement = _parse("#block(CLK := (#state = #RUNNING));").statements[0]
         assert isinstance(statement, Call)
-        assert isinstance(statement.arguments[0].value_expr, BinaryOp)
+        value_expr = statement.arguments[0].value_expr
+        assert isinstance(value_expr, Grouping)
+        assert isinstance(value_expr.inner, BinaryOp)
 
 
 class TestIf:

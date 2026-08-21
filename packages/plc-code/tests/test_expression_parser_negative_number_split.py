@@ -21,7 +21,7 @@ is untouched.
 from __future__ import annotations
 
 from plc_code.parser.expression_parser import parse_expression, verify_expression_consumed
-from plc_code.parser.expressions import BinaryOp, Index, Literal, VariableRef
+from plc_code.parser.expressions import BinaryOp, Grouping, Index, Literal, VariableRef
 from plc_code.parser.lexer import TokenType, tokenize
 
 
@@ -37,7 +37,9 @@ class TestSubtraction:
     def test_a_folded_minus_after_an_operand_is_a_subtraction(self) -> None:
         result = _parse('("MLA10"-1)')
         assert result.errors == []
-        node = result.expression
+        grouping = result.expression
+        assert isinstance(grouping, Grouping)
+        node = grouping.inner
         assert isinstance(node, BinaryOp)
         assert node.operator == "-"
         assert node.left == VariableRef(line=1, column=2, name="MLA10", is_local=False)
@@ -130,7 +132,7 @@ class TestNegativeLiteralIsUntouched:
     def test_a_grouped_negative_stays_a_literal(self) -> None:
         result = _parse("(-1)")
         assert result.errors == []
-        assert result.expression == Literal(line=1, column=2, value="-1")
+        assert result.expression == Grouping(line=1, column=1, inner=Literal(line=1, column=2, value="-1"))
 
     def test_a_negative_after_an_operator_stays_a_literal(self) -> None:
         result = _parse("#a * -1")

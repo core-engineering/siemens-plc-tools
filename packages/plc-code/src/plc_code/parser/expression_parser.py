@@ -24,6 +24,7 @@ from plc_code.parser.expressions import (
     CallArgument,
     Expression,
     FunctionCall,
+    Grouping,
     Index,
     Literal,
     Member,
@@ -768,24 +769,24 @@ class _ExpressionParser:
     def _parse_grouping(self) -> Expression | None:
         """Parse `(expression)`, the cursor already on the `(`.
 
-        The parenthesised expression is returned as-is: grouping changes how
-        an outer operator layer would bind, not the tree, so it creates no
-        node of its own.
+        The parentheses are source, not just a binding hint for an outer
+        operator layer, so they are kept as a ``Grouping`` node around the
+        inner expression rather than discarded.
 
         Returns
         -------
         Expression | None
-            The inner expression; ``None`` when nothing readable followed
-            the `(`, or when the closing `)` is missing (an error was
-            recorded either way).
+            A ``Grouping`` wrapping the inner expression; ``None`` when
+            nothing readable followed the `(`, or when the closing `)` is
+            missing (an error was recorded either way).
         """
-        self._stream.advance()  # LPAREN
+        paren = self._stream.advance()  # LPAREN
         inner = self._parse_expression()
         if inner is None:
             return None
         if not self._expect(TokenType.RPAREN, "')'"):
             return None
-        return inner
+        return Grouping(line=paren.line, column=paren.column, inner=inner)
 
     def _expect(self, token_type: TokenType, expected: str) -> bool:
         """Consume ``token_type`` at the cursor, recording an error if absent.

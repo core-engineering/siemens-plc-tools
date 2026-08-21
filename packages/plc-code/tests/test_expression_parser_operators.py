@@ -8,7 +8,7 @@ would never reveal them: all 8 of its `**` occurrences are trivial.
 """
 
 from plc_code.parser.expression_parser import parse_expression
-from plc_code.parser.expressions import BinaryOp, Literal, UnaryOp
+from plc_code.parser.expressions import BinaryOp, Grouping, Literal, UnaryOp
 from plc_code.parser.lexer import TokenType, tokenize
 
 
@@ -102,7 +102,8 @@ class TestUnary:
         """Corpus shape: `NOT (#a = #b)`."""
         node = _parse("NOT (#a = #b)").expression
         assert isinstance(node, UnaryOp)
-        assert isinstance(node.operand, BinaryOp)
+        assert isinstance(node.operand, Grouping)
+        assert isinstance(node.operand.inner, BinaryOp)
 
 
 class TestUnsupported:
