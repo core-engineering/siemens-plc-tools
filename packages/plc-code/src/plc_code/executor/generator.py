@@ -92,6 +92,45 @@ def _map_string_constants(text: str, string_constants: dict[str, int] | None) ->
     return text
 
 
+def _generate_body(
+    statements: list[Statement],
+    indent: int,
+    translator: StatementTranslator,
+    string_constants: dict[str, int] | None,
+) -> list[str]:
+    """Generate a nested body's lines, padding with ``pass`` when it is empty.
+
+    The caller always emits a header line (``if``/``elif``/``else``/``for``/
+    ``while``/a ``CASE`` arm) unconditionally, and Python requires at least
+    one statement to follow it. A body that parses to zero statements — a
+    comment-only branch is the common real-world case, since comment tokens
+    never reach the statement parser — would otherwise leave that header
+    dangling with nothing indented under it, which is not valid Python.
+
+    Parameters
+    ----------
+    statements : list[Statement]
+        The nested body to generate.
+    indent : int
+        Depth in four-space units for the body's own lines (one deeper than
+        the header this body follows).
+    translator : StatementTranslator
+        Shared translator instance, forwarded unchanged.
+    string_constants : dict[str, int] | None
+        Forwarded unchanged; see :func:`generate_statements`.
+
+    Returns
+    -------
+    list[str]
+        Python lines for the body. Never empty: ``["pass"]`` (at ``indent``)
+        stands in for a body that generated no lines of its own.
+    """
+    lines = generate_statements(statements, indent, translator, string_constants)
+    if not lines:
+        lines.append(INDENT * indent + "pass")
+    return lines
+
+
 def generate_statements(
     statements: list[Statement],
     indent: int = 0,
@@ -147,12 +186,10 @@ def generate_statements(
                 condition_text = _map_string_constants(scl_text(branch.condition), string_constants)
                 condition = translator.translate_if_condition(condition_text)
                 lines.append(f"{prefix}{keyword} {condition}:")
-                lines.extend(generate_statements(branch.body, indent + 1, translator, string_constants))
+                lines.extend(_generate_body(branch.body, indent + 1, translator, string_constants))
             if statement.else_body:
                 lines.append(f"{prefix}else:")
-                lines.extend(
-                    generate_statements(statement.else_body, indent + 1, translator, string_constants)
-                )
+                lines.extend(_generate_body(statement.else_body, indent + 1, translator, string_constants))
             continue
 
         if isinstance(statement, For):
@@ -167,14 +204,14 @@ def generate_statements(
                 step_text = _map_string_constants(scl_text(statement.step), string_constants)
                 bounds += f", {translator.expr_translator.translate(step_text)}"
             lines.append(f"{prefix}for {variable} in range({bounds}):")
-            lines.extend(generate_statements(statement.body, indent + 1, translator, string_constants))
+            lines.extend(_generate_body(statement.body, indent + 1, translator, string_constants))
             continue
 
         if isinstance(statement, While):
             condition_text = _map_string_constants(scl_text(statement.condition), string_constants)
             condition = translator.translate_if_condition(condition_text)
             lines.append(f"{prefix}while {condition}:")
-            lines.extend(generate_statements(statement.body, indent + 1, translator, string_constants))
+            lines.extend(_generate_body(statement.body, indent + 1, translator, string_constants))
             continue
 
         if isinstance(statement, Case):
@@ -198,10 +235,10 @@ def generate_statements(
                 else:
                     test = f"{selector} in ({', '.join(values)})"
                 lines.append(f"{prefix}{keyword} {test}:")
-                lines.extend(generate_statements(arm.body, indent + 1, translator, string_constants))
+                lines.extend(_generate_body(arm.body, indent + 1, translator, string_constants))
             if statement.default:
                 lines.append(f"{prefix}else:")
-                lines.extend(generate_statements(statement.default, indent + 1, translator, string_constants))
+                lines.extend(_generate_body(statement.default, indent + 1, translator, string_constants))
             continue
 
         if isinstance(statement, Call):

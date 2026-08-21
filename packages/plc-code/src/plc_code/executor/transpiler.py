@@ -18,7 +18,7 @@ from plc_code.executor.models import CompileResult, TranspileOptions, TranspileR
 from plc_code.executor.types import ArrayTypeInfo, SCLType, TypeInfo, TypeMapper
 from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block, Network, Region, VariableDeclaration
-from plc_code.parser.statement_parser import parse_statements
+from plc_code.parser.statement_parser import parse_statements, verify_no_silent_loss
 
 
 @dataclass
@@ -47,6 +47,7 @@ class SCLTranspiler:
     _lines: list[str] = field(default_factory=list, repr=False)
     _ctx: CodeGenContext = field(default_factory=CodeGenContext, repr=False)
     _errors: list[str] = field(default_factory=list, repr=False)
+    _error_lines: list[int | None] = field(default_factory=list, repr=False)
     _warnings: list[str] = field(default_factory=list, repr=False)
     _string_constants: dict[str, int] = field(default_factory=dict, repr=False)
     _fb_members: list[tuple[str, str]] = field(default_factory=list, repr=False)
@@ -61,6 +62,7 @@ class SCLTranspiler:
         """
         self._lines = []
         self._errors = []
+        self._error_lines = []
         self._warnings = []
         self._ctx = CodeGenContext()
         self._string_constants = {}
@@ -87,15 +89,18 @@ class SCLTranspiler:
                 class_name=self.block.name,
                 errors=self._errors,
                 warnings=self._warnings,
+                error_lines=self._error_lines,
             )
         except Exception as e:
             self._errors.append(f"Transpilation error: {e}")
+            self._error_lines.append(None)
             return TranspileResult(
                 success=False,
                 python_code="",
                 class_name=self.block.name,
                 errors=self._errors,
                 warnings=self._warnings,
+                error_lines=self._error_lines,
             )
 
     def _emit(self, line: str) -> None:
@@ -655,6 +660,15 @@ class SCLTranspiler:
         that cannot read its input must say so, not silently emit Python that
         means something else.
 
+        A ``ParseError`` is not the only way a unit can go unread: a body
+        loop's last-resort recovery can swallow a token — typically a stray
+        block-ender keyword nested inside a body it does not close — without
+        recording it as a statement, an error or a separator.
+        ``ParseResult.unattributed_spans`` names those tokens; per its own
+        docstring it is "never a legitimate no-op ... always a defect when
+        non-empty", so it is treated as failure here too, via
+        :func:`verify_no_silent_loss` rather than a second hand-rolled check.
+
         Parameters
         ----------
         tokens : list[Token]
@@ -667,11 +681,14 @@ class SCLTranspiler:
             List of Python statements.
         """
         result = parse_statements(tokens)
-        if result.errors:
+        problems = verify_no_silent_loss(tokens, result)
+        if result.errors or problems:
             for error in result.errors:
-                self._errors.append(
-                    f"{self.block.name}: line {error.line} column {error.column}: {error.message}"
-                )
+                self._errors.append(error.message)
+                self._error_lines.append(error.line)
+            for problem in problems:
+                self._errors.append(problem)
+                self._error_lines.append(None)
             return []
         return generate_statements(result.statements, string_constants=self._string_constants)
 

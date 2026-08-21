@@ -565,7 +565,15 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
         console.print(f"\n[bold]{block_name}[/bold]")
         for diagnostic in found:
             marker = "[red]✗[/red]" if diagnostic.severity is Severity.ERROR else "[yellow]⚠[/yellow]"
-            location = f" (generated line {diagnostic.line})" if diagnostic.line else ""
+            # TRANSPILE's message already states its (SCL source) line and column;
+            # repeating it here would reproduce the doubled location text this
+            # diagnostic used to carry. `diagnostic.line` is still populated for it,
+            # for a JSON consumer that wants the location as data, not text.
+            location = (
+                f" (generated line {diagnostic.line})"
+                if diagnostic.line and diagnostic.code != "TRANSPILE"
+                else ""
+            )
             console.print(f"  {marker} {diagnostic.code}{location}: {diagnostic.message}")
             if diagnostic.generated_line:
                 console.print(f"      {diagnostic.generated_line}", style="dim")

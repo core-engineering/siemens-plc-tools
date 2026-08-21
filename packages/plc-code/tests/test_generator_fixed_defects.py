@@ -1,36 +1,41 @@
-"""Permanent regression coverage for defects the old text-path translator had.
+"""Permanent regression coverage for defects the deleted text-path translator had.
 
-A full differential sweep of the AST path (``generate_statements``) against the old
-text path (``ControlFlowTranslator``) over 646 real production blocks found 45
-diverging code units, classified into seven root causes -- every one of them a bug
-in the *old* path, never a case where the new path was wrong (see
-``test_generator_differential_corpus.py`` and the corresponding task report for the
-full measurement). That differential is a ratchet on the *count* of known
-divergences and carries no block names (this repository is public), so once the old
-path is deleted the specific evidence for each of the seven defect shapes goes with
-it -- the ratchet would have nothing left to ratchet against.
+Before this repository switched to generating Python from the statement AST
+(``generate_statements``), a now-deleted ``ControlFlowTranslator`` rewrote a
+region's flattened text with regular expressions. A one-time differential sweep
+of the AST path against that text path, run over 646 real production blocks
+before the switch, found 45 diverging code units, classified into seven root
+causes -- every one of them a bug in the deleted path, never a case where the
+AST path was wrong. That sweep, and the text path it compared against, are gone
+(deleted alongside ``ControlFlowTranslator`` itself): the differential was a
+ratchet on the *count* of known divergences and carried no block names (this
+repository is public), so once the old path was deleted the specific evidence
+for each of the seven defect shapes would have gone with it.
 
-This module keeps that evidence alive independently of the old path. Each test below
-feeds a small, fully generic (no customer, project, or block name) SCL snippet
-through the statement AST -- ``tokenize`` -> ``parse_statements`` ->
-``generate_statements`` -- the same pipeline ``transpile`` now uses, and asserts the
-*correct* Python it produces, plus a targeted assertion on the specific thing the old
-path used to drop, garble, or leak, so a future regression names itself instead of
-only showing up as "the list changed".
+This module keeps that evidence alive independently of the deleted path. Each
+test below feeds a small, fully generic (no customer, project, or block name)
+SCL snippet through the statement AST -- ``tokenize`` -> ``parse_statements`` ->
+``generate_statements`` -- the same pipeline ``transpile`` now uses, and asserts
+the *correct* Python it produces, plus a targeted assertion on the specific
+thing the deleted path used to drop, garble, or leak, so a future regression
+names itself instead of only showing up as "the list changed".
 
 Six of the seven snippets here are transcribed unchanged from the verified
-minimal reproductions recorded in the differential task's report (each one was
-run there through both paths and the shown old/new output confirmed real, not
-guessed). The seventh (see ``test_a_multi_value_case_label_with_an_inline_if_body``)
-was described there only in prose, without a concrete snippet -- it was
-reconstructed from that description and independently re-verified here against
-the old path's own source before being written down as a permanent test.
+minimal reproductions recorded in the original differential task's report (each
+one was run there through both paths and the shown old/new output confirmed
+real, not guessed). The seventh (see
+``test_a_multi_value_case_label_with_an_inline_if_body``) was described there
+only in prose, without a concrete snippet -- it was reconstructed from that
+description and independently re-verified here against the deleted path's own
+source (while it still existed) before being written down as a permanent test.
 """
 
 from __future__ import annotations
 
 from plc_code.executor.generator import generate_statements
-from plc_code.parser.lexer import TokenType, tokenize
+from plc_code.executor.transpiler import transpile_block
+from plc_code.parser.lexer import TokenType, tokenize, tokenize_with_newlines
+from plc_code.parser.parser import SCLParser
 from plc_code.parser.statement_parser import parse_statements
 from plc_code.parser.statements import Statement
 
@@ -134,15 +139,37 @@ def test_a_comment_only_snippet_emits_nothing() -> None:
     a statement at all -- there is nothing to execute. The old path's line-based
     reader nonetheless emitted the raw comment text as one more line of "generated
     Python" (which is not valid Python and does nothing useful downstream). The new
-    path never sees the comment as a token in the first place -- comment tokens are
-    excluded before the statement parser runs -- so it correctly produces no output.
+    path never sees the comment as a token in the first place.
+
+    Unlike the other tests in this module, this one goes through ``transpile_block``
+    on a real, fully parsed block rather than ``generate_statements(_statements(...))``:
+    ``_statements`` filters ``COMMENT``/``BLOCK_COMMENT`` itself, which would make this
+    test pass even if the real pipeline (``Region.tokens``, built by ``parser.py``,
+    filtering those tokens before the statement parser ever runs) regressed. Routing
+    through the real block guards the pipeline, not the test helper.
     """
-    source = "(* This block does a thing. *)"
-    lines = generate_statements(_statements(source))
-    assert lines == []
+    source = """
+FUNCTION_BLOCK "CommentOnlyProbe"
+    VAR_INPUT
+        a : Int;
+    END_VAR
+    VAR_OUTPUT
+        b : Int;
+    END_VAR
+    {{ S7_Language := "SCL" }}
+    NETWORK
+        REGION Logic
+            (* This block does a thing. *)
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK
+"""
+    block = SCLParser(tokenize_with_newlines(source)).parse()
+    result = transpile_block(block)
+    assert result.success, result.errors
     # The specific thing the old path leaked: the comment text itself must not
     # appear anywhere in the generated output.
-    assert not any("This block does a thing" in line for line in lines)
+    assert "This block does a thing" not in result.python_code
 
 
 def test_an_empty_bodied_if_no_longer_vanishes_entirely() -> None:
@@ -162,15 +189,16 @@ def test_an_empty_bodied_if_no_longer_vanishes_entirely() -> None:
     that emits the header, and nothing is emitted at all: not even the ``pass``
     fallback the old path uses for every other empty branch (see the ``ELSE``
     no-op test above). The AST path keeps the ``IF`` header regardless of whether
-    its body is empty, exactly as it does when the body is a whole nested region.
+    its body is empty, exactly as it does when the body is a whole nested region --
+    and, unlike the old path, backs that header with an explicit ``pass``: a header
+    with nothing indented under it is not valid Python, and a comment-only branch
+    (the real-world shape of "empty body") is ordinary SCL, not a corner case.
     """
     source = "IF #a AND #b THEN END_IF;"
     lines = generate_statements(_statements(source))
-    assert lines == ["if self.a and self.b:"]
     # The specific thing the old path showed no trace of at all: the `if` header
-    # must survive on its own, with no body fabricated to go with it.
-    assert lines == ["if self.a and self.b:"]
-    assert len(lines) == 1
+    # must survive on its own, backed by a `pass` so the module still compiles.
+    assert lines == ["if self.a and self.b:", "    pass"]
 
 
 def test_dead_code_inside_a_comment_is_no_longer_executed() -> None:

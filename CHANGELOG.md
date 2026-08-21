@@ -697,6 +697,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   referencing the `re` module (`grep -c "re\."`: 58 in `control_flow.py`, 9 in
   the deleted text-substitution-then-repair block `_translate_scl_code` used to
   run).
+
+  A follow-up review found two gaps in that same "must say so, not silently
+  emit something else" guarantee, both closed here. First, `generate_statements`
+  unconditionally emitted a header line for every `IF`/`ELSIF` branch, `FOR`,
+  `WHILE` and `CASE` arm, then spliced in that construct's body — but never
+  checked whether the body it generated was empty. A comment-only branch (an
+  ordinary shape in real SCL, since comment tokens never reach the statement
+  parser) therefore produced a header with nothing indented under it: `success`
+  was `True` and the generated module still failed to compile. All five sites
+  now emit `pass` when their body generates zero lines. Second,
+  `ParseResult.unattributed_spans` — a token a body loop's last-resort recovery
+  swallows without recording it as a statement, error or separator, such as a
+  stray `END_WHILE` nested inside a `CASE` branch — was produced by the parser
+  but never checked by the transpiler, so that class of loss also reported
+  `success=True` with no diagnostic. `_translate_scl_code` now fails
+  transpilation on a non-empty `unattributed_spans` too, via the existing
+  `verify_no_silent_loss`, rather than a second hand-rolled check. Also fixed in
+  the same pass: a `TRANSPILE` diagnostic's message doubled its own location
+  (e.g. `<Block>: line 8 column 13: line 8, column 13: unexpected 'REPEAT'`) —
+  the redundant prefix is gone — and `Diagnostic.line` is now populated for
+  `TRANSPILE` findings (from the new `TranspileResult.error_lines`) instead of
+  always `None`, so a JSON consumer gets the location as data rather than only
+  inside the message text.
 - **workspace** — the Python version (`.python-version`, 3.12) and every dev tool
   version are now pinned exactly. Previously `ruff>=0.1.0` / `black>=23.0.0` /
   `mypy>=1.0.0` floated while the local venv ran a different Python than CI, so

@@ -87,7 +87,11 @@ class Diagnostic:
         Human-readable description, naming the offending symbol where there is
         one.
     line : int | None
-        1-based line in the *generated Python*, not in the SCL source.
+        1-based line in the *generated Python*, not in the SCL source — except
+        for ``CODE_TRANSPILE``, which has no generated Python to point into and
+        instead carries the SCL source line the parser stopped on (``None``
+        when the message names no single token, e.g. an unaccounted-for token
+        range).
     generated_line : str
         The generated line itself, stripped. Empty when there is no single
         line to point at.
@@ -183,15 +187,18 @@ def check_block(
     result = transpile_block(block, options)
 
     if not result.success or result.errors:
+        messages = result.errors or ["Transpilation failed"]
+        lines = result.error_lines if result.errors else [None]
         return [
             Diagnostic(
                 block_name=block_name,
                 code=CODE_TRANSPILE,
                 severity=Severity.ERROR,
                 message=message,
+                line=line,
                 source_file=source_file,
             )
-            for message in (result.errors or ["Transpilation failed"])
+            for message, line in zip(messages, lines, strict=True)
         ]
 
     code = result.python_code

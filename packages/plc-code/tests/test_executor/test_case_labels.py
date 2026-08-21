@@ -234,6 +234,57 @@ class TestSymbolicLabels:
             END_CASE;"""
         _run(body, {0: 99})
 
+    def test_a_label_symbol_reused_beside_or_in_an_if_condition(self) -> None:
+        """The same symbol as both a CASE label and an OR-joined IF condition.
+
+        ``generate_statements`` folds the CASE-label / symbolic-constant
+        substitution the deleted text path used to perform as a separate
+        regex-rewrite-then-repair pass -- four ``(self\\.\\w+)(OR)(...)``-shaped
+        regexes existed purely to glue an ``OR``/``AND`` keyword back onto a
+        symbol name the blind text rewrite had crushed against it. Nothing
+        differential ever verified this position: the deleted comparison always
+        called ``generate_statements`` with ``string_constants=None`` (see the
+        coverage gap this test closes alongside
+        ``test_generator_statements.py::test_a_case_label_renders_bare_while_the_same_symbol_elsewhere_stays_self_prefixed``),
+        so a regression exactly here would not have been caught by anything.
+        This drives the real pipeline end to end (``compile_block`` ->
+        ``transpile_block``) rather than calling ``generate_statements`` directly,
+        and asserts both the generated text and that the branch actually fires.
+        """
+        body = """            IF #a = 1 THEN
+                #state := "MODE_ONE";
+            ELSIF #a = 2 THEN
+                #state := "MODE_TWO";
+            ELSE
+                #state := "MODE_THREE";
+            END_IF;
+            CASE #state OF
+                "MODE_ONE":
+                    #b := 10;
+                "MODE_TWO":
+                    #b := 20;
+            ELSE
+                    #b := 99;
+            END_CASE;
+            IF #state = "MODE_ONE" OR #state = "MODE_TWO" THEN
+                #b := #b + 1;
+            END_IF;"""
+        source = _TEMPLATE.format(body=body)
+        block = SCLParser(tokenize_with_newlines(source)).parse()
+        result = compile_block(block)
+        assert result.success, result.compile_error
+        generated = result.transpile_result.python_code
+        assert "if self.state == self.MODE_ONE or self.state == self.MODE_TWO:" in generated
+
+        # a=1 and a=2 land on the two CASE-labelled branches (b=10 / b=20) and then
+        # the OR condition must recognise the just-assigned symbol and add 1; a=3
+        # falls to the CASE default (b=99) and the OR condition must NOT fire.
+        for given, expected in {1: 11, 2: 21, 3: 99}.items():
+            instance = result.fb_class(_runtime=PLCRuntime())
+            instance.a = given
+            instance.execute()
+            assert instance.b == expected, f"a={given} gave b={instance.b}, expected {expected}"
+
 
 class TestRegionsInsideBranches:
     """Regions are stripped in preprocessing; branches must survive it."""

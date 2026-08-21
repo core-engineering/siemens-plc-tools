@@ -43,6 +43,11 @@ class TranspileResult:
         List of error messages if transpilation failed.
     warnings : list[str]
         List of warning messages (non-fatal issues).
+    error_lines : list[int | None]
+        Parallel to ``errors``: the 1-based SCL source line each message
+        points at, or ``None`` when a message has no single line to point at
+        (e.g. an unaccounted-for token range). Carries the location as data,
+        for a caller that wants it without re-parsing the message string.
     """
 
     success: bool
@@ -50,6 +55,7 @@ class TranspileResult:
     class_name: str = ""
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    error_lines: list[int | None] = field(default_factory=list)
 
 
 @dataclass
