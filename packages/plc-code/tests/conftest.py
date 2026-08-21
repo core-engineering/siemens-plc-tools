@@ -8,7 +8,10 @@ from pathlib import Path
 import pytest
 
 from plc_code.executor.control_flow import ControlFlowTranslator
+from plc_code.executor.generator import UnsupportedStatement, generate_statements
+from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block
+from plc_code.parser.statement_parser import parse_statements
 
 
 def translate_old(block: Block) -> list[tuple[str, list[str]]]:
@@ -50,6 +53,53 @@ def differential_old() -> Callable[[Block], list[tuple[str, list[str]]]]:
         existing text path.
     """
     return translate_old
+
+
+def translate_new(block: Block) -> list[tuple[str, list[str]]]:
+    """The same code units, translated from the statement AST.
+
+    Returns
+    -------
+    list[tuple[str, list[str]]]
+        Same labels and order as ``translate_old``. A unit whose statements the
+        generator cannot yet handle yields the sentinel ``["<unsupported>"]``,
+        so a partly-built generator fails one unit loudly instead of silently
+        matching an empty list.
+    """
+    units: list[tuple[str, list[str]]] = []
+    for index, network in enumerate(block.networks):
+        for region in network.regions:
+            if not region.content:
+                continue
+            label = f"{block.name} network[{index}] region {region.name!r}"
+            units.append((label, _generate_or_sentinel(region.tokens)))
+        if network.content:
+            label = f"{block.name} network[{index}] outside any region"
+            units.append((label, _generate_or_sentinel(network.tokens)))
+    return units
+
+
+def _generate_or_sentinel(tokens: list[Token]) -> list[str]:
+    result = parse_statements(tokens)
+    if result.errors:
+        return ["<unparsed>"]
+    try:
+        return generate_statements(result.statements)
+    except UnsupportedStatement:
+        return ["<unsupported>"]
+
+
+@pytest.fixture
+def differential_new() -> Callable[[Block], list[tuple[str, list[str]]]]:
+    """The AST-path translator, for differential comparison against the text path.
+
+    Returns
+    -------
+    Callable[[Block], list[tuple[str, list[str]]]]
+        ``translate_new``, translating every code unit of a block with the
+        statement-AST generator.
+    """
+    return translate_new
 
 
 @pytest.fixture

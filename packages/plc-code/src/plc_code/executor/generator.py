@@ -15,7 +15,19 @@ construction rather than by re-derivation. Replacing them is pass 2.
 
 from __future__ import annotations
 
+from plc_code.executor.codegen import StatementTranslator
 from plc_code.parser.lexer import Token
+from plc_code.parser.statements import Assignment, Statement
+
+INDENT = "    "
+
+
+class UnsupportedStatement(Exception):
+    """A statement kind the generator has no branch for.
+
+    Raised rather than skipped. A generator that silently emits nothing for a
+    node it does not know is the failure this module exists to remove.
+    """
 
 
 def scl_text(tokens: list[Token]) -> str:
@@ -35,3 +47,45 @@ def scl_text(tokens: list[Token]) -> str:
         translators expect it.
     """
     return " ".join(token.value for token in tokens)
+
+
+def generate_statements(
+    statements: list[Statement],
+    indent: int = 0,
+    translator: StatementTranslator | None = None,
+) -> list[str]:
+    """Generate Python lines for a list of statements.
+
+    Parameters
+    ----------
+    statements : list[Statement]
+        The tree, as ``parse_statements`` returns it.
+    indent : int
+        Depth in four-space units. The caller splices the result into a class
+        body, so the lines come back already indented.
+    translator : StatementTranslator | None
+        The translator to render expressions with. Defaults to a fresh one;
+        passed explicitly so a caller may share state across a whole block.
+
+    Returns
+    -------
+    list[str]
+        Python lines, in source order.
+
+    Raises
+    ------
+    UnsupportedStatement
+        For a statement kind with no branch here.
+    """
+    translator = translator if translator is not None else StatementTranslator()
+    prefix = INDENT * indent
+    lines: list[str] = []
+
+    for statement in statements:
+        if isinstance(statement, Assignment):
+            text = f"{scl_text(statement.target)} := {scl_text(statement.value)} ;"
+            lines.append(prefix + translator.translate_assignment(text))
+            continue
+        raise UnsupportedStatement(f"{type(statement).__name__} at line {statement.line}")
+
+    return lines
