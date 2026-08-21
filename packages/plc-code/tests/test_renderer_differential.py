@@ -19,6 +19,29 @@ this stage is the *count*, not a green run. Once every visitor lands (the last o
 which is Task 5), the count of divergences must be zero and this test starts
 asserting that.
 
+The comparison is made after ``_normalize_whitespace`` on both sides, never before
+and never on one side only. ``reference`` is built from ``scl_text(tokens)``, which
+joins every token with a single space — the same lossy join ``Region.content`` does
+— so a spaced-out reconstruction like ``self.a . b`` differs from the renderer's
+compact ``self.a.b`` on whitespace alone, for a large share of the corpus (printed by
+this test's own ``-s`` output as the gap between "agree" and what a strict
+``reference == candidate`` would have counted). That gap is the reconstruction's
+artefact, not a disagreement about what the expression means, so it is not what this
+differential is for: the bar it should apply is semantic-text equivalence, not
+byte-for-byte equivalence with a serialisation neither side is trying to reproduce.
+Whitespace *inside* a quoted run (a string literal's own text) is never touched by
+the normalisation — see ``_normalize_whitespace`` — so this is not a laxer bar in
+general, only a blind spot for the one kind of noise that ``scl_text`` itself
+introduces.
+
+One divergence this bar deliberately still counts, and which is not fixed here: the
+current translator renders ``#notReady`` as ``self.not Ready`` — invalid Python,
+because its ``NOT``-detection matches the identifier's ``not`` prefix by text. The
+tree-based renderer does not reproduce that bug (there is no visitor for it to
+reproduce; ``VariableRef`` renders the name whole), so the two sides read as
+different text and the slice diverges under any normalisation. That is correct: the
+bug is real, acknowledged, and intentionally not carried forward into the new path.
+
 The shipped fixtures are small and written to exercise specific shapes; the real
 evidence is production SCL. Those projects are read-only siblings of this repository
 and are absent on CI, so this test skips rather than fails when they are not there —
@@ -29,6 +52,7 @@ written into this repository. See ``tests/test_no_confidential_references.py``.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -56,6 +80,55 @@ def _roots() -> list[Path]:
     """
     raw = os.environ.get("PLC_CORPUS_ROOTS", "")
     return [Path(part) for part in raw.split(os.pathsep) if part]
+
+
+#: A single- or double-quoted run, kept intact by `_normalize_whitespace` below.
+#: Matches the same two token shapes `expression_parser._parse_primary` reads —
+#: `'text'` (a string literal, whose internal spacing is part of what it means)
+#: and `"Name"` (a symbol reference, unlikely to carry internal spacing but
+#: protected on the same terms, since both are one token in the source and
+#: normalisation must not reach inside either).
+_QUOTED_RUN = re.compile(r"\"[^\"]*\"|'[^']*'")
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse runs of whitespace to one space, and strip the ends — outside quotes.
+
+    `scl_text` reconstructs a token slice by joining every token with a single
+    space (mirroring `Region.content`'s own lossy join), so `#a . b` and `#a.b`
+    are the same tokens and the same meaning, differing only in this
+    reconstruction's spacing. The renderer works from the tree and never
+    introduces that spacing, so a whitespace-only difference between the two
+    sides is the reconstruction's artefact, not a divergence in what either
+    side computed — see the module docstring for the count this bar closes.
+
+    Text inside a quoted run is left untouched: a string literal's internal
+    whitespace is part of its value (`'a  b'` and `'a b'` are different SCL),
+    and a quoted symbol name is protected on the same terms even though the
+    corpus is not expected to put whitespace inside one. `_QUOTED_RUN` finds
+    both quoting conventions; only the text between and around those runs is
+    collapsed.
+
+    Parameters
+    ----------
+    text : str
+        Either side of the comparison: `scl_text(tokens)` run through
+        `ExpressionTranslator.translate`, or `render(tree)`.
+
+    Returns
+    -------
+    str
+        `text` with whitespace outside quoted runs collapsed to single spaces
+        and the whole result stripped.
+    """
+    pieces: list[str] = []
+    cursor = 0
+    for match in _QUOTED_RUN.finditer(text):
+        pieces.append(re.sub(r"\s+", " ", text[cursor : match.start()]))
+        pieces.append(match.group())
+        cursor = match.end()
+    pieces.append(re.sub(r"\s+", " ", text[cursor:]))
+    return "".join(pieces).strip()
 
 
 def _blocks() -> Iterator[tuple[Path, Block]]:
@@ -91,12 +164,14 @@ def test_expression_level_differential_over_the_corpus(
     the nine expression node types (see the module docstring), so most slices are
     still expected to diverge — either because ``render`` raised
     ``UnsupportedExpression`` for a node it does not cover yet, or because it produced
-    something different from the current translator. Both count as a divergence here;
-    they are not distinguished, because from a caller's perspective they are the same
-    outcome (the new path cannot be trusted for that slice yet). What this run
-    reports is the *count*, printed via ``-s`` — the progress measure for the tasks
-    that add the remaining visitors, until it reaches zero and this test starts
-    asserting that.
+    something different from the current translator, after both sides are run through
+    ``_normalize_whitespace`` (see the module docstring for why the bar is
+    whitespace-insensitive and what stays protected inside a quoted run). Both count
+    as a divergence here; they are not distinguished, because from a caller's
+    perspective they are the same outcome (the new path cannot be trusted for that
+    slice yet). What this run reports is the *count*, printed via ``-s`` — the
+    progress measure for the tasks that add the remaining visitors, until it reaches
+    zero and this test starts asserting that.
 
     Parameters
     ----------
@@ -124,7 +199,7 @@ def test_expression_level_differential_over_the_corpus(
             except UnsupportedExpression:
                 divergences.append(label)
                 continue
-            if reference == candidate:
+            if _normalize_whitespace(reference) == _normalize_whitespace(candidate):
                 agreements += 1
             else:
                 divergences.append(label)
