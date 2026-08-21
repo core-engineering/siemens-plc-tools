@@ -31,3 +31,29 @@ def test_several_assignments_keep_source_order() -> None:
         "self.a = 1",
         "self.b = 2",
     ]
+
+
+def test_an_if_with_elsif_and_else() -> None:
+    source = "IF #a THEN #b := 1 ; ELSIF #c THEN #b := 2 ; ELSE #b := 3 ; END_IF ;"
+    assert generate_statements(_statements(source)) == [
+        "if self.a:",
+        "    self.b = 1",
+        "elif self.c:",
+        "    self.b = 2",
+        "else:",
+        "    self.b = 3",
+    ]
+
+
+def test_an_if_without_else_emits_no_else() -> None:
+    source = "IF #a THEN #b := 1 ; END_IF ;"
+    assert generate_statements(_statements(source)) == ["if self.a:", "    self.b = 1"]
+
+
+def test_a_nested_if_indents_twice() -> None:
+    source = "IF #a THEN IF #b THEN #c := 1 ; END_IF ; END_IF ;"
+    assert generate_statements(_statements(source)) == [
+        "if self.a:",
+        "    if self.b:",
+        "        self.c = 1",
+    ]

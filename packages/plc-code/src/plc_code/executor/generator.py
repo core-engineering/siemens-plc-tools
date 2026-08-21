@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from plc_code.executor.codegen import StatementTranslator
 from plc_code.parser.lexer import Token
-from plc_code.parser.statements import Assignment, Statement
+from plc_code.parser.statements import Assignment, If, Statement
 
 INDENT = "    "
 
@@ -86,6 +86,18 @@ def generate_statements(
             text = f"{scl_text(statement.target)} := {scl_text(statement.value)} ;"
             lines.append(prefix + translator.translate_assignment(text))
             continue
+
+        if isinstance(statement, If):
+            for position, branch in enumerate(statement.branches):
+                keyword = "if" if position == 0 else "elif"
+                condition = translator.translate_if_condition(scl_text(branch.condition))
+                lines.append(f"{prefix}{keyword} {condition}:")
+                lines.extend(generate_statements(branch.body, indent + 1, translator))
+            if statement.else_body:
+                lines.append(f"{prefix}else:")
+                lines.extend(generate_statements(statement.else_body, indent + 1, translator))
+            continue
+
         raise UnsupportedStatement(f"{type(statement).__name__} at line {statement.line}")
 
     return lines
