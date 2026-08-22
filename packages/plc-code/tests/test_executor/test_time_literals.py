@@ -2,27 +2,21 @@
 
 Background
 ----------
-:class:`ExpressionTranslator` substitutes ``#name`` -> ``self.name`` for instance
-variables.  A duration literal carries the same ``#``: ``T#0s``, ``T#150ms``,
-``T#1h30m``.  Hex literals were already protected from that collision by
-``_translate_hex_literals`` (``16#8201`` would otherwise become ``self.8201``);
-duration literals were not, so ``#stateTimer := T#0s;`` transpiled to
-``self.stateTimer = T self.0 s`` and the block failed to compile with
-``ValueError: Failed to compile block: invalid syntax``.
+A duration literal carries a ``#``: ``T#0s``, ``T#150ms``, ``T#1h30m`` -- the same
+character a local-variable reference (``#name``) uses. Unit-level pins of how the
+renderer resolves that ambiguity for a bare expression
+(``renderer._render_typed_literal``, e.g. ``T#0s`` -> ``0.0``) live in
+``test_renderer_references.py``; this file keeps only the end-to-end regression a
+duration literal inside real, running SCL logic once caused: durations only reached
+the harness through *declaration defaults* before this was fixed, never through
+statements, so any block that reset or compared a timer inside its own logic could
+not be executed at all (``#stateTimer := T#0s;`` used to transpile to invalid Python
+that failed to compile).
 
-Durations only reached the harness through *declaration defaults* (parsed by
-``parse_time_literal``), never through statements, so any block that reset or
-compared a timer inside its logic could not be executed at all.
-
-These tests pin:
-    * the supported duration prefixes (``T#``, ``TIME#``, ``LT#``, ``LTIME#``),
-    * simple, sub-second and combined component forms,
-    * durations in conditions as well as assignments,
-    * hex literals still translating (the neighbouring ``#`` collision),
-    * end-to-end harness execution of a timer that accumulates and resets.
+This test pins: end-to-end harness execution of a timer that accumulates an
+injected cycle time and resets to zero on demand.
 """
 
-from plc_code.executor.codegen import ExpressionTranslator, StatementTranslator
 from plc_code.executor.harness import FBTestHarness
 from plc_code.parser.lexer import tokenize_with_newlines
 from plc_code.parser.parser import SCLParser
@@ -65,68 +59,6 @@ FUNCTION_BLOCK "AccumulatingTimer"
     END_NETWORK
 END_FUNCTION_BLOCK
 """
-
-
-class TestTimeLiteralTranslation:
-    """Unit level: a duration literal becomes its value in seconds."""
-
-    def test_zero_seconds(self) -> None:
-        """``T#0s`` is the reset idiom and must not become a name expression."""
-        assert ExpressionTranslator().translate("T#0s") == "0.0"
-
-    def test_whole_seconds(self) -> None:
-        """``T#5s`` translates to 5 seconds."""
-        assert ExpressionTranslator().translate("T#5s") == "5.0"
-
-    def test_milliseconds(self) -> None:
-        """``T#150ms`` translates to 0.15 second."""
-        assert ExpressionTranslator().translate("T#150ms") == "0.15"
-
-    def test_minutes(self) -> None:
-        """``T#10m`` translates to 600 seconds."""
-        assert ExpressionTranslator().translate("T#10m") == "600.0"
-
-    def test_combined_components(self) -> None:
-        """``T#1h30m`` sums its components."""
-        assert ExpressionTranslator().translate("T#1h30m") == "5400.0"
-
-    def test_time_prefix_spelled_out(self) -> None:
-        """``TIME#5s`` is the long spelling of the same literal."""
-        assert ExpressionTranslator().translate("TIME#5s") == "5.0"
-
-    def test_long_time_prefixes(self) -> None:
-        """``LT#`` and ``LTIME#`` carry durations too."""
-        assert ExpressionTranslator().translate("LT#5s") == "5.0"
-        assert ExpressionTranslator().translate("LTIME#5s") == "5.0"
-
-    def test_lowercase_prefix(self) -> None:
-        """SCL keywords are case-insensitive."""
-        assert ExpressionTranslator().translate("t#5s") == "5.0"
-
-    def test_assignment_of_a_duration(self) -> None:
-        """The reset assignment translates as a whole statement."""
-        result = StatementTranslator().translate_assignment("#stateTimer := T#0s;")
-        assert result == "self.stateTimer = 0.0"
-
-    def test_duration_in_a_comparison(self) -> None:
-        """A duration on the right of a comparison keeps the operator intact."""
-        result = ExpressionTranslator().translate("#stateTimer >= T#5s")
-        assert result == "self.stateTimer >= 5.0"
-
-    def test_instance_variable_still_translates(self) -> None:
-        """The neighbouring ``#`` substitution is unaffected."""
-        assert ExpressionTranslator().translate("#stateTimer") == "self.stateTimer"
-
-    def test_hex_literal_still_translates(self) -> None:
-        """Hex literals keep their existing translation."""
-        assert ExpressionTranslator().translate("16#8201") == "0x8201"
-
-    def test_hex_and_duration_together(self) -> None:
-        """Both literal kinds survive in one expression."""
-        result = ExpressionTranslator().translate("#mode = 16#7 AND #timer >= T#5s")
-        assert "0x7" in result
-        assert "5.0" in result
-        assert "self.mode" in result
 
 
 class TestTimeLiteralHarness:

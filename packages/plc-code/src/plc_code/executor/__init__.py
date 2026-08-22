@@ -61,9 +61,6 @@ from plc_code.executor.codegen import (
     CodeGenContext,
     ExpressionTranslator,
     StatementTranslator,
-    translate_assignment,
-    translate_expression,
-    translate_fb_call,
 )
 from plc_code.executor.diagnostics import (
     CODE_SYNTAX,
@@ -159,9 +156,6 @@ __all__ = [
     "CodeGenContext",
     "ExpressionTranslator",
     "StatementTranslator",
-    "translate_expression",
-    "translate_assignment",
-    "translate_fb_call",
     # Test harness
     "FBTestHarness",
     "Step",

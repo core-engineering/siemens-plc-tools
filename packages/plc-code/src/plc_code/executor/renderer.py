@@ -15,8 +15,8 @@ expression node ``plc_code.parser.expressions`` defines.
 
 ``FunctionCall`` comes in two unrelated shapes. A bare builtin (``is_quoted=False``,
 e.g. ``ABS(#x)``) maps through :data:`_BUILTIN_MAP`, the same table
-``ExpressionTranslator._translate_builtins`` uses, with ``LOWER_BOUND``/``UPPER_BOUND``
-singled out the same way ``ExpressionTranslator._translate_array_bounds`` singles
+the old text translator's ``_translate_builtins`` pass used, with ``LOWER_BOUND``/``UPPER_BOUND``
+singled out the same way its ``_translate_array_bounds`` pass singled
 them out -- see :func:`_render_builtin_call`. A quoted block call (``is_quoted=True``,
 e.g. ``"Scaling"(input := #x)``) renders through
 ``ExpressionTranslator._build_named_call`` itself rather than a structural copy of
@@ -57,7 +57,7 @@ _OPERATOR_MAP = OPERATOR_MAP
 #: translator's.
 _BUILTIN_MAP = BUILTIN_MAP
 
-#: The two builtins ``ExpressionTranslator._translate_array_bounds`` rewrites through
+#: The two builtins the old text translator's ``_translate_array_bounds`` pass rewrote through
 #: its own regex instead of the generic ``_translate_builtins`` substitution -- see
 #: :func:`_is_array_bound_call`.
 _ARRAY_BOUND_BUILTINS = frozenset({"LOWER_BOUND", "UPPER_BOUND"})
@@ -69,7 +69,7 @@ _ARRAY_BOUND_BUILTINS = frozenset({"LOWER_BOUND", "UPPER_BOUND"})
 _PASSTHROUGH_BINARY_OPERATORS = frozenset({"&", "+", "-", "*", "/", "<", ">", "<=", ">=", "**"})
 
 #: Duration-literal prefixes, matched case-insensitively: ``T#``, ``TIME#``, ``LT#``,
-#: ``LTIME#``. ``ExpressionTranslator._translate_time_literals`` collapses all four to
+#: ``LTIME#``. The old text translator's ``_translate_time_literals`` pass collapsed all four to
 #: ``T#`` before calling ``parse_time_literal`` -- the runtime stores every duration as
 #: a float number of seconds regardless of which keyword wrote it -- so this does the
 #: same rather than branching on which one matched.
@@ -144,16 +144,14 @@ def render(expression: Expression, string_constants: dict[str, int] | None = Non
     string_constants : dict[str, int] | None, optional
         Mapping from a quoted string-constant literal (e.g. ``'"USER_FREEWHEEL"'``,
         quotes included) to the integer value assigned to it, as collected by
-        ``SCLTranspiler._collect_string_constants``. Mirrors the substitution
-        ``plc_code.executor.generator._map_string_constants`` performs on text: a
-        non-local, non-absolute :class:`~plc_code.parser.expressions.VariableRef`
-        whose quoted spelling is a key of this table renders as ``self.NAME``
-        instead of the quoted literal it would otherwise render as -- see
-        :func:`_render_variable_ref`. A CASE label is not affected by this
-        parameter; that substitution (a matching literal becomes its bare integer)
-        is a different mapping, applied by the generator directly, not by this
-        function. ``None`` (the default) renders every non-local global as a
-        quoted literal, unconditionally.
+        ``SCLTranspiler._collect_string_constants``. A non-local, non-absolute
+        :class:`~plc_code.parser.expressions.VariableRef` whose quoted spelling is a
+        key of this table renders as ``self.NAME`` instead of the quoted literal it
+        would otherwise render as -- see :func:`_render_variable_ref`. A CASE label
+        is not affected by this parameter; that substitution (a matching literal
+        becomes its bare integer) is a different mapping, applied by the generator
+        directly, not by this function. ``None`` (the default) renders every
+        non-local global as a quoted literal, unconditionally.
 
     Returns
     -------
@@ -212,7 +210,7 @@ def _render_literal(node: Literal) -> str:
 def _render_typed_literal(node: TypedLiteral) -> str:
     """``16#FF`` as a lowercase Python hex literal; a duration as seconds; a chain resolved.
 
-    Structural equivalent of ``ExpressionTranslator._translate_hex_literals`` and
+    Structural equivalent of the old text translator's ``_translate_hex_literals`` pass and
     ``_translate_time_literals`` for the ``16``/duration prefixes, plus a case those
     have no equivalent for: a *chained* literal like ``B#16#FF`` (byte, hexadecimal,
     ``FF``) or a bare-value one like ``REAL#1000.0``. The text path throws the type
@@ -280,8 +278,8 @@ def _render_variable_ref(node: VariableRef, string_constants: dict[str, int] | N
         ``self.{name}`` for a local (``#name``) or a mapped string constant;
         ``%{name}`` unchanged for an absolute address (``%name``); the bare name
         for ``ENO``; ``"{name}"`` (quoted) for any other global, matching what the
-        current translator leaves untouched when a quoted name is not immediately
-        followed by ``.member`` (``GLOBAL_DB_PATTERN`` requires the dot; ``Member``
+        old text translator left untouched when a quoted name was not immediately
+        followed by ``.member`` (its ``GLOBAL_DB_PATTERN`` regex required the dot; ``Member``
         handles that case, not this function).
     """
     if node.is_local:
@@ -307,17 +305,14 @@ def _is_global_db_ref(node: Expression, string_constants: dict[str, int] | None 
         See :func:`render`. A ``VariableRef`` whose quoted spelling is a key of
         this table is a mapped string constant, not a global DB, and returns
         False here -- the substitution in :func:`_render_variable_ref` takes
-        priority, mirroring the order the text path applies its own
-        ``_map_string_constants`` rewrite before ``GLOBAL_DB_PATTERN`` ever sees
-        the text.
+        priority.
 
     Returns
     -------
     bool
         True for a ``VariableRef`` that is neither local (``#name``) nor absolute
         (``%name``) nor the bare ``ENO`` nor a mapped string constant -- i.e. one
-        that renders quoted, as ``ExpressionTranslator.GLOBAL_DB_PATTERN`` requires
-        (a literal ``"name"`` immediately followed by ``.``).
+        that renders quoted, as a bare quoted global followed by ``.member`` requires.
     """
     if not (
         isinstance(node, VariableRef)
@@ -334,10 +329,10 @@ def _is_global_db_ref(node: Expression, string_constants: dict[str, int] | None 
 def _render_member(node: Member, string_constants: dict[str, int] | None = None) -> str:
     """``base.name``, substituting the runtime lookup for a bare global base.
 
-    Structural equivalent of ``ExpressionTranslator._translate_global_db``: when the
+    Structural equivalent of the old text translator's ``_translate_global_db`` pass: when the
     base is a bare quoted global (see :func:`_is_global_db_ref`), it renders through
     ``self._runtime.global_dbs[...]`` instead of through :func:`_render_variable_ref`,
-    exactly as the current translator's ``GLOBAL_DB_PATTERN`` substitutes there. Any
+    exactly as the old text translator's ``GLOBAL_DB_PATTERN`` regex substituted there. Any
     other base -- local, absolute, a mapped string constant, or itself a
     ``Member``/``Index``/``Grouping`` -- renders through :func:`render` normally.
 
@@ -374,9 +369,10 @@ def _render_member(node: Member, string_constants: dict[str, int] | None = None)
 def _render_index(node: Index, string_constants: dict[str, int] | None = None) -> str:
     """``base[i]`` for one subscript; ``base[i, j]`` chained as ``base[i][j]``.
 
-    Structural equivalent of ``ExpressionTranslator._translate_multi_index``: the base
+    Structural equivalent of the old text translator's ``_translate_multi_index`` pass: the base
     renders through :func:`render` unchanged (a quoted global base is not substituted
-    here -- only ``Member`` does that, matching ``GLOBAL_DB_PATTERN``'s requirement of
+    here -- only ``Member`` does that, matching the old text translator's ``GLOBAL_DB_PATTERN``
+    regex's requirement of
     a literal ``.`` after the quoted name), and every subscript becomes its own
     bracket pair, in source order.
 
@@ -400,7 +396,7 @@ def _render_index(node: Index, string_constants: dict[str, int] | None = None) -
 def _render_unary_op(node: UnaryOp, string_constants: dict[str, int] | None = None) -> str:
     """``NOT x`` as ``not x``; ``-x`` unchanged, both with a space after the operator.
 
-    Structural equivalent of ``ExpressionTranslator._translate_operators``: ``NOT``
+    Structural equivalent of the old text translator's ``_translate_operators`` pass: ``NOT``
     is looked up in :data:`_OPERATOR_MAP` (``"not"``); ``-`` has no entry there
     because its SCL and Python spellings are identical, so it renders as-is. Either
     way the current translator's regex passes always leave a space between the
@@ -435,7 +431,7 @@ def _render_unary_op(node: UnaryOp, string_constants: dict[str, int] | None = No
 def _render_binary_op(node: BinaryOp, string_constants: dict[str, int] | None = None) -> str:
     """One binary operator between its rendered operands.
 
-    Structural equivalent of ``ExpressionTranslator._translate_operators``: looks
+    Structural equivalent of the old text translator's ``_translate_operators`` pass: looks
     ``node.operator`` up in :data:`_OPERATOR_MAP` first (``AND``, ``OR``, ``<>``,
     ``MOD``, ``DIV``), then falls back to the standalone-``=`` rule the current
     translator applies with its own regex rather than through ``OPERATOR_MAP``
@@ -531,7 +527,7 @@ def _is_array_bound_call(node: FunctionCall) -> bool:
 def _render_builtin_call(node: FunctionCall, string_constants: dict[str, int] | None = None) -> str:
     """A bare (unquoted) call: a mapped builtin, the ``ARR``/``DIM`` bound pair, or neither.
 
-    Structural equivalent of ``ExpressionTranslator._translate_builtins`` together
+    Structural equivalent of the old text translator's ``_translate_builtins`` pass together
     with ``_translate_array_bounds``, which runs first and claims ``LOWER_BOUND``/
     ``UPPER_BOUND`` before the generic substitution ever sees them (see that
     method's own skip of both names). An unmapped name -- ``node.name`` not a key

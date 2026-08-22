@@ -9,10 +9,10 @@ in that AST, so the statement parser rejects them outright and
 failure is already surfaced, as ``CODE_TRANSPILE`` below.
 
 What is not rejected up front is an unmapped builtin such as ``SEL`` or
-``LIMIT``: it parses as an ordinary call, so ``translate_simple_statement``
-(the dispatcher shared by the generator and, previously, the now-deleted text
-path) hands it to the expression translator and emits whatever comes back —
-a reference to a name nothing defines. That reaches a downstream project as a
+``LIMIT``: it parses as an ordinary ``FunctionCall``, so
+``plc_code.executor.renderer._render_builtin_call`` renders it with its bare,
+unmapped name (``py_func = _BUILTIN_MAP.get(upper_name, node.name)``) — a
+reference to a name nothing defines. That reaches a downstream project as a
 ``NameError`` the first time the branch is taken, a long way from the SCL
 that caused it.
 

@@ -8,11 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from plc_code.executor.codegen import (
-    CodeGenContext,
-    ExpressionTranslator,
-    StatementTranslator,
-)
+from plc_code.executor.codegen import CodeGenContext
 from plc_code.executor.generator import generate_statements
 from plc_code.executor.models import CompileResult, TranspileOptions, TranspileResult
 from plc_code.executor.types import ArrayTypeInfo, SCLType, TypeInfo, TypeMapper
@@ -42,8 +38,6 @@ class SCLTranspiler:
     options: TranspileOptions = field(default_factory=TranspileOptions)
     type_mapper: TypeMapper = field(default_factory=TypeMapper)
     fb_type_resolver: Callable[[str], bool] | None = None
-    _expr_translator: ExpressionTranslator = field(default_factory=ExpressionTranslator, repr=False)
-    _stmt_translator: StatementTranslator = field(default_factory=StatementTranslator, repr=False)
     _lines: list[str] = field(default_factory=list, repr=False)
     _ctx: CodeGenContext = field(default_factory=CodeGenContext, repr=False)
     _errors: list[str] = field(default_factory=list, repr=False)

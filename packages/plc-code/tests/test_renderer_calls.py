@@ -1,19 +1,19 @@
 """Unit tests for `render` over `FunctionCall` (Task 5).
 
-Every expected value was taken by running `ExpressionTranslator().translate(...)`
-directly (see the task report), not copied from the brief's table -- the two
-`sqrt`/`atan2` probes there and here match what the current translator actually
-does. The quoted-name-parameter case pins a pre-existing `_build_named_call` bug
-(`""x"": ...`, not valid Python) that this renderer reproduces on purpose, because
-it gets there by calling `_build_named_call` itself rather than guessing at its
-behaviour -- see `renderer._render_named_call`'s docstring.
+Every expected value was verified against the (now-deleted) text translator while
+this renderer was being proven equivalent to it (see the task report), not copied
+from the brief's table -- the two `sqrt`/`atan2` probes there and here matched what
+the text translator actually did. The quoted-name-parameter case pins a
+pre-existing `_build_named_call` bug (`""x"": ...`, not valid Python) that this
+renderer reproduces on purpose, because it gets there by calling
+`_build_named_call` itself rather than guessing at its behaviour -- see
+`renderer._render_named_call`'s docstring.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from plc_code.executor.codegen import ExpressionTranslator
 from plc_code.executor.renderer import UnsupportedExpression, render
 from plc_code.parser.expressions import CallArgument, FunctionCall, Literal, VariableRef
 
@@ -135,12 +135,13 @@ def test_a_bare_builtin_call_with_an_output_argument_raises() -> None:
 def test_a_bare_builtin_call_with_only_named_input_arguments_still_renders_positionally() -> None:
     """`:=` bindings are unaffected by the output-binding raise above -- their names
     are still discarded and their values still rendered positionally, exactly as
-    before this fix. The expected string comes from `ExpressionTranslator().translate`
-    on the positional-equivalent shape: probed directly, the old path does not honour
-    `:=` naming for a bare call at all (it rewrites `:=` to `==` via `OPERATOR_MAP`),
-    so the positional shape is the only one where the old path's output means what
-    `render` also means, and is safe to reuse as the expected value here."""
-    expected = ExpressionTranslator().translate("ATAN2(#a, #b)")
+    before this fix. `ATAN2` maps to `math.atan2` in `BUILTIN_MAP`, so the expected
+    value is the positional-equivalent shape's rendering (verified directly against
+    the old text path while this renderer was being proven equivalent to it): the
+    old path does not honour `:=` naming for a bare call at all (it rewrites `:=`
+    to `==` via `OPERATOR_MAP`), so the positional shape was the only one where the
+    old path's output meant what `render` also means."""
+    expected = "math.atan2(self.a, self.b)"
     call = FunctionCall(
         line=1,
         column=1,

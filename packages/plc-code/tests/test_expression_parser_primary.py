@@ -76,20 +76,18 @@ class TestStringLiteralVsVariableRef:
         assert isinstance(node, FunctionCall)
         assert node.name == "Block"
 
-    def test_render_of_a_single_quoted_literal_matches_the_current_translator(self) -> None:
-        """`render` (tree path) reproduces `ExpressionTranslator().translate` (text path).
+    def test_render_of_a_single_quoted_literal_keeps_its_quotes(self) -> None:
+        """A single-quoted SCL string literal carries through unmodified.
 
-        The text translator carries a single-quoted literal through unmodified —
-        Python's own single-quoted syntax already matches SCL's — so the tree path
-        has to keep the quotes rather than stripping them, to reach the same text.
+        Python's own single-quoted syntax already matches SCL's, so the tree path
+        keeps the quotes rather than stripping them.
         """
-        from plc_code.executor.codegen import ExpressionTranslator
         from plc_code.executor.renderer import render
 
         source = "'coder'"
         node = _parse(source).expression
         assert isinstance(node, Literal)
-        assert render(node) == ExpressionTranslator().translate(source)
+        assert render(node) == "'coder'"
 
 
 class TestPostfix:
