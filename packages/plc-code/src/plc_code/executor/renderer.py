@@ -10,10 +10,18 @@ can still mangle. A node this module has no visitor for raises
 :class:`UnsupportedExpression` rather than emitting something plausible.
 
 This module covers ``Literal``, ``TypedLiteral``, ``VariableRef``, ``Member``,
-``Index``, ``Grouping``, ``UnaryOp`` and ``BinaryOp`` -- the access, literal and
-operator shapes ``plc_code.parser.expressions`` documents as dominating the corpus.
-``FunctionCall`` is a later task in the same plan (calls); :func:`render` raises
-:class:`UnsupportedExpression` for it today.
+``Index``, ``Grouping``, ``UnaryOp``, ``BinaryOp`` and ``FunctionCall`` -- every
+expression node ``plc_code.parser.expressions`` defines.
+
+``FunctionCall`` comes in two unrelated shapes. A bare builtin (``is_quoted=False``,
+e.g. ``ABS(#x)``) maps through :data:`_BUILTIN_MAP`, the same table
+``ExpressionTranslator._translate_builtins`` uses, with ``LOWER_BOUND``/``UPPER_BOUND``
+singled out the same way ``ExpressionTranslator._translate_array_bounds`` singles
+them out -- see :func:`_render_builtin_call`. A quoted block call (``is_quoted=True``,
+e.g. ``"Scaling"(input := #x)``) renders through
+``ExpressionTranslator._build_named_call`` itself rather than a structural copy of
+it -- see :func:`_render_named_call` for why that call needed a placeholder rather
+than a direct argument.
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ from plc_code.executor.types import parse_time_literal
 from plc_code.parser.expressions import (
     BinaryOp,
     Expression,
+    FunctionCall,
     Grouping,
     Index,
     Literal,
@@ -32,11 +41,27 @@ from plc_code.parser.expressions import (
     VariableRef,
 )
 
+#: A live instance whose only use here is calling ``_build_named_call`` for a quoted
+#: block call -- see :func:`_render_named_call`. ``translate``/``_build_named_call``
+#: depend only on their arguments, not on any state accumulated across calls, so one
+#: shared instance is safe to reuse for that rather than constructing one per call.
+_TRANSLATOR = ExpressionTranslator()
+
 #: ``ExpressionTranslator.OPERATOR_MAP``, read from an instance because it is a
 #: dataclass field with a ``default_factory`` -- it does not exist on the class
 #: itself. Imported rather than copied so this module's operator table cannot drift
 #: from the regex translator's.
-_OPERATOR_MAP = ExpressionTranslator().OPERATOR_MAP
+_OPERATOR_MAP = _TRANSLATOR.OPERATOR_MAP
+
+#: ``ExpressionTranslator.BUILTIN_MAP``, imported the same way as :data:`_OPERATOR_MAP`
+#: and for the same reason -- so this module's builtin table cannot drift from the
+#: regex translator's.
+_BUILTIN_MAP = _TRANSLATOR.BUILTIN_MAP
+
+#: The two builtins ``ExpressionTranslator._translate_array_bounds`` rewrites through
+#: its own regex instead of the generic ``_translate_builtins`` substitution -- see
+#: :func:`_is_array_bound_call`.
+_ARRAY_BOUND_BUILTINS = frozenset({"LOWER_BOUND", "UPPER_BOUND"})
 
 #: Binary operators the current translator leaves exactly as written -- their SCL
 #: spelling is already valid Python -- because they carry no entry in
@@ -50,6 +75,35 @@ _PASSTHROUGH_BINARY_OPERATORS = frozenset({"&", "+", "-", "*", "/", "<", ">", "<
 #: a float number of seconds regardless of which keyword wrote it -- so this does the
 #: same rather than branching on which one matched.
 _DURATION_PREFIXES = frozenset({"T", "TIME", "LT", "LTIME"})
+
+#: Elementary SCL type names that only ever wrap a *size*, never a value syntax of
+#: their own -- unlike ``DATE#``, ``CHAR#``, ``S5T#``, .... Python has no distinct
+#: byte/word/dword/sized-numeric literal syntax, so a chained or bare literal under
+#: one of these (``B#16#FF``, ``REAL#1000.0``) renders as whatever is underneath the
+#: prefix, stripped -- see :func:`_render_typed_literal`.
+_SIZE_PREFIXES = frozenset(
+    {
+        "B",
+        "BYTE",
+        "W",
+        "WORD",
+        "DW",
+        "DWORD",
+        "LW",
+        "LWORD",
+        "BOOL",
+        "SINT",
+        "INT",
+        "DINT",
+        "LINT",
+        "USINT",
+        "UINT",
+        "UDINT",
+        "ULINT",
+        "REAL",
+        "LREAL",
+    }
+)
 
 #: The one identifier SCL reads bare and unquoted despite carrying
 #: ``VariableRef.is_local=False``: a function block's own ``ENO`` output. See
@@ -112,6 +166,8 @@ def render(expression: Expression) -> str:
         return _render_unary_op(expression)
     if isinstance(expression, BinaryOp):
         return _render_binary_op(expression)
+    if isinstance(expression, FunctionCall):
+        return _render_function_call(expression)
     raise UnsupportedExpression(expression)
 
 
@@ -139,14 +195,26 @@ def _render_literal(node: Literal) -> str:
 
 
 def _render_typed_literal(node: TypedLiteral) -> str:
-    """``16#FF`` as a lowercase Python hex literal; a duration as seconds.
+    """``16#FF`` as a lowercase Python hex literal; a duration as seconds; a chain resolved.
 
-    Structural equivalents of ``ExpressionTranslator._translate_hex_literals`` and
-    ``_translate_time_literals`` -- the only two prefixes the current translator
-    gives real meaning to. Every other prefix found in the corpus (``B#16#FF``,
-    ``REAL#1000.0``, ...) is out of scope here: the current translator's own output
-    for those is already not valid Python -- see this task's report -- so there is
-    nothing correct to reproduce.
+    Structural equivalent of ``ExpressionTranslator._translate_hex_literals`` and
+    ``_translate_time_literals`` for the ``16``/duration prefixes, plus a case those
+    have no equivalent for: a *chained* literal like ``B#16#FF`` (byte, hexadecimal,
+    ``FF``) or a bare-value one like ``REAL#1000.0``. The text path throws the type
+    information away before it can help -- probed directly, ``translate("B#16#FF")``
+    returns ``'bself.0xff'`` (the ``B`` glued onto the value as if it were an
+    identifier) and ``translate("#a := B#16#FF")`` returns ``'self.a == bself.0xff'``
+    (the assignment has become a comparison too) -- so there is nothing correct to be
+    equivalent to there. The tree still has ``TypedLiteral(prefix="B", value="16#FF")``
+    intact, which is enough: a size prefix in :data:`_SIZE_PREFIXES` carries no value
+    of its own -- Python has no distinct byte/word/dword literal syntax -- so it is
+    stripped and the rest of ``node.value`` is rendered instead, recursively when that
+    rest is itself chained (``value`` still contains a ``#``) and through
+    :func:`_render_literal` when it is not (``REAL#1000.0``'s ``"1000.0"`` is already
+    a valid Python float literal). A prefix that carries its own value syntax instead
+    of a mere size -- ``DATE#``, ``CHAR#``, ``S5T#``, ... -- is not in
+    :data:`_SIZE_PREFIXES` and still raises: there is no equivalent Python literal to
+    strip down to, and guessing one is not this function's job.
 
     Parameters
     ----------
@@ -156,18 +224,26 @@ def _render_typed_literal(node: TypedLiteral) -> str:
     Returns
     -------
     str
-        A Python hex literal or a ``float`` repr in seconds.
+        A Python hex literal, a ``float`` repr in seconds, or (for a stripped size
+        prefix) whatever :func:`_render_typed_literal` or :func:`_render_literal`
+        returns for the value underneath it.
 
     Raises
     ------
     UnsupportedExpression
-        ``node.prefix`` is neither a hex marker nor a duration marker.
+        ``node.prefix`` is neither a hex marker, a duration marker, nor a size
+        prefix in :data:`_SIZE_PREFIXES`.
     """
     prefix = node.prefix.upper()
     if prefix == "16":
         return hex(int(node.value, 16))
     if prefix in _DURATION_PREFIXES:
         return repr(parse_time_literal(f"T#{node.value}"))
+    if prefix in _SIZE_PREFIXES:
+        inner_prefix, separator, inner_value = node.value.partition("#")
+        if separator:
+            return _render_typed_literal(TypedLiteral(node.line, node.column, inner_prefix, inner_value))
+        return _render_literal(Literal(node.line, node.column, node.value))
     raise UnsupportedExpression(node)
 
 
@@ -353,3 +429,142 @@ def _render_binary_op(node: BinaryOp) -> str:
     else:
         raise UnsupportedExpression(node)
     return f"{render(node.left)} {py_operator} {render(node.right)}"
+
+
+def _render_function_call(node: FunctionCall) -> str:
+    """Dispatch a call node to its builtin or quoted-block renderer.
+
+    Parameters
+    ----------
+    node : FunctionCall
+        The call to render.
+
+    Returns
+    -------
+    str
+        The rendered call, from :func:`_render_named_call` when ``node.is_quoted``,
+        from :func:`_render_builtin_call` otherwise.
+    """
+    if node.is_quoted:
+        return _render_named_call(node)
+    return _render_builtin_call(node)
+
+
+def _is_array_bound_call(node: FunctionCall) -> bool:
+    """Whether ``node`` matches the exact shape ``_translate_array_bounds`` rewrites.
+
+    That pass's regex requires exactly two arguments, bound by the bare (unquoted)
+    names ``ARR`` and ``DIM`` in that order -- a positional call, a different
+    argument count, a quoted parameter name, or ``DIM`` before ``ARR`` all fail to
+    match it and fall through to :func:`_render_builtin_call`'s generic path instead,
+    which leaves ``LOWER_BOUND``/``UPPER_BOUND`` spelled bare -- see its docstring.
+
+    Parameters
+    ----------
+    node : FunctionCall
+        A call whose ``name.upper()`` is ``LOWER_BOUND`` or ``UPPER_BOUND``.
+
+    Returns
+    -------
+    bool
+        True when ``node.arguments`` is exactly ``[ARR := ..., DIM := ...]`` with
+        neither name quoted nor either argument output-bound.
+    """
+    if len(node.arguments) != 2:
+        return False
+    arr_arg, dim_arg = node.arguments
+    return (
+        not arr_arg.is_output
+        and not arr_arg.is_quoted_name
+        and arr_arg.name.upper() == "ARR"
+        and not dim_arg.is_output
+        and not dim_arg.is_quoted_name
+        and dim_arg.name.upper() == "DIM"
+    )
+
+
+def _render_builtin_call(node: FunctionCall) -> str:
+    """A bare (unquoted) call: a mapped builtin, the ``ARR``/``DIM`` bound pair, or neither.
+
+    Structural equivalent of ``ExpressionTranslator._translate_builtins`` together
+    with ``_translate_array_bounds``, which runs first and claims ``LOWER_BOUND``/
+    ``UPPER_BOUND`` before the generic substitution ever sees them (see that
+    method's own skip of both names). An unmapped name -- ``node.name`` not a key
+    of :data:`_BUILTIN_MAP` -- keeps its bare spelling, exactly as the current
+    translator leaves a call it has no table entry for untouched.
+
+    Parameters
+    ----------
+    node : FunctionCall
+        The call to render; ``node.is_quoted`` is False.
+
+    Returns
+    -------
+    str
+        ``(lambda ...)(arr, dim)`` for the array-bound shape; ``py_func(args, ...)``
+        otherwise, with each argument rendered through :func:`render` and joined by
+        ``", "``.
+    """
+    upper_name = node.name.upper()
+    if upper_name in _ARRAY_BOUND_BUILTINS and _is_array_bound_call(node):
+        py_func = _BUILTIN_MAP[upper_name]
+        arr_text = render(node.arguments[0].value)
+        dim_text = render(node.arguments[1].value)
+        return f"({py_func})({arr_text}, {dim_text})"
+    py_func = _BUILTIN_MAP.get(upper_name, node.name)
+    args_text = ", ".join(render(argument.value) for argument in node.arguments)
+    return f"{py_func}({args_text})"
+
+
+def _render_named_call(node: FunctionCall) -> str:
+    """A quoted block call, rendered by calling ``ExpressionTranslator._build_named_call``.
+
+    ``_build_named_call`` takes the argument list as unparsed text and re-derives
+    Python from it -- it re-splits on top-level commas and recursively calls
+    ``self.translate`` on each value's *text*. Handing it this node's already-rendered
+    Python for that text is unsafe, not merely inelegant: probing it directly showed
+    two independent corruptions -- ``self.translate("math.sqrt(self.x)")`` doubles to
+    ``"math.math.sqrt(self.x)"`` (the builtin substitution's own regex re-matches the
+    ``sqrt(`` already inside ``math.sqrt(``), and ``self.translate("self.notReady")``
+    becomes ``"self.not Ready"`` (the acknowledged ``NOT``-prefix bug, triggered here
+    on text that never should have reached it a second time). So this calls
+    ``_build_named_call`` with each argument's value replaced by an inert
+    ``__ARGVAL<n>__`` placeholder -- a bare word token none of ``translate``'s regex
+    passes touch, confirmed by probe -- and substitutes this function's own
+    :func:`render` output back in once ``_build_named_call`` has returned, the same
+    placeholder-then-restore shape ``_extract_string_literals`` and
+    ``_extract_named_calls`` already use internally for the same reason. The result is
+    ``_build_named_call``'s own argument-selection rule (an argument with no name, or
+    written ``name => value``, is dropped -- see its ``":=" in param`` check) and its
+    own wrapping text, not a re-derived copy of either.
+
+    A parameter name written quoted (``"x" := #a``) is passed through quoted, because
+    that is what reproduces ``_build_named_call``'s own (pre-existing, unrelated to
+    this task) mishandling of that shape -- calling the real method is what makes that
+    reproduction structural rather than a duplicated guess at its bug.
+
+    Parameters
+    ----------
+    node : FunctionCall
+        The call to render; ``node.is_quoted`` is True.
+
+    Returns
+    -------
+    str
+        ``_build_named_call``'s own output, with every placeholder replaced by the
+        corresponding argument's :func:`render` text.
+    """
+    placeholders: dict[str, str] = {}
+    bound_arguments: list[str] = []
+    for index, argument in enumerate(node.arguments):
+        if argument.is_output or not argument.name:
+            continue
+        token = f"__ARGVAL{index}__"
+        placeholders[token] = render(argument.value)
+        name_text = f'"{argument.name}"' if argument.is_quoted_name else argument.name
+        bound_arguments.append(f"{name_text} := {token}")
+    params_str = ", ".join(bound_arguments)
+    result = _TRANSLATOR._build_named_call(node.name, params_str)  # noqa: SLF001
+    for token, value in placeholders.items():
+        result = result.replace(token, value)
+    return result
