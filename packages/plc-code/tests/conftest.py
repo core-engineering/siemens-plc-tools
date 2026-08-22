@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
+from plc_code.executor.codegen import ExpressionTranslator
+from plc_code.executor.generator import scl_text
+from plc_code.executor.renderer import UnsupportedExpression, render
 from plc_code.parser import parse_scl_file
 from plc_code.parser.expressions import Expression
 from plc_code.parser.lexer import Token
@@ -155,6 +159,30 @@ def expression_slices() -> Callable[[Block], Iterator[tuple[str, list[Token], Ex
     return _block_expression_slices
 
 
+@pytest.fixture
+def statement_expression_slices() -> (
+    Callable[[list[Statement], str], Iterator[tuple[str, list[Token], Expression | None]]]
+):
+    """Expose the per-unit expression-slice walker as a fixture.
+
+    The per-unit counterpart to ``expression_slices`` above: that fixture walks a
+    whole ``Block`` (every network and region); this one walks a single already-parsed
+    statement list (one region, or one network's own out-of-region tokens) — exactly
+    the granularity ``test_generator_native_differential.py``'s unit-level differential
+    needs to ask "which expression slices live inside the one unit that just diverged?"
+    without re-parsing the block itself.
+
+    Returns
+    -------
+    Callable[[list[Statement], str], Iterator[tuple[str, list[Token], Expression | None]]]
+        ``_statement_expression_slices``, so a test calls
+        ``statement_expression_slices(statements, label_prefix)`` for one
+        ``(label, tokens, tree)`` entry per non-empty expression-bearing slice found by
+        walking ``statements`` (recursing into nested bodies).
+    """
+    return _statement_expression_slices
+
+
 def _corpus_roots() -> list[Path]:
     """Corpus roots, from ``PLC_CORPUS_ROOTS`` (``os.pathsep``-separated).
 
@@ -214,6 +242,190 @@ def corpus_blocks() -> tuple[tuple[Path, Block], ...]:
             if block is not None and block.name:
                 blocks.append((path, block))
     return tuple(blocks)
+
+
+#: A single- or double-quoted run, kept intact by `_normalize_whitespace` below.
+#: Matches the same two token shapes `expression_parser._parse_primary` reads —
+#: `'text'` (a string literal, whose internal spacing is part of what it means)
+#: and `"Name"` (a symbol reference, unlikely to carry internal spacing but
+#: protected on the same terms, since both are one token in the source and
+#: normalisation must not reach inside either).
+_QUOTED_RUN = re.compile(r"\"[^\"]*\"|'[^']*'")
+
+#: A run of one or more whitespace characters, outside a quoted run. Whether one
+#: is layout (removed) or meaningful (kept) depends only on what sits immediately
+#: on either side of it — see `_normalize_whitespace`.
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _is_word_character(char: str) -> bool:
+    """Whether `char` is a letter, digit, or underscore.
+
+    Parameters
+    ----------
+    char : str
+        A single character, or `""` for "off the end of the segment" — which is
+        never a word character, so whitespace flush against either end of a
+        segment between quoted runs is always layout, never protected.
+
+    Returns
+    -------
+    bool
+        `char.isalnum() or char == "_"` for a non-empty `char`; `False` for `""`.
+    """
+    return char != "" and (char.isalnum() or char == "_")
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Remove layout whitespace outside quoted runs; keep whitespace between two words.
+
+    `scl_text` (`plc_code.executor.generator`) reconstructs a token slice by joining
+    every token with a single space (mirroring `Region.content`'s own lossy join), so
+    `#a . b` and `#a.b` are the same tokens and the same meaning, differing only in
+    whether that reconstruction put a space next to the `.`. A tree-driven renderer
+    never introduces such a space, so a difference that is nothing but this kind of
+    join-spacing is the reconstruction's artefact, not a divergence in what either side
+    computed — see `test_renderer_differential.py`'s module docstring, which this
+    principle was first written for, for the full rationale and fix-round history.
+
+    The rule is a principle, not a punctuation list: **whitespace between two word
+    characters is meaningful and is kept exactly as written; every other whitespace run
+    is layout and is removed entirely** (not collapsed to one space — `scl_text` never
+    produces a run longer than one space outside a quoted run, so removal and collapsing
+    agree there, but removal is also correct for the case a collapse would get wrong:
+    whitespace flush against the start or end of a segment, where there is no *word*
+    character on one side to collapse a run down to, only nothing).
+
+    A space between two word characters is left exactly as written on both sides, so
+    `self.not Ready` and `self.notReady` keep comparing unequal — the acknowledged
+    `#notReady` → `self.not Ready` translator bug (see `test_renderer_differential.py`)
+    must not be papered over by this normalisation.
+
+    Text inside a quoted run is left untouched: a string literal's internal whitespace
+    is part of its value (`'a  b'` and `'a b'` are different SCL), and a quoted symbol
+    name is protected on the same terms even though the corpus is not expected to put
+    whitespace inside one. `_QUOTED_RUN` finds both quoting conventions; only the text
+    between and around those runs is examined.
+
+    Parameters
+    ----------
+    text : str
+        Either side of a comparison built from `scl_text(tokens)` (directly, or via a
+        translator/generator run over it), or from a tree-driven `render`.
+
+    Returns
+    -------
+    str
+        `text` with every whitespace run removed except one with a word character
+        immediately on both sides, outside quoted runs; quoted runs unchanged.
+    """
+
+    def _strip_layout_whitespace(segment: str) -> str:
+        def _replace(match: re.Match[str]) -> str:
+            start, end = match.span()
+            before = segment[start - 1] if start > 0 else ""
+            after = segment[end] if end < len(segment) else ""
+            if _is_word_character(before) and _is_word_character(after):
+                return match.group()
+            return ""
+
+        return _WHITESPACE_RUN.sub(_replace, segment)
+
+    pieces: list[str] = []
+    cursor = 0
+    for match in _QUOTED_RUN.finditer(text):
+        pieces.append(_strip_layout_whitespace(text[cursor : match.start()]))
+        pieces.append(match.group())
+        cursor = match.end()
+    pieces.append(_strip_layout_whitespace(text[cursor:]))
+    return "".join(pieces)
+
+
+@pytest.fixture
+def normalize_whitespace() -> Callable[[str], str]:
+    """Expose `_normalize_whitespace` as a fixture.
+
+    A second differential (`test_generator_native_differential.py`) needs the same
+    layout-whitespace-removal principle this module's docstring on `_normalize_whitespace`
+    explains at length; this repository forbids `__init__.py` in a `tests/` directory
+    (see `CLAUDE.md` §6), so a plain cross-file import is not the convention here — a
+    fixture is, matching `expression_slices` above.
+
+    Returns
+    -------
+    Callable[[str], str]
+        `_normalize_whitespace`.
+    """
+    return _normalize_whitespace
+
+
+def _expression_slice_diverges(
+    tokens: list[Token],
+    tree: Expression | None,
+    translator: ExpressionTranslator,
+) -> bool:
+    """Whether one expression slice's tree-rendered Python disagrees with the current translator's.
+
+    The single per-slice judgement both ``test_renderer_differential.py``'s corpus
+    differential and ``test_generator_native_differential.py``'s unit-level attribution
+    check are built from, kept in one place so the two never drift into judging the same
+    slice two different ways. A slice with no parsed tree never disagrees here (there is
+    nothing to render) — a caller that also tracks "slices without a tree" as its own
+    category, the way the expression-level differential does, checks ``tree is None``
+    itself before calling this.
+
+    Parameters
+    ----------
+    tokens : list[Token]
+        The slice's raw token run, as a statement node carries it (e.g.
+        ``Assignment.value``).
+    tree : Expression | None
+        The slice's parsed tree, or ``None`` when the slice could not be read as an
+        expression.
+    translator : ExpressionTranslator
+        The reference (text-path) translator to compare against.
+
+    Returns
+    -------
+    bool
+        True when ``tree`` is not ``None`` and either :func:`render` raised
+        :class:`~plc_code.executor.renderer.UnsupportedExpression` or its output,
+        after :func:`_normalize_whitespace`, differs from the translator's; False
+        otherwise (including when ``tree`` is ``None``).
+    """
+    if tree is None:
+        return False
+    text = scl_text(tokens)
+    reference = translator.translate(text)
+    try:
+        candidate = render(tree)
+    except UnsupportedExpression:
+        return True
+    return _normalize_whitespace(reference) != _normalize_whitespace(candidate)
+
+
+@pytest.fixture
+def expression_slice_diverges() -> Callable[[list[Token], Expression | None], bool]:
+    """Expose ``_expression_slice_diverges`` as a fixture, with its own ``ExpressionTranslator``.
+
+    One ``ExpressionTranslator`` is built once per test (mirroring how
+    ``test_expression_level_differential_over_the_corpus`` built one and reused it
+    across every slice) rather than once per call, since ``translate`` depends only on
+    its argument, not on accumulated state.
+
+    Returns
+    -------
+    Callable[[list[Token], Expression | None], bool]
+        A closure over one ``ExpressionTranslator`` calling ``_expression_slice_diverges``,
+        so a test calls ``expression_slice_diverges(tokens, tree)`` for one slice's
+        divergence verdict.
+    """
+    translator = ExpressionTranslator()
+
+    def diverges(tokens: list[Token], tree: Expression | None) -> bool:
+        return _expression_slice_diverges(tokens, tree, translator)
+
+    return diverges
 
 
 @pytest.fixture
