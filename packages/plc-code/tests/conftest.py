@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
+from plc_code.parser import parse_scl_file
 from plc_code.parser.expressions import Expression
 from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block
@@ -151,6 +153,67 @@ def expression_slices() -> Callable[[Block], Iterator[tuple[str, list[Token], Ex
         one ``(label, tokens, tree)`` entry per non-empty expression-bearing slice.
     """
     return _block_expression_slices
+
+
+def _corpus_roots() -> list[Path]:
+    """Corpus roots, from ``PLC_CORPUS_ROOTS`` (``os.pathsep``-separated).
+
+    Read from the environment rather than written down: the directories are
+    customer projects and this repository is public.
+
+    Returns
+    -------
+    list[Path]
+        One entry per non-empty segment of ``PLC_CORPUS_ROOTS``.
+    """
+    raw = os.environ.get("PLC_CORPUS_ROOTS", "")
+    return [Path(part) for part in raw.split(os.pathsep) if part]
+
+
+@pytest.fixture(scope="session")
+def corpus_blocks() -> tuple[tuple[Path, Block], ...]:
+    """Every parsable, named block under ``PLC_CORPUS_ROOTS``, parsed exactly once per session.
+
+    ``parse_scl_file`` over the ~650 corpus files is the overwhelming majority of the
+    expression- and statement-level differentials' wall time (measured at roughly 80s
+    of an ~85s run) — parsing is deterministic and every differential test in this
+    session wants the same blocks, so paying that cost once here and sharing the
+    result is a session-scope fixture's textbook use, not a premature optimisation.
+
+    Held in memory only, never written to disk: a parsed ``Block`` carries customer
+    identifiers (block names, tag names, DB names) from a project this repository
+    must never leak into (see ``tests/test_no_confidential_references.py``), so this
+    fixture must not pickle, cache, or otherwise persist its result anywhere outside
+    the pytest process's memory for the duration of the session.
+
+    A file that fails to parse at all is skipped rather than failing the run: this
+    fixture measures the expression/statement layers, not file-level parse
+    robustness (that is ``test_statement_parser_corpus.py``'s and
+    ``parser.conformance``'s job).
+
+    Returns
+    -------
+    tuple[tuple[Path, Block], ...]
+        The source file and the block it parsed to, one entry per parsable named
+        block, in ``rglob`` order per root. A tuple, not a list: every consumer
+        shares this same session-scoped result, so nothing here may be mutated by a
+        test that reads it — returning an immutable container makes an accidental
+        in-place mutation (``.append``, ``.sort``, ...) fail loudly instead of
+        corrupting every other test's view of the corpus for the rest of the
+        session.
+    """
+    blocks: list[tuple[Path, Block]] = []
+    for root in _corpus_roots():
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.s7dcl")):
+            try:
+                block = parse_scl_file(path)
+            except Exception:  # noqa: BLE001 - a corpus file that fails to parse is skipped, not fatal
+                continue
+            if block is not None and block.name:
+                blocks.append((path, block))
+    return tuple(blocks)
 
 
 @pytest.fixture

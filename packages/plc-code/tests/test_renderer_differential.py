@@ -58,7 +58,6 @@ written into this repository. See ``tests/test_no_confidential_references.py``.
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -68,26 +67,9 @@ import pytest
 from plc_code.executor.codegen import ExpressionTranslator
 from plc_code.executor.generator import scl_text
 from plc_code.executor.renderer import UnsupportedExpression, render
-from plc_code.parser import parse_scl_file
 from plc_code.parser.expressions import Expression
 from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block
-
-
-def _roots() -> list[Path]:
-    """Corpus roots, from ``PLC_CORPUS_ROOTS`` (``os.pathsep``-separated).
-
-    Read from the environment rather than written down: the directories are customer
-    projects and this repository is public.
-
-    Returns
-    -------
-    list[Path]
-        One entry per non-empty segment of ``PLC_CORPUS_ROOTS``.
-    """
-    raw = os.environ.get("PLC_CORPUS_ROOTS", "")
-    return [Path(part) for part in raw.split(os.pathsep) if part]
-
 
 #: A single- or double-quoted run, kept intact by `_normalize_whitespace` below.
 #: Matches the same two token shapes `expression_parser._parse_primary` reads —
@@ -222,32 +204,9 @@ class TestNormalizeWhitespace:
         assert _normalize_whitespace("self.x - 1") == _normalize_whitespace("self.x-1")
 
 
-def _blocks() -> Iterator[tuple[Path, Block]]:
-    """Every parsable, named block under the configured corpus roots.
-
-    A file that fails to parse at all is skipped rather than failing the run: this
-    differential measures the expression layer, not file-level parse robustness (that
-    is ``test_statement_parser_corpus.py``'s and ``parser.conformance``'s job).
-
-    Yields
-    ------
-    tuple[Path, Block]
-        The source file and the block it parsed to.
-    """
-    for root in _roots():
-        if not root.is_dir():
-            continue
-        for path in sorted(root.rglob("*.s7dcl")):
-            try:
-                block = parse_scl_file(path)
-            except Exception:  # noqa: BLE001 - a corpus file that fails to parse is skipped, not fatal
-                continue
-            if block is not None and block.name:
-                yield path, block
-
-
 def test_expression_level_differential_over_the_corpus(
     expression_slices: Callable[[Block], Iterator[tuple[str, list[Token], Expression | None]]],
+    corpus_blocks: tuple[tuple[Path, Block], ...],
 ) -> None:
     """``render(tree)`` against ``translate(scl_text(tokens))``, over every slice found.
 
@@ -269,6 +228,10 @@ def test_expression_level_differential_over_the_corpus(
     ----------
     expression_slices : Callable[[Block], Iterator[tuple[str, list[Token], Expression | None]]]
         The walker fixture from ``conftest.py``.
+    corpus_blocks : tuple[tuple[Path, Block], ...]
+        The session-scoped, once-parsed corpus fixture from ``conftest.py`` — see its
+        docstring for why parsing is shared across the session rather than repeated
+        per test.
     """
     translator = ExpressionTranslator()
     blocks_seen = 0
@@ -277,7 +240,7 @@ def test_expression_level_differential_over_the_corpus(
     agreements = 0
     divergences: list[str] = []
 
-    for _path, block in _blocks():
+    for _path, block in corpus_blocks:
         blocks_seen += 1
         for label, tokens, tree in expression_slices(block):
             slices_seen += 1
