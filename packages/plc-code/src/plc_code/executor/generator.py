@@ -78,7 +78,19 @@ class UnsupportedStatement(Exception):
     to remove. See also `plc_code.executor.renderer.UnsupportedExpression`, which this
     module lets propagate uncaught for a tree node `render` recognises but refuses (or
     has no visitor for) -- the sibling failure mode for a slice that *did* parse.
+
+    Attributes
+    ----------
+    line : int | None
+        The source line of the statement or slice this was raised for, when known.
+        Consulted by `SCLTranspiler.transpile`'s top-level exception handler so a
+        raised `UnsupportedStatement` still produces a located
+        `TranspileResult.error_lines` entry, not `None`.
     """
+
+    def __init__(self, message: str, line: int | None = None) -> None:
+        super().__init__(message)
+        self.line = line
 
 
 def _generate_body(
@@ -274,7 +286,9 @@ def _generate_named_call_assignment(
     node = statement.value_expr
     assert isinstance(node, FunctionCall)
     if statement.target_expr is None:
-        raise UnsupportedStatement(f"Assignment at line {statement.line} has no parsed target expression")
+        raise UnsupportedStatement(
+            f"Assignment at line {statement.line} has no parsed target expression", line=statement.line
+        )
     bound_arguments: list[tuple[str, str, bool, bool]] = []
     for argument in node.arguments:
         if not argument.name:
@@ -341,7 +355,9 @@ def _generate_assignment(
         exception handler turns it into ``TranspileResult(success=False, ...)``.
     """
     if statement.target_expr is None or statement.value_expr is None:
-        raise UnsupportedStatement(f"Assignment at line {statement.line} has no parsed expression tree")
+        raise UnsupportedStatement(
+            f"Assignment at line {statement.line} has no parsed expression tree", line=statement.line
+        )
     if _is_named_call_with_output_binding(statement.value_expr):
         named_call_lines = _generate_named_call_assignment(statement, translator, string_constants)
         return [prefix + line for line in named_call_lines]
@@ -351,7 +367,7 @@ def _generate_assignment(
 
 
 def _render_header_expression(
-    expr: Expression | None, string_constants: dict[str, int] | None, description: str
+    expr: Expression | None, string_constants: dict[str, int] | None, description: str, line: int
 ) -> str:
     """One control-flow header expression: an `If`/`While` condition, a `For` bound, or a `Case` selector.
 
@@ -364,6 +380,10 @@ def _render_header_expression(
     description : str
         What this slice is, for the `UnsupportedStatement` message -- e.g. `"If
         condition"`, `"For loop end bound"`.
+    line : int
+        The enclosing statement's own source line -- `expr is None` carries no line of
+        its own (there is no tree), so this is what `UnsupportedStatement.line` reports
+        for that case.
 
     Returns
     -------
@@ -378,7 +398,7 @@ def _render_header_expression(
         `render` raised.
     """
     if expr is None:
-        raise UnsupportedStatement(f"{description} has no parsed expression tree")
+        raise UnsupportedStatement(f"{description} has no parsed expression tree", line=line)
     return render(expr, string_constants)
 
 
@@ -415,11 +435,13 @@ def _render_for_variable(tokens: list[Token], string_constants: dict[str, int] |
     result = parse_expression(tokens)
     if result.expression is None:
         line = tokens[0].line if tokens else 0
-        raise UnsupportedStatement(f"For loop variable at line {line} has no parsed expression tree")
+        raise UnsupportedStatement(
+            f"For loop variable at line {line} has no parsed expression tree", line=line
+        )
     return render(result.expression, string_constants)
 
 
-def _render_case_label(expr: Expression | None, string_constants: dict[str, int] | None) -> str:
+def _render_case_label(expr: Expression | None, string_constants: dict[str, int] | None, line: int) -> str:
     """One `Case` label: a mapped symbolic constant renders as its bare integer, everything else natively.
 
     A label is a different mapping from an ordinary expression position. A label whose
@@ -441,6 +463,10 @@ def _render_case_label(expr: Expression | None, string_constants: dict[str, int]
     string_constants : dict[str, int] | None
         Forwarded to :func:`render` and consulted directly for the symbolic-label
         ruling.
+    line : int
+        The enclosing `Case` statement's own source line -- `expr is None` carries no
+        line of its own (there is no tree), so this is what `UnsupportedStatement.line`
+        reports for that case.
 
     Returns
     -------
@@ -455,7 +481,7 @@ def _render_case_label(expr: Expression | None, string_constants: dict[str, int]
         `render` raised.
     """
     if expr is None:
-        raise UnsupportedStatement("Case label has no parsed expression tree")
+        raise UnsupportedStatement("Case label has no parsed expression tree", line=line)
     if isinstance(expr, VariableRef) and not expr.is_local and not expr.is_absolute:
         quoted = f'"{expr.name}"'
         if string_constants and quoted in string_constants:
@@ -547,7 +573,8 @@ def _generate_fb_instance_call(
             continue
         if argument.value_expr is None:
             raise UnsupportedStatement(
-                f"Call at line {statement.line} argument {argument.name!r} has no parsed expression tree"
+                f"Call at line {statement.line} argument {argument.name!r} has no parsed expression tree",
+                line=statement.line,
             )
         value_text = render(argument.value_expr, string_constants)
         if argument.is_output:
@@ -609,7 +636,8 @@ def _generate_named_call_statement(
             continue
         if argument.value_expr is None:
             raise UnsupportedStatement(
-                f"Call at line {statement.line} argument {argument.name!r} has no parsed expression tree"
+                f"Call at line {statement.line} argument {argument.name!r} has no parsed expression tree",
+                line=statement.line,
             )
         value_text = render(argument.value_expr, string_constants)
         write_back = not argument.is_output and _is_write_back_candidate(
@@ -672,7 +700,9 @@ def _generate_call(
     elif isinstance(callee_expr, Index | Member):
         lines = _generate_fb_instance_call(statement, string_constants)
     else:
-        raise UnsupportedStatement(f"Call at line {statement.line} has no supported callee shape")
+        raise UnsupportedStatement(
+            f"Call at line {statement.line} has no supported callee shape", line=statement.line
+        )
     return [prefix + line for line in lines]
 
 
@@ -730,7 +760,10 @@ def generate_statements(
             for position, branch in enumerate(statement.branches):
                 keyword = "if" if position == 0 else "elif"
                 condition = _render_header_expression(
-                    branch.condition_expr, string_constants, f"If branch {position} condition"
+                    branch.condition_expr,
+                    string_constants,
+                    f"If branch {position} condition",
+                    statement.line,
                 )
                 lines.append(f"{prefix}{keyword} {condition}:")
                 lines.extend(_generate_body(branch.body, indent + 1, translator, string_constants))
@@ -741,11 +774,17 @@ def generate_statements(
 
         if isinstance(statement, For):
             variable = _render_for_variable(statement.variable, string_constants)
-            start = _render_header_expression(statement.start_expr, string_constants, "For loop start bound")
-            end = _render_header_expression(statement.end_expr, string_constants, "For loop end bound")
+            start = _render_header_expression(
+                statement.start_expr, string_constants, "For loop start bound", statement.line
+            )
+            end = _render_header_expression(
+                statement.end_expr, string_constants, "For loop end bound", statement.line
+            )
             bounds = f"{start}, {end} + 1"
             if statement.step:
-                step = _render_header_expression(statement.step_expr, string_constants, "For loop step")
+                step = _render_header_expression(
+                    statement.step_expr, string_constants, "For loop step", statement.line
+                )
                 bounds += f", {step}"
             lines.append(f"{prefix}for {variable} in range({bounds}):")
             lines.extend(_generate_body(statement.body, indent + 1, translator, string_constants))
@@ -753,17 +792,22 @@ def generate_statements(
 
         if isinstance(statement, While):
             condition = _render_header_expression(
-                statement.condition_expr, string_constants, "While condition"
+                statement.condition_expr, string_constants, "While condition", statement.line
             )
             lines.append(f"{prefix}while {condition}:")
             lines.extend(_generate_body(statement.body, indent + 1, translator, string_constants))
             continue
 
         if isinstance(statement, Case):
-            selector = _render_header_expression(statement.selector_expr, string_constants, "Case selector")
+            selector = _render_header_expression(
+                statement.selector_expr, string_constants, "Case selector", statement.line
+            )
             for position, arm in enumerate(statement.branches):
                 keyword = "if" if position == 0 else "elif"
-                values = [_render_case_label(value_expr, string_constants) for value_expr in arm.values_expr]
+                values = [
+                    _render_case_label(value_expr, string_constants, statement.line)
+                    for value_expr in arm.values_expr
+                ]
                 if len(values) == 1:
                     test = f"{selector} == {values[0]}"
                 else:
@@ -787,6 +831,8 @@ def generate_statements(
             lines.append(f"{prefix}break")
             continue
 
-        raise UnsupportedStatement(f"{type(statement).__name__} at line {statement.line}")
+        raise UnsupportedStatement(
+            f"{type(statement).__name__} at line {statement.line}", line=statement.line
+        )
 
     return lines

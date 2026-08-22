@@ -748,7 +748,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   equivalent to the deleted text machinery before any of it was removed: the
   expression differential over 23,305 slices (647 blocks) and the unit-level
   statement differential over 594 units of the same 647 blocks, both run to zero
-  *unattributed* divergence. Every remaining divergence was one of five named,
+  *unattributed* divergence. (23,305 is this task's own measurement, the day it ran;
+  an earlier entry in this same series reported 23,279 for the same differential —
+  both were true when measured, since the external reference corpus is regenerated
+  by its owner and had grown between the two measurements.)
+
+  Every remaining divergence was one of five named,
   deliberate exceptions where the **old** path was itself wrong, not a difference the
   new path introduced: a bare (unquoted) call binding a parameter by name, where the
   old path mangled `:=` to `==` via `OPERATOR_MAP`; a global DB name containing a
@@ -780,7 +785,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   class-definition time. There is no correct Python for this shape — a positional
   call has nowhere to route an output binding — so it now fails the transpile loudly
   instead: `TranspileResult.success` is `False`, with a message naming the call and
-  the bound parameter.
+  the bound parameter, and `error_lines` carrying the SCL source line it was raised
+  at (`renderer.UnsupportedExpression`/`generator.UnsupportedStatement` both now
+  carry their own line through `SCLTranspiler.transpile`'s top-level exception
+  handler, which used to report `None` for every raised exception alike).
 - **workspace** — the Python version (`.python-version`, 3.12) and every dev tool
   version are now pinned exactly. Previously `ruff>=0.1.0` / `black>=23.0.0` /
   `mypy>=1.0.0` floated while the local venv ran a different Python than CI, so
@@ -793,6 +801,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   imported as the same `tests` package and the second `conftest.py` aborted the
   run with "Plugin already registered under a different name". CI no longer needs
   its per-package loop.
+
+### Removed
+- **plc-code (executor)** — `translate_expression`, `translate_assignment` and
+  `translate_fb_call` are gone from `plc_code.executor`'s public API (module-level
+  wrappers around the deleted `ExpressionTranslator.translate` /
+  `StatementTranslator.translate_assignment` / `.translate_fb_call`, removed in the
+  same commit as their underlying methods, above). `ExpressionTranslator` and
+  `StatementTranslator` themselves are still exported, now as thin wrappers around
+  the one pure-formatter method each still has.
 
 ## [0.1.0] - 2026-05-29
 

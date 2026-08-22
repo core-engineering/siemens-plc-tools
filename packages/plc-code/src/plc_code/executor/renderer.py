@@ -123,11 +123,29 @@ class UnsupportedExpression(Exception):
     node : object
         The value :func:`render` was asked to render and either did not recognize or
         recognized and refused.
+    line : int | None
+        ``node``'s own source line, or ``None`` when ``node`` carries none -- see the
+        :attr:`line` property.
     """
 
     def __init__(self, node: object, message: str | None = None) -> None:
         super().__init__(message if message is not None else f"no renderer for {type(node).__name__}")
         self.node = node
+
+    @property
+    def line(self) -> int | None:
+        """The source line ``self.node`` carries, or ``None`` when it has none.
+
+        Every ``Expression`` subtype :func:`render` can raise this for carries a
+        ``line`` field; read via ``getattr`` rather than a type-narrowed access
+        because ``node`` is typed as ``object`` (this exception's own contract does
+        not require an ``Expression`` specifically). Consulted by
+        ``SCLTranspiler.transpile``'s top-level exception handler so a raised
+        ``UnsupportedExpression`` still produces a located
+        ``TranspileResult.error_lines`` entry, not ``None``.
+        """
+        line = getattr(self.node, "line", None)
+        return line if isinstance(line, int) else None
 
 
 def render(expression: Expression, string_constants: dict[str, int] | None = None) -> str:

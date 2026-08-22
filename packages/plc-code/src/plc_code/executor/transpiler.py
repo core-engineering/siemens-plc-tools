@@ -9,8 +9,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from plc_code.executor.codegen import CodeGenContext
-from plc_code.executor.generator import generate_statements
+from plc_code.executor.generator import UnsupportedStatement, generate_statements
 from plc_code.executor.models import CompileResult, TranspileOptions, TranspileResult
+from plc_code.executor.renderer import UnsupportedExpression
 from plc_code.executor.types import ArrayTypeInfo, SCLType, TypeInfo, TypeMapper
 from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block, Network, Region, VariableDeclaration
@@ -86,8 +87,15 @@ class SCLTranspiler:
                 error_lines=self._error_lines,
             )
         except Exception as e:
+            # generator.UnsupportedStatement and renderer.UnsupportedExpression both
+            # know the source line they were raised for -- carried through here so a
+            # located TRANSPILE diagnostic (see diagnostics.py) can report it, rather
+            # than falling back to None the way every other exception still must.
             self._errors.append(f"Transpilation error: {e}")
-            self._error_lines.append(None)
+            if isinstance(e, UnsupportedExpression | UnsupportedStatement):
+                self._error_lines.append(e.line)
+            else:
+                self._error_lines.append(None)
             return TranspileResult(
                 success=False,
                 python_code="",

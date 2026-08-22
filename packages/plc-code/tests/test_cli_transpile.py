@@ -229,6 +229,19 @@ class TestCheckMode:
         assert result.exit_code == 1
         assert "RdSysTUser" in result.output
 
+        # Fix round 1: renderer.UnsupportedExpression carries the SCL source line it
+        # was raised for, and SCLTranspiler.transpile now reads it instead of always
+        # reporting None -- JSON mode is where that reaches a caller as data, not text
+        # (text mode deliberately suppresses TRANSPILE's own location, assuming the
+        # message text states it, which this one does not -- unaffected here).
+        json_result = runner.invoke(
+            cli, ["transpile", "--check", "-f", "json", str(output_binding_defect_block)]
+        )
+        payload = json.loads(json_result.output)
+        (finding,) = payload["diagnostics"]
+        assert finding["code"] == "TRANSPILE"
+        assert finding["line"] == 12
+
     def test_whole_fixture_corpus_is_clean(self, runner: CliRunner) -> None:
         """The shipped fixtures are blocks the toolchain handles — all of them."""
         result = runner.invoke(cli, ["transpile", "--check", str(FIXTURES)])
