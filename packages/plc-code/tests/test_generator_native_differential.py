@@ -41,12 +41,14 @@ comparing each one **in isolation**), and now that a header renders natively too
 `If`/`For`/`While`/`Case` header in the unit, yielding a *shallow* copy (the header's own
 condition/bounds/selector/label slices, but an empty body and, for `If`/`Case`, only the
 one branch/arm being isolated -- see its own docstring for why an empty body isolates
-the header line cleanly) so it too can be generated **in isolation** and compared. Both
-walks feed the same rule: a unit found by either one is compared
-(`_generate_statements_via_strings`/`generate_statements` on the one-element/shallow
-list, at that unit's own indent depth, with the same `string_constants`) and, when it
-diverges, is only accepted as "explained" when its own slice(s) (via
-`statement_expression_slices` on that same isolated list) are flagged by
+the header line cleanly) so it too can be generated **in isolation** and compared. Task 8
+adds a third walk for the same reason: `_walk_calls` yields every `Call` statement in the
+unit (a `Call` needs no shallow copy -- it has no body to strip, so the statement itself
+is the isolated unit). All three walks feed the same rule: a unit found by any one of
+them is compared (`_generate_statements_via_strings`/`generate_statements` on the
+one-element/shallow list, at that unit's own indent depth, with the same
+`string_constants`) and, when it diverges, is only accepted as "explained" when its own
+slice(s) (via `statement_expression_slices` on that same isolated list) are flagged by
 `expression_slice_diverges`. Since every other statement kind still contributes
 byte-identical lines on both sides, the sum of explained units' own differing-line counts
 must equal the whole unit's differing-line count; if it does not, some line is left
@@ -55,19 +57,23 @@ unexplained and the unit is unattributed. `string_constants` is threaded into
 differential asks, not a narrower one that ignores string constants.
 
 **The native/fallback split is measured, not assumed.** `generate_statements`'s
-`Assignment` branch falls back to the dispatcher for three shapes (see
-`generator._generate_assignment`'s own docstring), and its `If`/`For`/`While`/`Case`
+`Assignment` branch falls back to the dispatcher for two shapes (see
+`generator._generate_assignment`'s own docstring), its `If`/`For`/`While`/`Case`
 header rendering falls back for two (see `generator._render_expression_or_fallback` /
-`_render_case_label`); a fallback compares the dispatcher against itself and can only
-ever agree, so "N agree" alone conflates agreement that exercised the new path with
-agreement that did not exercise it at all. `generator.reset_assignment_render_counters` /
-`generator.assignment_render_counts` and (Task 7) the parallel
-`generator.reset_control_flow_render_counters` / `generator.control_flow_render_counts`
+`_render_case_label`), and (Task 8) its `Call` branch falls back on the same two terms
+as `Assignment` (see `generator._generate_call`); a fallback compares the dispatcher
+against itself and can only ever agree, so "N agree" alone conflates agreement that
+exercised the new path with agreement that did not exercise it at all.
+`generator.reset_assignment_render_counters` / `generator.assignment_render_counts`, the
+parallel `generator.reset_control_flow_render_counters` /
+`generator.control_flow_render_counts` (Task 7), and `generator.reset_call_render_counters`
+/ `generator.call_render_counts` (Task 8, one shared pair for `Call`/`Return`/`Exit`)
 expose module-level counters this differential resets immediately before each unit's
 real `generate_statements` call and reads immediately after, before any of the
 diagnostic isolated calls `_attribute_unit_divergence` goes on to make (which would
 otherwise pollute the count) -- accumulated across the whole run and printed as
-``native=N fell_back=M, control_flow_native=P control_flow_fell_back=Q``.
+``native=N fell_back=M, control_flow_native=P control_flow_fell_back=Q, call_native=R
+call_fell_back=S``.
 
 No golden file: the generated Python and the SCL it came from both carry customer
 identifiers, and this repository is public (see `tests/test_no_confidential_references.py`).
@@ -89,9 +95,11 @@ import pytest
 from plc_code.executor.generator import (
     _generate_statements_via_strings,
     assignment_render_counts,
+    call_render_counts,
     control_flow_render_counts,
     generate_statements,
     reset_assignment_render_counters,
+    reset_call_render_counters,
     reset_control_flow_render_counters,
 )
 from plc_code.executor.transpiler import SCLTranspiler
@@ -99,7 +107,17 @@ from plc_code.parser.expressions import Expression
 from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block
 from plc_code.parser.statement_parser import parse_statements
-from plc_code.parser.statements import Assignment, Branch, Case, CaseBranch, For, If, Statement, While
+from plc_code.parser.statements import (
+    Assignment,
+    Branch,
+    Call,
+    Case,
+    CaseBranch,
+    For,
+    If,
+    Statement,
+    While,
+)
 
 #: One `(label, tokens, tree)` entry per non-empty expression-bearing slice found by
 #: walking a statement list — the `statement_expression_slices` fixture's type, spelled
@@ -212,10 +230,11 @@ def _walk_assignments(statements: list[Statement], depth: int = 0) -> Iterator[t
     Recurses into `If` branches and `else_body`, `Case` arms and `default`, and
     `For`/`While` bodies -- the same nesting `generate_statements` itself walks (one
     level deeper per body) -- so an `Assignment` nested inside any depth of control flow
-    is still found. `Call`, `Return`, `Exit`, and the `If`/`For`/`While`/`Case` header
-    expressions themselves are not `Assignment`s and are not yielded: per the module
-    docstring, they are rendered by byte-identical code on both generator entry points
-    at this stage, so they can never be the source of a unit's divergence.
+    is still found. `Call` (walked separately by `_walk_calls`), `Return`, `Exit`, and
+    the `If`/`For`/`While`/`Case` header expressions themselves are not `Assignment`s and
+    are not yielded here. `Return`/`Exit` are rendered by code that never falls back (see
+    `generator._generate_return` / `_generate_exit`), so they can never be the source of
+    a unit's divergence and need no walk of their own.
 
     Parameters
     ----------
@@ -246,6 +265,48 @@ def _walk_assignments(statements: list[Statement], depth: int = 0) -> Iterator[t
             yield from _walk_assignments(statement.body, depth + 1)
         elif isinstance(statement, While):
             yield from _walk_assignments(statement.body, depth + 1)
+
+
+def _walk_calls(statements: list[Statement], depth: int = 0) -> Iterator[tuple[Call, int]]:
+    """Every `Call` inside `statements`, paired with its indent depth, in source order.
+
+    Task 8's counterpart to `_walk_assignments`: a `Call` renders natively now too (see
+    `generator._generate_call`), so a divergent one needs the same per-statement
+    attribution. Unlike a header (`_walk_control_flow_headers`), a `Call` has no body to
+    strip -- the statement itself already is the smallest isolable unit, so this yields it
+    directly rather than building a shallow copy. Recurses into the same nesting
+    `_walk_assignments` does (`If` branches and `else_body`, `Case` arms and `default`,
+    `For`/`While` bodies), so a `Call` nested inside any depth of control flow is still
+    found.
+
+    Parameters
+    ----------
+    statements : list[Statement]
+        The statements to walk -- typically one unit's full statement list.
+    depth : int, optional
+        The indent depth `statements` themselves sit at; each nested body is walked at
+        `depth + 1`. Default 0, matching a unit's own top-level statements.
+
+    Yields
+    ------
+    tuple[Call, int]
+        Each `Call` found, and the indent depth it would be generated at.
+    """
+    for statement in statements:
+        if isinstance(statement, Call):
+            yield statement, depth
+        elif isinstance(statement, If):
+            for branch in statement.branches:
+                yield from _walk_calls(branch.body, depth + 1)
+            yield from _walk_calls(statement.else_body, depth + 1)
+        elif isinstance(statement, Case):
+            for arm in statement.branches:
+                yield from _walk_calls(arm.body, depth + 1)
+            yield from _walk_calls(statement.default, depth + 1)
+        elif isinstance(statement, For):
+            yield from _walk_calls(statement.body, depth + 1)
+        elif isinstance(statement, While):
+            yield from _walk_calls(statement.body, depth + 1)
 
 
 def _walk_control_flow_headers(
@@ -348,17 +409,18 @@ def _attribute_unit_divergence(
     """Whether every differing line of one diverging unit is explained by its own diverging residual.
 
     Per-statement attribution -- see the module docstring for why "some slice anywhere
-    in the unit diverges" is too weak a bar and how this replaces it. Two walks, both
-    exhaustive over `statements` and both required to add up: `_walk_assignments` for
-    every `Assignment` (the Task 6 walk, unchanged), and `_walk_control_flow_headers` for
-    every `If`/`For`/`While`/`Case` header (Task 7's own construct). Each unit found by
-    either walk is compared **in isolation** against its own dispatcher output, and each
-    isolated divergence requires that unit's own expression slice(s) -- and only those
-    slices, via `statement_expression_slices` on the same isolated (`[assignment]` or
-    shallow header) statement list -- to be flagged by `expression_slice_diverges`. Every
+    in the unit diverges" is too weak a bar and how this replaces it. Three walks, all
+    exhaustive over `statements` and all required to add up: `_walk_assignments` for
+    every `Assignment` (the Task 6 walk, unchanged), `_walk_control_flow_headers` for
+    every `If`/`For`/`While`/`Case` header (Task 7's own construct), and `_walk_calls`
+    for every `Call` statement (Task 8's own construct). Each unit found by any walk is
+    compared **in isolation** against its own dispatcher output, and each isolated
+    divergence requires that unit's own expression slice(s) -- and only those slices, via
+    `statement_expression_slices` on the same isolated (`[assignment]`, shallow header, or
+    `[call]`) statement list -- to be flagged by `expression_slice_diverges`. Every
     explained unit's own differing-line count is summed; the whole diverging line is
     fully attributed only when that sum equals `unit_diff_count` exactly and nothing
-    (from either walk) was left unflagged. A line neither walk's own isolated comparison
+    (from any walk) was left unflagged. A line no walk's own isolated comparison
     reproduces is not covered by this function at all and surfaces as a shortfall in the
     final sum -- exactly the "unattributed" outcome the module docstring's bar requires.
 
@@ -430,6 +492,22 @@ def _attribute_unit_divergence(
             continue
         explained_diff_total += diff_count
 
+    for index, (call, depth) in enumerate(_walk_calls(statements)):
+        call_label = f"{label}: Call#{index}"
+        old_one = _generate_statements_via_strings([call], indent=depth, string_constants=string_constants)
+        new_one = generate_statements([call], indent=depth, string_constants=string_constants)
+        diff_count = _differing_line_count(old_one, new_one, normalize_whitespace)
+        if diff_count == 0:
+            continue
+        flagged = any(
+            expression_slice_diverges(tokens, tree, string_constants)
+            for _slice_label, tokens, tree in statement_expression_slices([call], call_label)
+        )
+        if not flagged:
+            problems.append(f"{call_label}: diverges in isolation but its own slice is not flagged")
+            continue
+        explained_diff_total += diff_count
+
     if explained_diff_total != unit_diff_count:
         problems.append(
             f"{label}: unit shows {unit_diff_count} differing line(s) but only "
@@ -449,11 +527,11 @@ def test_generator_native_differential_over_the_corpus(
     Zero *unattributed* divergences is the bar, not zero divergences outright -- see the
     module docstring for why a divergence attributable to an expression-level residual
     is not a new generator bug, and how `_attribute_unit_divergence` decides attribution
-    per `Assignment`/header rather than per unit. Also reports both native/fallback
-    splits -- `generator.assignment_render_counts` and (Task 7)
-    `generator.control_flow_render_counts` -- so "N agree" cannot be read as "N units
-    exercised the new path" when some fraction fell back to the dispatcher and so could
-    only ever agree with itself.
+    per `Assignment`/header/`Call` rather than per unit. Also reports all three
+    native/fallback splits -- `generator.assignment_render_counts`, (Task 7)
+    `generator.control_flow_render_counts`, and (Task 8) `generator.call_render_counts`
+    -- so "N agree" cannot be read as "N units exercised the new path" when some fraction
+    fell back to the dispatcher and so could only ever agree with itself.
 
     Parameters
     ----------
@@ -475,6 +553,8 @@ def test_generator_native_differential_over_the_corpus(
     total_fallback = 0
     total_control_flow_native = 0
     total_control_flow_fallback = 0
+    total_call_native = 0
+    total_call_fallback = 0
 
     for _path, block in corpus_blocks:
         blocks_seen += 1
@@ -483,6 +563,7 @@ def test_generator_native_differential_over_the_corpus(
             units_seen += 1
             reset_assignment_render_counters()
             reset_control_flow_render_counters()
+            reset_call_render_counters()
             old_lines = _generate_statements_via_strings(statements, string_constants=string_constants)
             new_lines = generate_statements(statements, string_constants=string_constants)
             native_delta, fallback_delta = assignment_render_counts()
@@ -491,6 +572,9 @@ def test_generator_native_differential_over_the_corpus(
             cf_native_delta, cf_fallback_delta = control_flow_render_counts()
             total_control_flow_native += cf_native_delta
             total_control_flow_fallback += cf_fallback_delta
+            call_native_delta, call_fallback_delta = call_render_counts()
+            total_call_native += call_native_delta
+            total_call_fallback += call_fallback_delta
 
             unit_diff_count = _differing_line_count(old_lines, new_lines, normalize_whitespace)
             if unit_diff_count == 0:
@@ -521,7 +605,8 @@ def test_generator_native_differential_over_the_corpus(
         f"{len(unattributed_divergences)} problem(s) (UNATTRIBUTED), "
         f"native={total_native} fell_back={total_fallback}, "
         f"control_flow_native={total_control_flow_native} "
-        f"control_flow_fell_back={total_control_flow_fallback}"
+        f"control_flow_fell_back={total_control_flow_fallback}, "
+        f"call_native={total_call_native} call_fell_back={total_call_fallback}"
     )
     assert unattributed_divergences == []
     assert units_seen > 0
