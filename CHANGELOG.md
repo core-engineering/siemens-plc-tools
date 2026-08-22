@@ -721,6 +721,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `TRANSPILE` findings (from the new `TranspileResult.error_lines`) instead of
   always `None`, so a JSON consumer gets the location as data rather than only
   inside the message text.
+- **plc-code (executor)** — `plc code transpile` now generates Python natively from
+  the parsed AST for expressions too, not just statements. `ExpressionTranslator`'s
+  twelve ordered regex passes (string-literal and named-call placeholder protection,
+  hex/duration-literal translation, global-DB substitution, operator and builtin
+  rewriting, boolean and multi-index rewriting) and the statement dispatcher built on
+  top of it (`translate_simple_statement`, `translate_assignment`,
+  `translate_if_condition`, `translate_fb_call`, and their named-call helpers) are
+  gone. Two producers survive as pure formatters — `ExpressionTranslator._build_named_call`
+  and `StatementTranslator._emit_named_call`, which turn an already-rendered
+  `"Block"(...)` call's arguments into the runtime's `call_named_block(...)` call and
+  output-assignment lines — receiving every argument pre-rendered from the tree;
+  nothing left in the executor still constructs Python by rewriting SCL text.
+
+  Measured, not estimated (`git show <pre-deletion-sha>:<path> | wc -l`, this
+  repository's history): `codegen.py` goes from 1,058 lines to 225 (966 deleted, 133
+  added — the survivors' own docstrings); `generator.py` goes from 1,601 lines to 792
+  (1,203 deleted, 394 added). `codegen.py`'s 38 `re.` module calls, and its only
+  `import re`, are gone; `generator.py` never called `re` directly. Five test files
+  are deleted outright: the expression-level and unit-level differentials (177 and
+  623 lines) and three unit-test files whose only subject was the deleted text
+  machinery (`test_codegen.py` 169, `test_normalize_spacing_quoting.py` 107,
+  `test_generator_reconstruction.py` 35) — 1,111 lines of tests.
+
+  Two corpus-wide differentials proved the tree-driven renderer and generator
+  equivalent to the deleted text machinery before any of it was removed: the
+  expression differential over 23,305 slices (647 blocks) and the unit-level
+  statement differential over 594 units of the same 647 blocks, both run to zero
+  *unattributed* divergence. Every remaining divergence was one of five named,
+  deliberate exceptions where the **old** path was itself wrong, not a difference the
+  new path introduced: a bare (unquoted) call binding a parameter by name, where the
+  old path mangled `:=` to `==` via `OPERATOR_MAP`; a global DB name containing a
+  character the old `GLOBAL_DB_PATTERN` regex's `\w+` requirement could not match; the
+  acknowledged `NOT`-prefix bug (`#notReady` read as `self.not Ready`); a chained
+  typed literal under a size prefix (e.g. `B#16#FF`); and a call whose parameter list
+  the old path truncated at a nested `)` inside a grouped sub-expression or a string
+  literal argument. `Grouping` was added to the expression AST during this same
+  effort so a parenthesised sub-expression's own parentheses survive rendering.
+
+  Six silent-loss defects the old translator carried are found across this effort and
+  are now either impossible or converted into a loud failure: `#notReady` read as
+  `self.not Ready`, invalid Python; `b#16#FF` translated to `bself.0xff`, and an
+  assignment of it became a comparison (`self.a == bself.0xff`), also invalid; the
+  expression parser took 177 single-quoted string literals in the corpus for variable
+  references before a node-type fix separated a string `Literal` from a quoted-name
+  `VariableRef`; a bare system builtin's `=>` output binding, translated as a
+  standalone expression, read `OUT => #x` as `OUT == > self.x`, invalid; an FB call's
+  parameter list truncated at a nested `)`, silently dropping every argument after
+  it; and an indexed-callee FB call's `:=` mangled to `==` — for the shape with no
+  output binding, the only one of the six whose output actually compiled, calling the
+  FB instance positionally with a boolean instead of by keyword.
+
+  A related, seventh shape is a deliberate behaviour change, not a defect found:
+  an assignment whose right-hand side is a bare (unquoted) system builtin binding an
+  `=>` output — 6 `GET_DIAG`, 2 `RD_SYS_T`, 2 `DPRD_DAT`, 1 `RH_CTRL`, 1 `Serialize`
+  in the corpus — used to reach the old dispatcher and leave a bare `=>` in the
+  generated Python (e.g. `self.x = RD_SYS_T ( OUT => self.x )`), a `SyntaxError` at
+  class-definition time. There is no correct Python for this shape — a positional
+  call has nowhere to route an output binding — so it now fails the transpile loudly
+  instead: `TranspileResult.success` is `False`, with a message naming the call and
+  the bound parameter.
 - **workspace** — the Python version (`.python-version`, 3.12) and every dev tool
   version are now pinned exactly. Previously `ruff>=0.1.0` / `black>=23.0.0` /
   `mypy>=1.0.0` floated while the local venv ran a different Python than CI, so
