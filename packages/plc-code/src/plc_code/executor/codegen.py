@@ -37,6 +37,60 @@ class CodeGenContext:
         )
 
 
+#: SCL to Python operator mappings. Module-level (not a class field) so a caller who
+#: needs the table itself -- rather than a full :class:`ExpressionTranslator` -- can
+#: import it directly instead of instantiating the class just to read an attribute
+#: that never varies between instances.
+OPERATOR_MAP: dict[str, str] = {
+    ":=": "=",
+    "<>": "!=",
+    "AND": "and",
+    "OR": "or",
+    "NOT": "not",
+    "MOD": "%",
+    "DIV": "//",
+}
+
+#: SCL built-in function mappings. Module-level for the same reason as
+#: :data:`OPERATOR_MAP`.
+BUILTIN_MAP: dict[str, str] = {
+    "INT_TO_REAL": "float",
+    "REAL_TO_INT": "int",
+    "REAL_TO_DINT": "int",
+    "INT_TO_USINT": "lambda x: x & 0xFF",
+    "INT_TO_UINT": "lambda x: x & 0xFFFF",
+    "INT_TO_DINT": "int",
+    "DINT_TO_INT": "int",
+    "UINT_TO_UDINT": "int",
+    "UDINT_TO_INT": "int",
+    "DINT_TO_REAL": "float",
+    "BOOL_TO_INT": "int",
+    # LReal / Real conversions — in Python float covers both
+    "REAL_TO_LREAL": "float",
+    "LREAL_TO_REAL": "float",
+    "INT_TO_LREAL": "float",
+    "DINT_TO_LREAL": "float",
+    "LREAL_TO_INT": "int",
+    "LREAL_TO_DINT": "int",
+    "ABS": "abs",
+    "SQRT": "math.sqrt",
+    "SIN": "math.sin",
+    "COS": "math.cos",
+    "TAN": "math.tan",
+    "ASIN": "math.asin",
+    "ACOS": "math.acos",
+    "ATAN": "math.atan",
+    "ATAN2": "math.atan2",
+    "LN": "math.log",
+    "EXP": "math.exp",
+    "LOWER_BOUND": "lambda arr, dim: 0",
+    "UPPER_BOUND": (
+        "lambda arr, dim: (len(arr[0]) - 1 if dim == 2 and arr "
+        "and isinstance(arr[0], (list, tuple)) else len(arr) - 1)"
+    ),
+}
+
+
 @dataclass
 class ExpressionTranslator:
     """Translates SCL expressions to Python expressions.
@@ -55,58 +109,11 @@ class ExpressionTranslator:
     ARRAY_ACCESS_PATTERN = re.compile(r"\[([^\]]+)\]")
     STRING_KEY_PATTERN = re.compile(r'\["([^"]+)"\]')
 
-    # SCL to Python operator mappings
-    OPERATOR_MAP: dict[str, str] = field(
-        default_factory=lambda: {
-            ":=": "=",
-            "<>": "!=",
-            "AND": "and",
-            "OR": "or",
-            "NOT": "not",
-            "MOD": "%",
-            "DIV": "//",
-        }
-    )
+    # SCL to Python operator mappings -- module-level constant, see :data:`OPERATOR_MAP`.
+    OPERATOR_MAP: dict[str, str] = field(default_factory=lambda: OPERATOR_MAP)
 
-    # SCL built-in function mappings
-    BUILTIN_MAP: dict[str, str] = field(
-        default_factory=lambda: {
-            "INT_TO_REAL": "float",
-            "REAL_TO_INT": "int",
-            "REAL_TO_DINT": "int",
-            "INT_TO_USINT": "lambda x: x & 0xFF",
-            "INT_TO_UINT": "lambda x: x & 0xFFFF",
-            "INT_TO_DINT": "int",
-            "DINT_TO_INT": "int",
-            "UINT_TO_UDINT": "int",
-            "UDINT_TO_INT": "int",
-            "DINT_TO_REAL": "float",
-            "BOOL_TO_INT": "int",
-            # LReal / Real conversions — in Python float covers both
-            "REAL_TO_LREAL": "float",
-            "LREAL_TO_REAL": "float",
-            "INT_TO_LREAL": "float",
-            "DINT_TO_LREAL": "float",
-            "LREAL_TO_INT": "int",
-            "LREAL_TO_DINT": "int",
-            "ABS": "abs",
-            "SQRT": "math.sqrt",
-            "SIN": "math.sin",
-            "COS": "math.cos",
-            "TAN": "math.tan",
-            "ASIN": "math.asin",
-            "ACOS": "math.acos",
-            "ATAN": "math.atan",
-            "ATAN2": "math.atan2",
-            "LN": "math.log",
-            "EXP": "math.exp",
-            "LOWER_BOUND": "lambda arr, dim: 0",
-            "UPPER_BOUND": (
-                "lambda arr, dim: (len(arr[0]) - 1 if dim == 2 and arr "
-                "and isinstance(arr[0], (list, tuple)) else len(arr) - 1)"
-            ),
-        }
-    )
+    # SCL built-in function mappings -- module-level constant, see :data:`BUILTIN_MAP`.
+    BUILTIN_MAP: dict[str, str] = field(default_factory=lambda: BUILTIN_MAP)
 
     def translate(self, scl_expr: str) -> str:
         """Translate an SCL expression to Python.

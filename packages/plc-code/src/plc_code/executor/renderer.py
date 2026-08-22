@@ -26,7 +26,7 @@ than a direct argument.
 
 from __future__ import annotations
 
-from plc_code.executor.codegen import ExpressionTranslator
+from plc_code.executor.codegen import BUILTIN_MAP, OPERATOR_MAP, ExpressionTranslator
 from plc_code.executor.types import parse_time_literal
 from plc_code.parser.expressions import (
     BinaryOp,
@@ -47,16 +47,15 @@ from plc_code.parser.expressions import (
 #: shared instance is safe to reuse for that rather than constructing one per call.
 _TRANSLATOR = ExpressionTranslator()
 
-#: ``ExpressionTranslator.OPERATOR_MAP``, read from an instance because it is a
-#: dataclass field with a ``default_factory`` -- it does not exist on the class
-#: itself. Imported rather than copied so this module's operator table cannot drift
-#: from the regex translator's.
-_OPERATOR_MAP = _TRANSLATOR.OPERATOR_MAP
+#: ``codegen.OPERATOR_MAP``, imported directly now that it is a module-level constant
+#: rather than a dataclass field -- so this module's operator table cannot drift from
+#: the regex translator's.
+_OPERATOR_MAP = OPERATOR_MAP
 
-#: ``ExpressionTranslator.BUILTIN_MAP``, imported the same way as :data:`_OPERATOR_MAP`
-#: and for the same reason -- so this module's builtin table cannot drift from the
-#: regex translator's.
-_BUILTIN_MAP = _TRANSLATOR.BUILTIN_MAP
+#: ``codegen.BUILTIN_MAP``, imported the same way as :data:`_OPERATOR_MAP` and for the
+#: same reason -- so this module's builtin table cannot drift from the regex
+#: translator's.
+_BUILTIN_MAP = BUILTIN_MAP
 
 #: The two builtins ``ExpressionTranslator._translate_array_bounds`` rewrites through
 #: its own regex instead of the generic ``_translate_builtins`` substitution -- see
