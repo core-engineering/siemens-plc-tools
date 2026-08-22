@@ -28,21 +28,26 @@ compact ``self.a.b`` purely by a space next to the ``.`` (printed by this test's
 would have counted). That gap is the reconstruction's artefact, not a disagreement
 about what the expression means, so it is not what this differential is for: the bar
 it should apply is semantic-text equivalence, not byte-for-byte equivalence with a
-serialisation neither side is trying to reproduce. The rule is narrow on purpose —
-only whitespace touching ``. [ ] ( ) ,`` is removed, and only outside a quoted run
-(see ``_normalize_whitespace`` and ``TestNormalizeWhitespace``) — a general
-whitespace collapse is a no-op on the single spaces ``scl_text`` actually produces
-and would also swallow the divergence the next paragraph documents.
+serialisation neither side is trying to reproduce. The rule is a principle, not a
+punctuation list — a list was tried twice here and was incomplete both times (first
+missing the presence-vs-absence case entirely, then missing ``%``-address spacing and
+a fused negative number's own ``-``; a third list would likely miss a fourth thing).
+The principle instead: **whitespace between two word characters is meaningful;
+everything else is layout, and is removed** — outside a quoted run (see
+``_normalize_whitespace`` and ``TestNormalizeWhitespace``). A general whitespace
+*collapse* would still be wrong even under this principle — it is a no-op on the
+single spaces ``scl_text`` actually produces and would swallow the divergence the
+next paragraph documents, which is exactly why removal, not collapsing, is the rule.
 
 One divergence this bar deliberately still counts, and which is not fixed here: the
 current translator renders ``#notReady`` as ``self.not Ready`` — invalid Python,
 because its ``NOT``-detection matches the identifier's ``not`` prefix by text. That
-space sits between two word characters, not next to any of ``. [ ] ( ) ,``, so
-``_normalize_whitespace`` leaves it alone and the tree-based renderer's ``self.notReady``
-(``VariableRef`` renders the name whole; there is no bug to reproduce) keeps comparing
-unequal to it. That is correct: the bug is real, acknowledged, and intentionally not
-carried forward into the new path — a broader normalisation that erased this
-difference would hide the finding instead of just not fixing it.
+space sits between two word characters (``t`` and ``R``), so ``_normalize_whitespace``
+leaves it alone and the tree-based renderer's ``self.notReady`` (``VariableRef``
+renders the name whole; there is no bug to reproduce) keeps comparing unequal to it.
+That is correct: the bug is real, acknowledged, and intentionally not carried forward
+into the new path — a broader normalisation that erased this difference would hide
+the finding instead of just not fixing it.
 
 The shipped fixtures are small and written to exercise specific shapes; the real
 evidence is production SCL. Those projects are read-only siblings of this repository
@@ -92,42 +97,61 @@ def _roots() -> list[Path]:
 #: normalisation must not reach inside either).
 _QUOTED_RUN = re.compile(r"\"[^\"]*\"|'[^']*'")
 
-#: Whitespace immediately before or after one of `. [ ] ( ) ,`, outside a quoted
-#: run. `scl_text` joins every token with a single space regardless of what the
-#: token is, so a chain like `self.arr [ self.i ] . v` carries a space around
-#: each punctuation character purely from that join — the renderer never
-#: introduces one there. Deliberately narrow: this pattern requires the
-#: whitespace to be adjacent to one of these six characters, so a space between
-#: two *word* characters (`self.not Ready` vs `self.notReady`, the acknowledged
-#: pre-existing `NOT`-spacing bug — see the module docstring) is untouched and
-#: the two stay different text.
-_PUNCTUATION_WHITESPACE = re.compile(r"\s*([.\[\](),])\s*")
+#: A run of one or more whitespace characters, outside a quoted run. Whether one
+#: is layout (removed) or meaningful (kept) depends only on what sits immediately
+#: on either side of it — see `_normalize_whitespace`.
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _is_word_character(char: str) -> bool:
+    """Whether `char` is a letter, digit, or underscore.
+
+    Parameters
+    ----------
+    char : str
+        A single character, or `""` for "off the end of the segment" — which is
+        never a word character, so whitespace flush against either end of a
+        segment between quoted runs is always layout, never protected.
+
+    Returns
+    -------
+    bool
+        `char.isalnum() or char == "_"` for a non-empty `char`; `False` for `""`.
+    """
+    return char != "" and (char.isalnum() or char == "_")
 
 
 def _normalize_whitespace(text: str) -> str:
-    """Remove whitespace adjacent to punctuation, outside quoted runs.
+    """Remove layout whitespace outside quoted runs; keep whitespace between two words.
 
     `scl_text` reconstructs a token slice by joining every token with a single
     space (mirroring `Region.content`'s own lossy join), so `#a . b` and `#a.b`
     are the same tokens and the same meaning, differing only in whether that
-    reconstruction put a space around the `.`. The renderer works from the tree
-    and never introduces such a space, so a difference that is nothing but
-    whitespace touching `. [ ] ( ) ,` is the reconstruction's artefact, not a
-    divergence in what either side computed — see the module docstring for the
-    count this bar closes.
+    reconstruction put a space next to the `.`. The renderer works from the tree
+    and never introduces such a space, so a difference that is nothing but this
+    kind of join-spacing is the reconstruction's artefact, not a divergence in
+    what either side computed — see the module docstring for the count this bar
+    closes.
 
-    This does NOT collapse whitespace in general, and does not strip the ends
-    of the string: a space between two word characters (`self.not Ready` vs
-    `self.notReady`) is left exactly as written, on both sides, so that pair
-    keeps comparing unequal. That is deliberate — see the module docstring's
-    note on the `#notReady` translator bug this bar must not paper over.
+    The rule is a principle, not a punctuation list — a list was tried twice here
+    and was incomplete both times (see the module docstring). The principle:
+    **whitespace between two word characters is meaningful and is kept exactly as
+    written; every other whitespace run is layout and is removed entirely** (not
+    collapsed to one space — `scl_text` never produces a run longer than one space
+    outside a quoted run, so removal and collapsing agree there, but removal is
+    also correct for the case a collapse would get wrong: whitespace flush against
+    the start or end of a segment, where there is no *word* character on one side
+    to collapse a run down to, only nothing).
+
+    A space between two word characters is left exactly as written on both sides,
+    so `self.not Ready` and `self.notReady` keep comparing unequal — see the module
+    docstring's note on the `#notReady` translator bug this bar must not paper over.
 
     Text inside a quoted run is left untouched: a string literal's internal
-    whitespace is part of its value (`'a  b'` and `'a b'` are different SCL),
-    and a quoted symbol name is protected on the same terms even though the
-    corpus is not expected to put whitespace inside one. `_QUOTED_RUN` finds
-    both quoting conventions; only the text between and around those runs has
-    punctuation-adjacent whitespace removed.
+    whitespace is part of its value (`'a  b'` and `'a b'` are different SCL), and a
+    quoted symbol name is protected on the same terms even though the corpus is
+    not expected to put whitespace inside one. `_QUOTED_RUN` finds both quoting
+    conventions; only the text between and around those runs is examined.
 
     Parameters
     ----------
@@ -138,29 +162,44 @@ def _normalize_whitespace(text: str) -> str:
     Returns
     -------
     str
-        `text` with whitespace touching `. [ ] ( ) ,` removed outside quoted
-        runs; everything else, including quoted runs and word-adjacent
-        whitespace, unchanged.
+        `text` with every whitespace run removed except one with a word character
+        immediately on both sides, outside quoted runs; quoted runs unchanged.
     """
+
+    def _strip_layout_whitespace(segment: str) -> str:
+        def _replace(match: re.Match[str]) -> str:
+            start, end = match.span()
+            before = segment[start - 1] if start > 0 else ""
+            after = segment[end] if end < len(segment) else ""
+            if _is_word_character(before) and _is_word_character(after):
+                return match.group()
+            return ""
+
+        return _WHITESPACE_RUN.sub(_replace, segment)
+
     pieces: list[str] = []
     cursor = 0
     for match in _QUOTED_RUN.finditer(text):
-        pieces.append(_PUNCTUATION_WHITESPACE.sub(r"\1", text[cursor : match.start()]))
+        pieces.append(_strip_layout_whitespace(text[cursor : match.start()]))
         pieces.append(match.group())
         cursor = match.end()
-    pieces.append(_PUNCTUATION_WHITESPACE.sub(r"\1", text[cursor:]))
+    pieces.append(_strip_layout_whitespace(text[cursor:]))
     return "".join(pieces)
 
 
 class TestNormalizeWhitespace:
-    """Regression pins for `_normalize_whitespace`'s two load-bearing properties.
+    """Regression pins for `_normalize_whitespace`'s principle, not a punctuation list.
 
-    Fix-round follow-up: the first cut of this bar collapsed whitespace *runs*,
-    which is a no-op on the single spaces `scl_text`'s token-join actually
-    produces (`'self.a . b'` has one space either side of the `.`, not a run).
-    These pin the narrower, punctuation-adjacent rule instead, and pin that it
-    stays narrow — the third case is the one a wholesale strip would silently
-    swallow.
+    Fix-round history: the first cut of this bar collapsed whitespace *runs*, a
+    no-op on the single spaces `scl_text`'s token-join actually produces
+    (`'self.a . b'` has one space either side of the `.`, not a run). The second
+    cut named the punctuation it stripped whitespace next to and was incomplete —
+    it missed `%`-address spacing and a fused negative number's own `-`. Rather
+    than try a third list and likely miss a fourth thing, the rule is now the
+    principle these six pin: whitespace between two word characters is meaningful
+    and kept; every other whitespace run is layout and is removed. The third case
+    is the one a wholesale collapse-or-strip would silently swallow — it must keep
+    failing on its own, not because some other case happens to fail alongside it.
     """
 
     def test_dot_spacing_around_a_member_access_is_removed(self) -> None:
@@ -175,6 +214,12 @@ class TestNormalizeWhitespace:
 
     def test_whitespace_inside_a_string_literal_is_untouched(self) -> None:
         assert _normalize_whitespace("'a  b'") == "'a  b'"
+
+    def test_percent_address_spacing_is_removed(self) -> None:
+        assert _normalize_whitespace("% DB150 . % DBX31") == _normalize_whitespace("%DB150.%DBX31")
+
+    def test_fused_negative_number_spacing_is_removed(self) -> None:
+        assert _normalize_whitespace("self.x - 1") == _normalize_whitespace("self.x-1")
 
 
 def _blocks() -> Iterator[tuple[Path, Block]]:
