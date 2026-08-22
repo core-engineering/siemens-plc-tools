@@ -115,16 +115,19 @@ _IMPLICIT_BARE_NAME = "ENO"
 
 
 class UnsupportedExpression(Exception):
-    """Raised by :func:`render` for an expression node with no visitor.
+    """Raised by :func:`render` for a node it has no visitor for, or one it has a
+    visitor for but refuses to render because the result would run without error and
+    still be wrong -- see :func:`_render_builtin_call`'s output-binding check.
 
     Attributes
     ----------
     node : object
-        The value :func:`render` was asked to render and did not recognize.
+        The value :func:`render` was asked to render and either did not recognize or
+        recognized and refused.
     """
 
-    def __init__(self, node: object) -> None:
-        super().__init__(f"no renderer for {type(node).__name__}")
+    def __init__(self, node: object, message: str | None = None) -> None:
+        super().__init__(message if message is not None else f"no renderer for {type(node).__name__}")
         self.node = node
 
 
@@ -493,6 +496,21 @@ def _render_builtin_call(node: FunctionCall) -> str:
     of :data:`_BUILTIN_MAP` -- keeps its bare spelling, exactly as the current
     translator leaves a call it has no table entry for untouched.
 
+    Unlike :func:`_render_named_call`, which filters ``is_output`` arguments out of
+    the dict it builds, this function has no destination to route an output binding
+    to -- a bare call is rendered as a plain positional Python call, and Python has
+    no way to bind a parameter by name into a builtin's positional argument list, let
+    alone write a result back into one. Silently rendering the bound variable as if
+    it were an input, as an earlier version of this function did, is worse than
+    raising: the old text-based translator already produced invalid Python here
+    (``:=``/``=>`` become ``==`` under ``OPERATOR_MAP``, a ``SyntaxError``), so
+    treating the output as an input would trade a loud failure for one that runs
+    silently and never writes the result back. So this raises instead, before
+    rendering anything, for any call -- mapped or not, array-bound shape or not --
+    that carries an ``=>`` argument. A ``:=`` (input) binding is unaffected: its name
+    is still discarded and its value still rendered positionally, exactly as before --
+    only the direction that has nowhere to go is refused.
+
     Parameters
     ----------
     node : FunctionCall
@@ -504,7 +522,23 @@ def _render_builtin_call(node: FunctionCall) -> str:
         ``(lambda ...)(arr, dim)`` for the array-bound shape; ``py_func(args, ...)``
         otherwise, with each argument rendered through :func:`render` and joined by
         ``", "``.
+
+    Raises
+    ------
+    UnsupportedExpression
+        Any argument of ``node`` carries an output binding (``is_output=True``,
+        written ``=>`` in SCL) -- a bare call has no destination to route it to, so
+        rendering it positionally would silently drop the write-back.
     """
+    for argument in node.arguments:
+        if argument.is_output:
+            raise UnsupportedExpression(
+                node,
+                f"bare builtin call {node.name!r} binds {argument.name!r} with '=>' "
+                "(an output); a positional call has nowhere to write the result back "
+                "to, so rendering it as an input would run without error and silently "
+                "drop the write",
+            )
     upper_name = node.name.upper()
     if upper_name in _ARRAY_BOUND_BUILTINS and _is_array_bound_call(node):
         py_func = _BUILTIN_MAP[upper_name]
@@ -542,6 +576,12 @@ def _render_named_call(node: FunctionCall) -> str:
     that is what reproduces ``_build_named_call``'s own (pre-existing, unrelated to
     this task) mishandling of that shape -- calling the real method is what makes that
     reproduction structural rather than a duplicated guess at its bug.
+
+    Caveat: the ``__ARGVAL<n>__`` placeholder scheme assumes no real SCL identifier is
+    ever spelled that way. A source identifier that happened to match one exactly
+    would collide with it and be substituted like any other placeholder -- inherited
+    as-is from the text path's own placeholder scheme, not a new risk this function
+    introduces.
 
     Parameters
     ----------
