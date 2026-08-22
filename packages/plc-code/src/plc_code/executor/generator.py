@@ -1143,11 +1143,24 @@ def _generate_named_call_statement(
 
     Calls ``StatementTranslator._emit_named_call`` directly -- the same runtime-producing
     method ``StatementTranslator._translate_named_block_call`` itself calls after its own
-    regex-based paren matching -- with every argument value taken from :func:`render` via
-    the :func:`_named_call_placeholder` trick. The result-dict variable
+    depth-counting paren matching -- with every argument value taken from :func:`render`
+    via the :func:`_named_call_placeholder` trick. The result-dict variable
     ``_emit_named_call`` also returns is discarded, matching
     ``_translate_named_block_call``'s own ``self._emit_named_call(block_name,
     params_str)[0]`` -- a standalone call statement never reads the block's return value.
+
+    Unlike :func:`_generate_fb_instance_call`, this has no guard for a ``)`` embedded
+    inside a string-literal argument, and Task 8 leaves it that way on purpose: the
+    dispatcher's own ``_translate_named_block_call`` can truncate on that shape too (its
+    depth-counting scan has no string-literal awareness either -- see
+    :func:`_has_closing_parenthesis`'s own docstring), losing every argument after the
+    embedded ``)``, including a ``=>`` write-back. This function does not reproduce that
+    loss -- it renders the call in full, write-back included -- so
+    ``"Blk"(x := 'a)b', out => #y);`` diverges from the old dispatcher: one truncated
+    line there, a complete call plus its write-back here. That divergence is not guarded
+    against here because it would be code written only to reproduce a bug Task 9 deletes
+    one task later (Task 9 renders every ``)``-truncation shape correctly, this one
+    included, as a documented fifth class); the shape has zero occurrences in the corpus.
 
     Parameters
     ----------
@@ -1220,7 +1233,19 @@ def _has_closing_parenthesis(tokens: list[Token]) -> bool:
     :func:`_generate_fb_instance_call` does not attempt to reproduce either truncation
     from the tree -- see its own docstring -- so this flags the shape up front and lets
     :func:`_generate_call` fall back to the dispatcher instead, which reproduces the bug
-    byte for byte (it calls the very same ``translate_fb_call``).
+    byte for byte **for the FB-instance-call path only** (it calls the very same
+    ``translate_fb_call``). This predicate exists solely for that path.
+
+    The quoted-block call statement path (:func:`_generate_named_call_statement`)
+    deliberately has NO matching guard, even though its own dispatcher route
+    (``_translate_named_block_call``) can suffer a *related* truncation: its
+    depth-counting paren scan reads raw characters with no string-literal awareness
+    either, so a ``)`` embedded inside a string-literal argument's own text closes the
+    scan early there too (a grouped/nested-call ``)`` is unaffected -- depth-counting
+    handles genuinely balanced parens correctly, unlike ``translate_fb_call``'s regex).
+    Task 8 does not reproduce this from the tree for that path; see
+    :func:`_generate_named_call_statement`'s own docstring for the resulting divergence
+    and why it is left as is.
 
     Parameters
     ----------
@@ -1348,7 +1373,7 @@ def _generate_call(
       ``Call``.
 
     Either native renderer returning ``None`` (a named argument with no tree, or
-    :func:`render` raising :class:`~plc_code.executor.renderer.UnsupportedExpression``,
+    :func:`render` raising :class:`~plc_code.executor.renderer.UnsupportedExpression`,
     or -- FB calls only -- a closing parenthesis in an argument's raw value) also falls
     back; each such renderer records its own reason via :func:`_record_call_fallback`
     before returning, so this function only needs to record its own ("no usable callee

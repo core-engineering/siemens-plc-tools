@@ -347,7 +347,7 @@ def test_a_closing_paren_inside_a_string_argument_falls_back_same_as_a_grouped_e
 def test_call_fallback_reasons_are_split_by_cause() -> None:
     """Fix round 1 (Important 2): `call_fallback_reasons` breaks the one `fallback` count down.
 
-    Three different `Call` statements, three different reasons, none of which collide.
+    Two different `Call` statements, two different reasons, neither collides with the other.
     """
     reset_call_render_counters()
     generate_statements(_statements('"Block"(x := ABS(y => #out));'))  # unsupported_expression
