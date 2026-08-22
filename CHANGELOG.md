@@ -738,7 +738,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   at the tip of this branch; `02de048` is this branch's own point of divergence from
   `main`, the one base both figures below are measured against): `codegen.py` goes
   from 1,058 lines to 225 (966 deleted, 133 added — the survivors' own docstrings).
-  `generator.py` *grows*, from 270 lines to 838 (694 added, 126 deleted): most of
+  `generator.py` *grows*, from 270 lines to 855 (711 added, 126 deleted): most of
   this branch's earlier work moved statement-level rendering (`Assignment`,
   `If`/`For`/`While`/`Case` headers, `Call`/`Return`/`Exit`) natively into this
   module, one function per shape, where it used to live in the dispatcher this
