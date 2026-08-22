@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from plc_code.executor.codegen import ExpressionTranslator
-from plc_code.executor.generator import scl_text
+from plc_code.executor.generator import _map_string_constants, scl_text
 from plc_code.executor.renderer import UnsupportedExpression, render
 from plc_code.parser import parse_scl_file
 from plc_code.parser.expressions import Expression
@@ -363,6 +363,7 @@ def _expression_slice_diverges(
     tokens: list[Token],
     tree: Expression | None,
     translator: ExpressionTranslator,
+    string_constants: dict[str, int] | None = None,
 ) -> bool:
     """Whether one expression slice's tree-rendered Python disagrees with the current translator's.
 
@@ -374,6 +375,17 @@ def _expression_slice_diverges(
     category, the way the expression-level differential does, checks ``tree is None``
     itself before calling this.
 
+    ``string_constants`` is threaded through both sides the same way
+    ``generator.py`` threads it for a real ``Assignment``: the reference text is run
+    through ``generator._map_string_constants`` before ``translate`` (mirroring
+    ``_generate_assignment_via_dispatcher``'s own preprocessing), and the candidate is
+    rendered via ``render(tree, string_constants)`` (mirroring
+    ``_generate_assignment``'s native call). Without this, a slice whose divergence
+    only shows up once a string constant is substituted would compare as "agrees" here
+    while the generator-level comparison — which always has ``string_constants`` in
+    play — could still disagree, so this parameter exists precisely so the classifier
+    answers the same question the differential asks, not a related but narrower one.
+
     Parameters
     ----------
     tokens : list[Token]
@@ -384,6 +396,12 @@ def _expression_slice_diverges(
         expression.
     translator : ExpressionTranslator
         The reference (text-path) translator to compare against.
+    string_constants : dict[str, int] | None, optional
+        Mapping from a quoted string-constant literal to its assigned integer, as
+        ``SCLTranspiler._collect_string_constants`` produces and ``generate_statements``
+        accepts. ``None`` (the default) applies no substitution to either side, matching
+        every existing caller's prior behaviour exactly (``_map_string_constants``
+        is a no-op for a falsy mapping, and ``render``'s own default is ``None``).
 
     Returns
     -------
@@ -395,17 +413,17 @@ def _expression_slice_diverges(
     """
     if tree is None:
         return False
-    text = scl_text(tokens)
+    text = _map_string_constants(scl_text(tokens), string_constants)
     reference = translator.translate(text)
     try:
-        candidate = render(tree)
+        candidate = render(tree, string_constants)
     except UnsupportedExpression:
         return True
     return _normalize_whitespace(reference) != _normalize_whitespace(candidate)
 
 
 @pytest.fixture
-def expression_slice_diverges() -> Callable[[list[Token], Expression | None], bool]:
+def expression_slice_diverges() -> Callable[[list[Token], Expression | None, dict[str, int] | None], bool]:
     """Expose ``_expression_slice_diverges`` as a fixture, with its own ``ExpressionTranslator``.
 
     One ``ExpressionTranslator`` is built once per test (mirroring how
@@ -415,15 +433,19 @@ def expression_slice_diverges() -> Callable[[list[Token], Expression | None], bo
 
     Returns
     -------
-    Callable[[list[Token], Expression | None], bool]
+    Callable[[list[Token], Expression | None, dict[str, int] | None], bool]
         A closure over one ``ExpressionTranslator`` calling ``_expression_slice_diverges``,
-        so a test calls ``expression_slice_diverges(tokens, tree)`` for one slice's
-        divergence verdict.
+        so a test calls ``expression_slice_diverges(tokens, tree)`` — or
+        ``expression_slice_diverges(tokens, tree, string_constants)`` — for one slice's
+        divergence verdict. ``string_constants`` defaults to ``None`` (no substitution),
+        so every caller written before this parameter existed is unaffected.
     """
     translator = ExpressionTranslator()
 
-    def diverges(tokens: list[Token], tree: Expression | None) -> bool:
-        return _expression_slice_diverges(tokens, tree, translator)
+    def diverges(
+        tokens: list[Token], tree: Expression | None, string_constants: dict[str, int] | None = None
+    ) -> bool:
+        return _expression_slice_diverges(tokens, tree, translator, string_constants)
 
     return diverges
 
