@@ -7,34 +7,51 @@ verbatim into the generated Python while ``transpile_block`` reported success.
 This module reads the statement tree instead, and a construct it cannot
 generate raises rather than emitting nothing.
 
-`Assignment` is now rendered natively: `generate_statements` calls
+`Assignment` is rendered natively (Task 6): `generate_statements` calls
 `plc_code.executor.renderer.render` directly on `target_expr`/`value_expr`
 rather than rebuilding SCL text and handing it to a translator (see
 `_generate_assignment`). Three shapes still fall back to the text dispatcher
 -- a slice that failed to parse, the named-call-with-outputs shape `render`
 cannot express (`#ret := "Block"(x := #a, out => #b)`), and any node `render`
-itself refuses (raises `UnsupportedExpression` for). Every other statement kind
-(`If`, `For`, `While`, `Case`, `Call`, `Return`, `Exit`) still rebuilds the SCL
-string and hands it to `ExpressionTranslator` / `StatementTranslator`, the same
-translators the deleted text path used -- replacing those is a later task in
-the same plan.
+itself refuses (raises `UnsupportedExpression` for).
 
-`_generate_statements_via_strings` is the pre-this-task generator, kept alive
+`If`, `For`, `While` and `Case` are rendered natively too (Task 7): a
+condition (`Branch.condition_expr`, `While.condition_expr`), a `For` bound
+(`start_expr`/`end_expr`/`step_expr`), and a `Case` selector
+(`selector_expr`) all go through `render` via `_render_expression_or_fallback`,
+falling back to the text dispatcher on the same two conditions as
+`_generate_assignment`'s fallback (no tree, or `render` raises). A `Case`
+label is a *different* mapping from every other position: `_render_case_label`
+maps a label whose tree is a non-local, non-absolute `VariableRef` with a
+matching `string_constants` entry to that entry's bare integer -- the ordinary
+`self.NAME` substitution `render`'s own `_render_variable_ref` would apply to
+that identical tree shape everywhere else must NOT apply here (see
+`_render_case_label`'s own docstring). A `For` loop's own variable name has no
+`*_expr` field on the statement AST and stays on the text path unconditionally
+-- there is no tree for it to render from. `Call`, `Return` and `Exit` still
+rebuild the SCL string and hand it to `ExpressionTranslator` /
+`StatementTranslator`, the same translators the deleted text path used --
+replacing those is a later task in the same plan, along with the body of a
+still-native `If`/`For`/`While`/`Case`, which recurses through
+`generate_statements` itself (via `_generate_body`) and so already renders any
+nested `Assignment`, `If`, `For`, `While` or `Case` it contains natively too.
+
+`_generate_statements_via_strings` is the pre-Task-6 generator, kept alive
 under a private name as the differential's "old" side (see
 `tests/test_generator_native_differential.py`) until a later task deletes it.
-For everything still routed through it -- every non-`Assignment` statement,
-and an `Assignment` that falls back -- `StatementTranslator.translate_simple_statement`
-remains the statement-level dispatcher: RETURN/EXIT, the quoted-name block
-call, compound assignment, the named-call-with-outputs special case, the
-`#name(...)` FB call and the bare-expression fallback are dispatched there, in
-that order.
+For everything still routed through it -- `Call`/`Return`/`Exit`, an
+`Assignment` that falls back, and a header slice that falls back --
+`StatementTranslator.translate_simple_statement` (for `Call`/`Return`/`Exit`)
+or `StatementTranslator.translate_if_condition` / `.expr_translator.translate`
+(for a fallen-back header slice) remain the dispatch surface, unchanged from
+before Task 6.
 """
 
 from __future__ import annotations
 
 from plc_code.executor.codegen import StatementTranslator
 from plc_code.executor.renderer import UnsupportedExpression, render
-from plc_code.parser.expressions import Expression, FunctionCall
+from plc_code.parser.expressions import Expression, FunctionCall, VariableRef
 from plc_code.parser.lexer import Token
 from plc_code.parser.statements import Assignment, Call, Case, Exit, For, If, Return, Statement, While
 
@@ -79,6 +96,44 @@ def assignment_render_counts() -> tuple[int, int]:
         reset).
     """
     return _native_assignment_renders, _fallback_assignment_renders
+
+
+#: The control-flow counterpart to `_native_assignment_renders`/`_fallback_assignment_renders`
+#: above -- same rationale, same process-global/not-thread-safe caveat, same "never read
+#: directly outside this module" rule. Incremented once per header-level expression slice
+#: :func:`_render_expression_or_fallback` or :func:`_render_case_label` is asked to render:
+#: an `If`/`While` condition, one `For` bound (`start`/`end`/`step`, each counted
+#: separately), a `Case` selector (once per `Case`, not once per arm -- it is computed once
+#: and reused, matching the pre-Task-7 cost), or one `Case` label. See
+#: :func:`reset_control_flow_render_counters` / :func:`control_flow_render_counts`.
+_native_control_flow_renders = 0
+_fallback_control_flow_renders = 0
+
+
+def reset_control_flow_render_counters() -> None:
+    """Reset both control-flow-header counters to zero.
+
+    Call this immediately before the measurement whose native/fallback split you want to
+    attribute, mirroring :func:`reset_assignment_render_counters` for `If`/`For`/`While`/
+    `Case` headers instead of `Assignment`.
+    """
+    global _native_control_flow_renders, _fallback_control_flow_renders
+    _native_control_flow_renders = 0
+    _fallback_control_flow_renders = 0
+
+
+def control_flow_render_counts() -> tuple[int, int]:
+    """The control-flow-header render counts accumulated since the last reset.
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(native, fallback)`` -- how many header-level expression slices (an `If`/`While`
+        condition, a `For` bound, a `Case` selector or label) rendered from the tree versus
+        fell back to the text dispatcher, since the last
+        :func:`reset_control_flow_render_counters` call (or process start, if never reset).
+    """
+    return _native_control_flow_renders, _fallback_control_flow_renders
 
 
 class UnsupportedStatement(Exception):
@@ -530,6 +585,132 @@ def _generate_assignment(
     return [f"{prefix}{target_text} = {value_text}"]
 
 
+def _render_expression_or_fallback(
+    tokens: list[Token],
+    expr: Expression | None,
+    string_constants: dict[str, int] | None,
+    translator: StatementTranslator,
+) -> str:
+    """One control-flow header expression: an `If`/`While` condition, a `For` bound, or a `Case` selector.
+
+    Native rendering (`render(expr, string_constants)`) is attempted whenever `expr` is not
+    `None`; a `None` tree (the slice failed to parse) or `render` raising
+    `UnsupportedExpression` both fall back to the text dispatcher -- exactly the same two
+    conditions :func:`_generate_assignment` falls back for, minus the named-call-with-outputs
+    special case, which does not arise in a condition/bound/selector position (that shape is
+    only reachable as an `Assignment`'s right-hand side).
+
+    The fallback path reproduces the pre-Task-7 text exactly: `translate_if_condition` and
+    `translator.expr_translator.translate` are both, read directly, nothing more than
+    `self.expr_translator.translate(text)` -- so one fallback shape serves `If`/`While`
+    conditions, `For` bounds, and `Case` selectors alike; nothing here re-derives what
+    `StatementTranslator.translate_if_condition` already is.
+
+    Every call increments exactly one of :data:`_native_control_flow_renders` /
+    :data:`_fallback_control_flow_renders` (see :func:`reset_control_flow_render_counters` /
+    :func:`control_flow_render_counts`).
+
+    Parameters
+    ----------
+    tokens : list[Token]
+        The slice's raw token run (e.g. `Branch.condition`, `For.start`), used only by the
+        fallback path.
+    expr : Expression | None
+        The slice's parsed tree, or `None` when it failed to parse.
+    string_constants : dict[str, int] | None
+        Forwarded to :func:`render` (native path) or applied via :func:`_map_string_constants`
+        to the fallback text; see :func:`generate_statements`.
+    translator : StatementTranslator
+        Shared translator instance, used by the fallback path only.
+
+    Returns
+    -------
+    str
+        The rendered Python expression text.
+    """
+    global _native_control_flow_renders, _fallback_control_flow_renders
+    if expr is not None:
+        try:
+            text = render(expr, string_constants)
+        except UnsupportedExpression:
+            pass
+        else:
+            _native_control_flow_renders += 1
+            return text
+    _fallback_control_flow_renders += 1
+    text = _map_string_constants(scl_text(tokens), string_constants)
+    return translator.expr_translator.translate(text)
+
+
+def _render_case_label(
+    tokens: list[Token],
+    expr: Expression | None,
+    string_constants: dict[str, int] | None,
+    translator: StatementTranslator,
+) -> str:
+    """One `Case` label: a mapped symbolic constant renders as its bare integer, everything else natively.
+
+    A label is a different mapping from an ordinary expression position -- see the task
+    brief this function implements. A label whose tree is a non-local, non-absolute
+    `VariableRef` (`"MODE_ONE"`, never `#name` or `%name`) with quoted spelling
+    (`f'"{name}"'`) present in `string_constants` emits that mapping's bare integer, the
+    same value a matching `Assignment` right-hand side would resolve to at runtime. This is
+    deliberately NOT the same substitution :func:`render`'s own `_render_variable_ref`
+    performs for that identical tree shape everywhere else (`self.NAME`): applying that
+    substitution here would turn `if self.s == 1:` into `if self.s == self.MODE_ONE:`,
+    which `test_case_labels.py::TestSymbolicLabels` (an executable CASE, not a text
+    comparison) would catch immediately, since `self.MODE_ONE` is never assigned in the
+    generated class.
+
+    Every other label -- a plain literal (`1`), a range that failed to parse (`expr is
+    None`), or any tree :func:`render` raises `UnsupportedExpression` for -- goes through
+    :func:`render` if it has a tree, else the text-dispatcher fallback below, which
+    reproduces the pre-Task-7 per-label logic exactly: a literal match in
+    `string_constants` (by raw token text, not by tree shape -- this is the fallback path's
+    own pre-existing lookup, unrelated to the native ruling above) emits the bare integer;
+    otherwise the token text is translated as an ordinary expression.
+
+    Every call increments exactly one of :data:`_native_control_flow_renders` /
+    :data:`_fallback_control_flow_renders`, same as :func:`_render_expression_or_fallback`.
+
+    Parameters
+    ----------
+    tokens : list[Token]
+        The label's raw token slice (`CaseBranch.values[i]`), used by the fallback path.
+    expr : Expression | None
+        The label's parsed tree (`CaseBranch.values_expr[i]`), or `None`.
+    string_constants : dict[str, int] | None
+        Forwarded to :func:`render` and consulted directly for the symbolic-label ruling
+        and the fallback path's own literal-text lookup.
+    translator : StatementTranslator
+        Shared translator instance, used by the fallback path only.
+
+    Returns
+    -------
+    str
+        The rendered Python text for this one label.
+    """
+    global _native_control_flow_renders, _fallback_control_flow_renders
+    if expr is not None:
+        if isinstance(expr, VariableRef) and not expr.is_local and not expr.is_absolute:
+            quoted = f'"{expr.name}"'
+            if string_constants and quoted in string_constants:
+                _native_control_flow_renders += 1
+                return str(string_constants[quoted])
+        try:
+            text = render(expr, string_constants)
+        except UnsupportedExpression:
+            pass
+        else:
+            _native_control_flow_renders += 1
+            return text
+    _fallback_control_flow_renders += 1
+    label_text = scl_text(tokens)
+    if string_constants and label_text in string_constants:
+        return str(string_constants[label_text])
+    return translator.expr_translator.translate(_map_string_constants(label_text, string_constants))
+
+
 def generate_statements(
     statements: list[Statement],
     indent: int = 0,
@@ -540,10 +721,13 @@ def generate_statements(
 
     ``Assignment`` renders natively from ``target_expr``/``value_expr`` via
     :func:`render` -- see :func:`_generate_assignment` for the three cases that still
-    fall back to the text dispatcher. Every other statement kind (``If``, ``For``,
-    ``While``, ``Case``, ``Call``, ``Return``, ``Exit``) is unchanged from
-    :func:`_generate_statements_via_strings`: it still rebuilds SCL text and hands it
-    to ``StatementTranslator``. Replacing those is a later task in the same plan.
+    fall back to the text dispatcher. ``If``/``For``/``While``/``Case`` headers render
+    natively too -- a condition, a bound, a selector via
+    :func:`_render_expression_or_fallback`, a ``Case`` label via
+    :func:`_render_case_label` -- falling back to the text dispatcher on the same terms
+    (no tree, or :func:`render` raises). ``Call``, ``Return`` and ``Exit`` are unchanged
+    from :func:`_generate_statements_via_strings`: they still rebuild SCL text and hand
+    it to ``StatementTranslator``. Replacing those is a later task in the same plan.
 
     Parameters
     ----------
@@ -588,8 +772,9 @@ def generate_statements(
         if isinstance(statement, If):
             for position, branch in enumerate(statement.branches):
                 keyword = "if" if position == 0 else "elif"
-                condition_text = _map_string_constants(scl_text(branch.condition), string_constants)
-                condition = translator.translate_if_condition(condition_text)
+                condition = _render_expression_or_fallback(
+                    branch.condition, branch.condition_expr, string_constants, translator
+                )
                 lines.append(f"{prefix}{keyword} {condition}:")
                 lines.extend(_generate_body(branch.body, indent + 1, translator, string_constants))
             if statement.else_body:
@@ -599,42 +784,41 @@ def generate_statements(
 
         if isinstance(statement, For):
             variable_text = _map_string_constants(scl_text(statement.variable), string_constants)
-            start_text = _map_string_constants(scl_text(statement.start), string_constants)
-            end_text = _map_string_constants(scl_text(statement.end), string_constants)
             variable = translator.expr_translator.translate(variable_text)
-            start = translator.expr_translator.translate(start_text)
-            end = translator.expr_translator.translate(end_text)
+            start = _render_expression_or_fallback(
+                statement.start, statement.start_expr, string_constants, translator
+            )
+            end = _render_expression_or_fallback(
+                statement.end, statement.end_expr, string_constants, translator
+            )
             bounds = f"{start}, {end} + 1"
             if statement.step:
-                step_text = _map_string_constants(scl_text(statement.step), string_constants)
-                bounds += f", {translator.expr_translator.translate(step_text)}"
+                step = _render_expression_or_fallback(
+                    statement.step, statement.step_expr, string_constants, translator
+                )
+                bounds += f", {step}"
             lines.append(f"{prefix}for {variable} in range({bounds}):")
             lines.extend(_generate_body(statement.body, indent + 1, translator, string_constants))
             continue
 
         if isinstance(statement, While):
-            condition_text = _map_string_constants(scl_text(statement.condition), string_constants)
-            condition = translator.translate_if_condition(condition_text)
+            condition = _render_expression_or_fallback(
+                statement.condition, statement.condition_expr, string_constants, translator
+            )
             lines.append(f"{prefix}while {condition}:")
             lines.extend(_generate_body(statement.body, indent + 1, translator, string_constants))
             continue
 
         if isinstance(statement, Case):
-            selector_text = _map_string_constants(scl_text(statement.selector), string_constants)
-            selector = translator.expr_translator.translate(selector_text)
+            selector = _render_expression_or_fallback(
+                statement.selector, statement.selector_expr, string_constants, translator
+            )
             for position, arm in enumerate(statement.branches):
                 keyword = "if" if position == 0 else "elif"
                 values = []
-                for v in arm.values:
-                    label_text = scl_text(v)
-                    if string_constants and label_text in string_constants:
-                        values.append(str(string_constants[label_text]))
-                    else:
-                        values.append(
-                            translator.expr_translator.translate(
-                                _map_string_constants(label_text, string_constants)
-                            )
-                        )
+                for value_index, v in enumerate(arm.values):
+                    value_expr = arm.values_expr[value_index] if value_index < len(arm.values_expr) else None
+                    values.append(_render_case_label(v, value_expr, string_constants, translator))
                 if len(values) == 1:
                     test = f"{selector} == {values[0]}"
                 else:
