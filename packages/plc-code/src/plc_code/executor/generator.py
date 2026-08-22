@@ -131,13 +131,21 @@ def _generate_body(
     return lines
 
 
-def generate_statements(
+def _generate_statements_via_strings(
     statements: list[Statement],
     indent: int = 0,
     translator: StatementTranslator | None = None,
     string_constants: dict[str, int] | None = None,
 ) -> list[str]:
-    """Generate Python lines for a list of statements.
+    """Generate Python lines for a list of statements, rebuilding SCL text per statement.
+
+    This is the pre-Task-6 body of ``generate_statements``, kept alive under a
+    private name rather than deleted outright: it is the "old" side of
+    ``test_generator_native_differential.py`` (Task 6's unit-level differential
+    over the corpus, comparing this function line-for-line against the tree-driven
+    ``generate_statements``), and it is what Task 9 deletes once every statement
+    kind has a native renderer of its own. Nothing here changed behaviourally when
+    it was renamed from ``generate_statements`` to this name.
 
     Parameters
     ----------
@@ -268,3 +276,43 @@ def generate_statements(
         raise UnsupportedStatement(f"{type(statement).__name__} at line {statement.line}")
 
     return lines
+
+
+def generate_statements(
+    statements: list[Statement],
+    indent: int = 0,
+    translator: StatementTranslator | None = None,
+    string_constants: dict[str, int] | None = None,
+) -> list[str]:
+    """Generate Python lines for a list of statements.
+
+    Parameters
+    ----------
+    statements : list[Statement]
+        The tree, as ``parse_statements`` returns it.
+    indent : int
+        Depth in four-space units. The caller splices the result into a class
+        body, so the lines come back already indented.
+    translator : StatementTranslator | None
+        The translator to render expressions and simple statements with.
+        Defaults to a fresh one; passed explicitly so a caller may share state
+        across a whole block.
+    string_constants : dict[str, int] | None
+        Mapping from a quoted string literal (e.g. ``'"USER_FREEWHEEL"'``) to
+        the integer value assigned to it, as collected by
+        ``SCLTranspiler._collect_string_constants``. A literal that matches a
+        CASE label is rendered as that bare integer; matching elsewhere it is
+        rendered as ``self.NAME``. ``None`` (the default) renders every string
+        literal as itself.
+
+    Returns
+    -------
+    list[str]
+        Python lines, in source order.
+
+    Raises
+    ------
+    UnsupportedStatement
+        For a statement kind with no branch here.
+    """
+    return _generate_statements_via_strings(statements, indent, translator, string_constants)
