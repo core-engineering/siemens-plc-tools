@@ -73,7 +73,13 @@ real `generate_statements` call and reads immediately after, before any of the
 diagnostic isolated calls `_attribute_unit_divergence` goes on to make (which would
 otherwise pollute the count) -- accumulated across the whole run and printed as
 ``native=N fell_back=M, control_flow_native=P control_flow_fell_back=Q, call_native=R
-call_fell_back=S``.
+call_fell_back=S``. Fix round 1 adds `generator.call_fallback_reasons` alongside the
+pair -- one `fallback` figure conflates every reason a `Call` could not render natively
+(no usable callee shape, a closing parenthesis in an FB-call argument that would trip
+`translate_fb_call`'s own truncation, a missing argument tree, `render` raising), and
+Task 9 needs the breakdown to decide what happens to each population once the dispatcher
+is deleted. Accumulated the same way (reset per unit, summed with `Counter.update`) and
+printed as ``call_fallback_reasons={...}``.
 
 No golden file: the generated Python and the SCL it came from both carry customer
 identifiers, and this repository is public (see `tests/test_no_confidential_references.py`).
@@ -87,6 +93,7 @@ of this repository, present on a developer machine but absent on CI.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -95,6 +102,7 @@ import pytest
 from plc_code.executor.generator import (
     _generate_statements_via_strings,
     assignment_render_counts,
+    call_fallback_reasons,
     call_render_counts,
     control_flow_render_counts,
     generate_statements,
@@ -555,6 +563,7 @@ def test_generator_native_differential_over_the_corpus(
     total_control_flow_fallback = 0
     total_call_native = 0
     total_call_fallback = 0
+    total_call_fallback_reasons: Counter[str] = Counter()
 
     for _path, block in corpus_blocks:
         blocks_seen += 1
@@ -575,6 +584,7 @@ def test_generator_native_differential_over_the_corpus(
             call_native_delta, call_fallback_delta = call_render_counts()
             total_call_native += call_native_delta
             total_call_fallback += call_fallback_delta
+            total_call_fallback_reasons.update(call_fallback_reasons())
 
             unit_diff_count = _differing_line_count(old_lines, new_lines, normalize_whitespace)
             if unit_diff_count == 0:
@@ -606,7 +616,8 @@ def test_generator_native_differential_over_the_corpus(
         f"native={total_native} fell_back={total_fallback}, "
         f"control_flow_native={total_control_flow_native} "
         f"control_flow_fell_back={total_control_flow_fallback}, "
-        f"call_native={total_call_native} call_fell_back={total_call_fallback}"
+        f"call_native={total_call_native} call_fell_back={total_call_fallback}, "
+        f"call_fallback_reasons={dict(sorted(total_call_fallback_reasons.items()))}"
     )
     assert unattributed_divergences == []
     assert units_seen > 0

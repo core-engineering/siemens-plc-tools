@@ -21,11 +21,29 @@ pins the byte-identical text these constructs must keep producing; this module d
 invent new shapes, it adds the native/fallback counter assertions
 (`control_flow_render_counts`, `call_render_counts`) that prove the shape came from the
 tree, not just from an unchanged code path that happens to still produce the same text.
+
+Fix round 1 (post-review) adds two regression tests the corpus differential's own
+per-argument-slice attribution could not surface on its own:
+
+* `_is_write_back_candidate` wrongly returned True for a `Member` whose global-DB base
+  name contains a non-word character (a hyphen, a space, a dot) -- `translate_fb_call`'s
+  ``GLOBAL_DB_PATTERN`` (`r'"(\\w+)"\\s*\\.\\s*(.+)'`) never matches such a name, so the
+  dispatcher never rewrites it and `_emit_named_call` never emits a write-back for it,
+  while the buggy check emitted a spurious second line. The differential's own
+  per-argument-slice attribution laundered this away, because the *value itself* renders
+  identically on both sides regardless -- only the extra *statement* line differed, which
+  no single-slice comparison can see.
+* `_has_closing_parenthesis` originally checked only for an `RPAREN` token, missing a `)`
+  character embedded inside a string literal argument (`translate_fb_call`'s regex
+  truncates on that too, blind to token boundaries) -- now checks `STRING` token text too.
 """
 
 from __future__ import annotations
 
 from plc_code.executor.generator import (
+    _generate_statements_via_strings,
+    _is_write_back_candidate,
+    call_fallback_reasons,
     call_render_counts,
     control_flow_render_counts,
     generate_statements,
@@ -34,7 +52,7 @@ from plc_code.executor.generator import (
 )
 from plc_code.parser.lexer import TokenType, tokenize
 from plc_code.parser.statement_parser import parse_statements
-from plc_code.parser.statements import Statement
+from plc_code.parser.statements import Call, Statement
 
 
 def _statements(source: str) -> list[Statement]:
@@ -257,3 +275,86 @@ def test_an_assignment_from_a_named_call_with_outputs_renders_natively() -> None
     ]
     native, fallback = call_render_counts()
     assert (native, fallback) == (0, 0)
+
+
+def _first_call_argument_value_expr(source: str, index: int = 0):
+    """The parsed value of one `Call` statement's `index`-th argument, for a direct unit check."""
+    (call,) = _statements(source)
+    assert isinstance(call, Call)
+    value_expr = call.arguments[index].value_expr
+    assert value_expr is not None
+    return value_expr
+
+
+def test_a_global_db_name_with_a_hyphen_is_not_a_write_back_candidate() -> None:
+    """Fix round 1 (Critical): `GLOBAL_DB_PATTERN` requires a word-only quoted name.
+
+    `"My-DB" . m` never matches `r'"(\\w+)"\\s*\\.\\s*(.+)'` (the hyphen is not `\\w`), so
+    the dispatcher's `translate` leaves it completely untouched -- quoted, with its
+    `scl_text` spaces intact -- and `_emit_named_call` never sees a `self.`-rooted,
+    space-free value for it, so it never emits a write-back line. The line *count* must
+    match the old path's even though the *value text* legitimately still differs (a
+    pre-existing, separately-attributed `renderer.py` residual -- see the module
+    docstring's own note on this).
+    """
+    value_expr = _first_call_argument_value_expr('"Blk"(x := "My-DB".m);')
+    assert _is_write_back_candidate(value_expr, None) is False
+
+    source = '"Blk"(x := "My-DB".m);'
+    old_lines = _generate_statements_via_strings(_statements(source))
+    new_lines = generate_statements(_statements(source))
+    assert len(new_lines) == len(old_lines) == 1
+
+
+def test_a_global_db_name_with_a_space_is_not_a_write_back_candidate() -> None:
+    value_expr = _first_call_argument_value_expr('"Blk"(x := "My DB".m);')
+    assert _is_write_back_candidate(value_expr, None) is False
+
+    source = '"Blk"(x := "My DB".m);'
+    old_lines = _generate_statements_via_strings(_statements(source))
+    new_lines = generate_statements(_statements(source))
+    assert len(new_lines) == len(old_lines) == 1
+
+
+def test_a_global_db_name_with_a_dot_is_not_a_write_back_candidate() -> None:
+    value_expr = _first_call_argument_value_expr('"Blk"(x := "a.b".m);')
+    assert _is_write_back_candidate(value_expr, None) is False
+
+    source = '"Blk"(x := "a.b".m);'
+    old_lines = _generate_statements_via_strings(_statements(source))
+    new_lines = generate_statements(_statements(source))
+    assert len(new_lines) == len(old_lines) == 1
+
+
+def test_a_closing_paren_inside_a_string_argument_falls_back_same_as_a_grouped_expression() -> None:
+    """Fix round 1 (Important 1): widened to scan `STRING` token text, not just `RPAREN`.
+
+    Probed: `StatementTranslator().translate_simple_statement("#tmr ( IN := 'a)b' , PT :=
+    #t ) ;")` truncates mid-literal and drops `PT` entirely, exactly like the grouped-
+    expression case already covered by `test_an_fb_instance_call_...` -- the closing `)`
+    that trips the regex is inside the string token's own text, not a token of its own.
+    """
+    reset_call_render_counters()
+    source = "#tmr(IN := 'a)b', PT := #t);"
+    old_lines = _generate_statements_via_strings(_statements(source))
+    new_lines = generate_statements(_statements(source))
+    assert new_lines == old_lines
+    native, fallback = call_render_counts()
+    assert (native, fallback) == (0, 1)
+    assert call_fallback_reasons() == {"closing_parenthesis": 1}
+
+
+def test_call_fallback_reasons_are_split_by_cause() -> None:
+    """Fix round 1 (Important 2): `call_fallback_reasons` breaks the one `fallback` count down.
+
+    Three different `Call` statements, three different reasons, none of which collide.
+    """
+    reset_call_render_counters()
+    generate_statements(_statements('"Block"(x := ABS(y => #out));'))  # unsupported_expression
+    generate_statements(_statements("#tmr(IN := 'a)b');"))  # closing_parenthesis
+    reasons = call_fallback_reasons()
+    assert reasons["unsupported_expression"] == 1
+    assert reasons["closing_parenthesis"] == 1
+    native, fallback = call_render_counts()
+    assert (native, fallback) == (0, 2)
+    assert sum(reasons.values()) == fallback
