@@ -61,6 +61,18 @@ _UNDEFINED_NAME_DEFECT = _block(
     "            #b := SEL(G := TRUE, IN0 := 1, IN1 := 2);",
 )
 
+# A bare (non-quoted) system builtin binding a parameter with `=>` as the whole
+# right-hand side of an assignment. `render` refuses this shape outright (a
+# positional call has nowhere to route an output binding to -- see
+# `renderer._render_builtin_call`'s own docstring), and `generate_statements` no
+# longer catches that refusal for a plain Assignment (Task 9 step 3): it propagates
+# out of transpilation entirely -> TRANSPILE, an error, same category as
+# `_TRANSPILE_DEFECT` above, not a warning caught only at run time like SEL.
+_OUTPUT_BINDING_DEFECT = _block(
+    "RdSysTUser",
+    "            #b := RD_SYS_T(OUT => #b);",
+)
+
 
 @pytest.fixture
 def runner() -> CliRunner:
@@ -80,6 +92,14 @@ def undefined_name_block(tmp_path: Path) -> Path:
     """A block whose generated Python parses but reads an undefined name."""
     path = tmp_path / "SelUser.s7dcl"
     path.write_text(_UNDEFINED_NAME_DEFECT, encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def output_binding_defect_block(tmp_path: Path) -> Path:
+    """A block whose only assignment binds a bare system builtin's `=>` output."""
+    path = tmp_path / "RdSysTUser.s7dcl"
+    path.write_text(_OUTPUT_BINDING_DEFECT, encoding="utf-8")
     return path
 
 
@@ -200,6 +220,14 @@ class TestCheckMode:
         result = runner.invoke(cli, ["transpile", "--check", str(unsupported_block)])
         assert result.exit_code == 1
         assert "RepeatUser" in result.output
+
+    def test_output_binding_on_a_bare_builtin_fails_the_transpile(
+        self, runner: CliRunner, output_binding_defect_block: Path
+    ) -> None:
+        """Task 9 step 3: what used to be a silently-broken fallback is now a hard failure."""
+        result = runner.invoke(cli, ["transpile", "--check", str(output_binding_defect_block)])
+        assert result.exit_code == 1
+        assert "RdSysTUser" in result.output
 
     def test_whole_fixture_corpus_is_clean(self, runner: CliRunner) -> None:
         """The shipped fixtures are blocks the toolchain handles — all of them."""

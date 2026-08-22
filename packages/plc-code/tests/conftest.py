@@ -10,10 +10,10 @@ from pathlib import Path
 import pytest
 
 from plc_code.executor.codegen import ExpressionTranslator
-from plc_code.executor.generator import _map_string_constants, scl_text
+from plc_code.executor.generator import _has_closing_parenthesis, _map_string_constants, scl_text
 from plc_code.executor.renderer import UnsupportedExpression, render
 from plc_code.parser import parse_scl_file
-from plc_code.parser.expressions import Expression
+from plc_code.parser.expressions import Expression, Index, Member
 from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block
 from plc_code.parser.statement_parser import parse_statements
@@ -448,6 +448,81 @@ def expression_slice_diverges() -> Callable[[list[Token], Expression | None, dic
         return _expression_slice_diverges(tokens, tree, translator, string_constants)
 
     return diverges
+
+
+@pytest.fixture
+def fb_call_argument_would_truncate_old_path() -> Callable[[Call], bool]:
+    """The fifth attributed residual class's own classifier: does this `Call` contain the shape
+
+    `translate_fb_call`'s paren-truncation bug fires on?
+
+    `generator._generate_fb_instance_call` used to fall back to the text dispatcher on this
+    exact shape (an argument's raw value containing a closing parenthesis -- see
+    `generator._has_closing_parenthesis`'s own docstring); Task 9 step 3 removes that guard
+    and renders the call whole instead, so a `Call` matching this shape now genuinely
+    diverges from `_generate_statements_via_strings` (which still truncates, via the
+    now-doomed `translate_fb_call`). That divergence is not a new generator bug -- it is the
+    old path's own acknowledged truncation bug, not reproduced on purpose -- so the unit-level
+    differential's attribution (`test_generator_native_differential.py`) accepts it as
+    explained, the same way an expression-level residual explains an `Assignment`/header
+    divergence, using this classifier instead of `expression_slice_diverges` (which, run on
+    the argument's own isolated token slice, would not flag this shape at all: translating
+    just the one argument's own text in isolation is not what triggers the bug -- the bug is
+    in how the whole call's text gets re-parsed by one regex).
+
+    Returns
+    -------
+    Callable[[Call], bool]
+        A closure wrapping `generator._has_closing_parenthesis`, so a test calls
+        `fb_call_argument_would_truncate_old_path(call)` for one `Call` statement's verdict:
+        True when any of its arguments' raw value tokens would have tripped
+        `translate_fb_call`'s truncation.
+    """
+
+    def check(call: Call) -> bool:
+        return any(_has_closing_parenthesis(argument.value) for argument in call.arguments)
+
+    return check
+
+
+@pytest.fixture
+def fb_call_callee_confuses_old_regex() -> Callable[[Call], bool]:
+    """Classifier for the *existing* "bare call `:=` mangled to `==`" residual class, reached
+    here through a `Call` statement's own callee rather than through a bare `FunctionCall`
+    expression.
+
+    `translate_fb_call`'s own regex (`#(\\w+)\\s*\\(`) only recognises a callee spelled as a
+    bare `#name` immediately followed by `(` -- an `Index` callee (`#arms[#i](...)`) or a
+    `Member` callee (`"db".TON(...)`) never matches it, so the old dispatcher falls through to
+    translating the *whole* call as one bare expression instead. That expression path runs
+    every argument's `:=` through `OPERATOR_MAP` (`:=` -> `=`, then the standalone-`=`-to-`==`
+    rule catches the result) and discards each `:=`/`=>` name, both silently -- the same
+    `OPERATOR_MAP`/standalone-`=` mangling `test_renderer_calls.py` already pins for a bare
+    *builtin* `FunctionCall` used as an expression, not a new bug.
+
+    `generator._generate_fb_instance_call` (Task 9 step 3) widens its callee shapes to accept
+    `Index`/`Member` too, rendering the callee itself through `render` and each `:=`/`=>`
+    argument correctly by name -- so a `Call` with this callee shape now genuinely diverges
+    from the old dispatcher whenever it binds at least one named argument. Neither
+    `Call.callee` nor any `Call.arguments[i].value` slice diverges on its own under
+    `expression_slice_diverges` (the callee renders identically either way, and so does each
+    argument's bare value -- the difference is only in how the *call syntax itself* wires
+    names to values), so this classifier is consulted instead, exactly like
+    `fb_call_argument_would_truncate_old_path` above.
+
+    Returns
+    -------
+    Callable[[Call], bool]
+        A closure testing `call.callee_expr`'s type, so a test calls
+        `fb_call_callee_confuses_old_regex(call)` for one `Call` statement's verdict: True
+        when its callee is an `Index` or a `Member` (the two shapes `translate_fb_call`'s own
+        regex cannot recognise as a call at all).
+    """
+
+    def check(call: Call) -> bool:
+        return isinstance(call.callee_expr, Index | Member)
+
+    return check
 
 
 @pytest.fixture

@@ -26,7 +26,16 @@ branch (`_generate_statements_via_strings`) still routes `target`/`value` throug
 that differential already found and attributed (a bare builtin call binding a parameter
 by name, a global DB name `GLOBAL_DB_PATTERN` can't match, the acknowledged `NOT`-prefix
 bug, a chained typed literal under a size prefix) is not a *new* generator bug when it
-resurfaces here.
+resurfaces here. Task 9 step 3 adds a **fifth** class, `Call`-specific rather than
+expression-level: the old path's own `translate_fb_call` truncates a call's parameter
+list at the first `)` found anywhere in its rebuilt text, including one nested inside a
+grouped sub-expression or a string literal argument (`generator._has_closing_parenthesis`);
+`generator._generate_fb_instance_call` no longer reproduces that truncation, so such a
+call renders whole natively while the old path still truncates it. No single argument's
+own isolated translation diverges (the bug only fires when the *whole call's* text is
+re-parsed by one regex), so `expression_slice_diverges` cannot see it; the
+`fb_call_argument_would_truncate_old_path` fixture (`conftest.py`) does instead -- see
+`_attribute_unit_divergence`'s own docstring.
 
 **Attribution is per statement, not per unit.** An earlier version of this differential
 attributed a whole diverging unit if *any* expression slice inside it diverged --
@@ -93,6 +102,7 @@ of this repository, present on a developer machine but absent on CI.
 
 from __future__ import annotations
 
+import difflib
 from collections import Counter
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -110,8 +120,9 @@ from plc_code.executor.generator import (
     reset_call_render_counters,
     reset_control_flow_render_counters,
 )
+from plc_code.executor.renderer import UnsupportedExpression
 from plc_code.executor.transpiler import SCLTranspiler
-from plc_code.parser.expressions import Expression
+from plc_code.parser.expressions import Expression, FunctionCall
 from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block
 from plc_code.parser.statement_parser import parse_statements
@@ -203,10 +214,24 @@ def _differing_line_count(
 ) -> int:
     """How many lines two generated-Python outputs disagree on, after `normalize_whitespace`.
 
-    Counts one per position in the shared prefix where the normalised lines differ,
-    plus the absolute difference in length -- so a length mismatch always contributes a
-    positive count and can never be mistaken for "zero differing lines" the way a naive
-    `zip`-based comparison would if one side were simply a prefix of the other.
+    Aligns the two line lists with `difflib.SequenceMatcher` rather than comparing by
+    raw position (`zip`): every statement kind measured before Task 9 step 3 renders to
+    the *same* line count on both sides regardless of what its own text says, so a
+    positional comparison and an alignment-aware one agree everywhere that held. Step
+    3's fifth residual class (`generator._has_closing_parenthesis` -- the old path
+    truncates an FB call's parameter list, silently dropping one or more trailing lines
+    such as an `=>` output assignment) breaks that assumption: the old and new line
+    counts for a `Call` with this shape genuinely differ, and once one statement's own
+    line count changes, a positional comparison misattributes every *later*,
+    unrelated statement in the same unit as "different" too, purely because it now sits
+    at a shifted index -- exactly the false positive `SequenceMatcher`'s block-level
+    alignment is built to avoid: content that still matches, matches, regardless of
+    where it now sits. Each non-`"equal"` opcode block contributes
+    `max(i2 - i1, j2 - j1)` -- the larger of the two sides' block lengths, so a 1-line
+    old block replaced by a 2-line new block (the truncation case) counts as 2, a
+    pure 1-for-1 text substitution (every pre-existing residual class) still counts as
+    1 exactly as the old position-based count did, and a pure insertion or deletion
+    counts as however many lines were inserted or deleted.
 
     Parameters
     ----------
@@ -220,16 +245,18 @@ def _differing_line_count(
     Returns
     -------
     int
-        0 when the two agree entirely (after normalisation); otherwise the number of
-        disagreeing positions in the shared prefix, plus `abs(len(old) - len(new))`.
+        0 when the two agree entirely (after normalisation); otherwise the sum, over
+        every non-`"equal"` alignment block, of the larger of its old-side and
+        new-side line counts.
     """
-    common = min(len(old_lines), len(new_lines))
-    mismatches = sum(
-        1
-        for old_line, new_line in zip(old_lines[:common], new_lines[:common], strict=True)
-        if normalize_whitespace(old_line) != normalize_whitespace(new_line)
+    old_normalized = [normalize_whitespace(line) for line in old_lines]
+    new_normalized = [normalize_whitespace(line) for line in new_lines]
+    matcher = difflib.SequenceMatcher(a=old_normalized, b=new_normalized, autojunk=False)
+    return sum(
+        max(old_end - old_start, new_end - new_start)
+        for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes()
+        if tag != "equal"
     )
-    return mismatches + abs(len(old_lines) - len(new_lines))
 
 
 def _walk_assignments(statements: list[Statement], depth: int = 0) -> Iterator[tuple[Assignment, int]]:
@@ -273,6 +300,39 @@ def _walk_assignments(statements: list[Statement], depth: int = 0) -> Iterator[t
             yield from _walk_assignments(statement.body, depth + 1)
         elif isinstance(statement, While):
             yield from _walk_assignments(statement.body, depth + 1)
+
+
+def _is_bare_builtin_call_with_output(expression: Expression | None) -> bool:
+    """Whether `expression` is the one shape Task 9 step 3 makes `generate_statements` raise on.
+
+    Mirrors `renderer._render_builtin_call`'s own refusal exactly: a non-quoted
+    `FunctionCall` (a bare system builtin, e.g. `RD_SYS_T`, `GET_DIAG` -- never mapped
+    through `BUILTIN_MAP`) with at least one `=>` (output-bound) argument. `render`
+    raises `UnsupportedExpression` for this shape by design (a positional call has
+    nowhere to route an output binding), and `generator._generate_assignment` no longer
+    catches that raise for an `Assignment`'s plain (non-named-call-with-outputs) value --
+    it propagates all the way out of `generate_statements` (see that function's own
+    docstring). Every occurrence found in the corpus is this exact shape as an
+    `Assignment.value_expr` -- `assignment_render_counts`'s fallback figure was 12
+    before this change, matching six `GET_DIAG`, two `RD_SYS_T`, two `DPRD_DAT`, one
+    `RH_CTRL` and one `Serialize` call, probed directly rather than assumed.
+
+    Parameters
+    ----------
+    expression : Expression | None
+        Typically an `Assignment.value_expr`.
+
+    Returns
+    -------
+    bool
+        True when `expression` is a `FunctionCall` with `is_quoted=False` and at least
+        one argument with `is_output=True`.
+    """
+    return (
+        isinstance(expression, FunctionCall)
+        and not expression.is_quoted
+        and any(argument.is_output for argument in expression.arguments)
+    )
 
 
 def _walk_calls(statements: list[Statement], depth: int = 0) -> Iterator[tuple[Call, int]]:
@@ -413,6 +473,8 @@ def _attribute_unit_divergence(
     normalize_whitespace: Callable[[str], str],
     statement_expression_slices: _StatementExpressionSlices,
     expression_slice_diverges: _ExpressionSliceDiverges,
+    fb_call_argument_would_truncate_old_path: Callable[[Call], bool],
+    fb_call_callee_confuses_old_regex: Callable[[Call], bool],
 ) -> list[str]:
     """Whether every differing line of one diverging unit is explained by its own diverging residual.
 
@@ -425,12 +487,20 @@ def _attribute_unit_divergence(
     compared **in isolation** against its own dispatcher output, and each isolated
     divergence requires that unit's own expression slice(s) -- and only those slices, via
     `statement_expression_slices` on the same isolated (`[assignment]`, shallow header, or
-    `[call]`) statement list -- to be flagged by `expression_slice_diverges`. Every
-    explained unit's own differing-line count is summed; the whole diverging line is
-    fully attributed only when that sum equals `unit_diff_count` exactly and nothing
-    (from any walk) was left unflagged. A line no walk's own isolated comparison
-    reproduces is not covered by this function at all and surfaces as a shortfall in the
-    final sum -- exactly the "unattributed" outcome the module docstring's bar requires.
+    `[call]`) statement list -- to be flagged by `expression_slice_diverges`. A `Call`'s
+    own isolated divergence has two further, alternative ways to be explained (Task 9
+    step 3), neither of which `expression_slice_diverges` can see on its own -- both are
+    call-syntax-level effects, not something a single argument's own isolated translation
+    reproduces: `fb_call_argument_would_truncate_old_path` flags the fifth residual class
+    (the old path's own paren-truncation bug, `generator._has_closing_parenthesis`), and
+    `fb_call_callee_confuses_old_regex` flags the *existing* "bare call `:=` mangled to
+    `==`" class reached through an `Index`/`Member` callee instead of a bare `FunctionCall`
+    expression (see that fixture's own docstring in `conftest.py`). Every explained unit's
+    own differing-line count is summed; the whole diverging line is fully attributed only
+    when that sum equals `unit_diff_count` exactly and nothing (from any walk) was left
+    unflagged. A line no walk's own isolated comparison reproduces is not covered by this
+    function at all and surfaces as a shortfall in the final sum -- exactly the
+    "unattributed" outcome the module docstring's bar requires.
 
     Parameters
     ----------
@@ -453,6 +523,12 @@ def _attribute_unit_divergence(
         The per-unit expression-slice walker fixture from `conftest.py`.
     expression_slice_diverges : _ExpressionSliceDiverges
         The shared per-slice divergence judgement fixture from `conftest.py`.
+    fb_call_argument_would_truncate_old_path : Callable[[Call], bool]
+        The fifth-residual-class classifier fixture from `conftest.py`, consulted only
+        by the `Call` walk.
+    fb_call_callee_confuses_old_regex : Callable[[Call], bool]
+        The `Index`/`Member`-callee classifier fixture from `conftest.py`, consulted only
+        by the `Call` walk.
 
     Returns
     -------
@@ -507,9 +583,13 @@ def _attribute_unit_divergence(
         diff_count = _differing_line_count(old_one, new_one, normalize_whitespace)
         if diff_count == 0:
             continue
-        flagged = any(
-            expression_slice_diverges(tokens, tree, string_constants)
-            for _slice_label, tokens, tree in statement_expression_slices([call], call_label)
+        flagged = (
+            any(
+                expression_slice_diverges(tokens, tree, string_constants)
+                for _slice_label, tokens, tree in statement_expression_slices([call], call_label)
+            )
+            or fb_call_argument_would_truncate_old_path(call)
+            or fb_call_callee_confuses_old_regex(call)
         )
         if not flagged:
             problems.append(f"{call_label}: diverges in isolation but its own slice is not flagged")
@@ -529,6 +609,8 @@ def test_generator_native_differential_over_the_corpus(
     normalize_whitespace: Callable[[str], str],
     statement_expression_slices: _StatementExpressionSlices,
     expression_slice_diverges: _ExpressionSliceDiverges,
+    fb_call_argument_would_truncate_old_path: Callable[[Call], bool],
+    fb_call_callee_confuses_old_regex: Callable[[Call], bool],
 ) -> None:
     """`_generate_statements_via_strings` against `generate_statements`, over every unit found.
 
@@ -551,6 +633,12 @@ def test_generator_native_differential_over_the_corpus(
         The per-unit expression-slice walker fixture from `conftest.py`.
     expression_slice_diverges : _ExpressionSliceDiverges
         The shared per-slice divergence judgement fixture from `conftest.py`.
+    fb_call_argument_would_truncate_old_path : Callable[[Call], bool]
+        The fifth-residual-class classifier fixture from `conftest.py` (Task 9 step 3),
+        forwarded to `_attribute_unit_divergence`'s `Call` walk.
+    fb_call_callee_confuses_old_regex : Callable[[Call], bool]
+        The `Index`/`Member`-callee classifier fixture from `conftest.py` (Task 9 step 3),
+        forwarded to `_attribute_unit_divergence`'s `Call` walk.
     """
     blocks_seen = 0
     units_seen = 0
@@ -574,7 +662,27 @@ def test_generator_native_differential_over_the_corpus(
             reset_control_flow_render_counters()
             reset_call_render_counters()
             old_lines = _generate_statements_via_strings(statements, string_constants=string_constants)
-            new_lines = generate_statements(statements, string_constants=string_constants)
+            try:
+                new_lines = generate_statements(statements, string_constants=string_constants)
+            except UnsupportedExpression:
+                # Task 9 step 3: an Assignment binding a bare system builtin's `=>` output
+                # now raises instead of falling back (generator._generate_assignment's own
+                # docstring) -- `generate_statements` cannot produce ANY comparable output
+                # for the whole unit once that happens, so this unit is accepted as
+                # explained directly rather than run through the normal line-count
+                # attribution machinery. Verified, not assumed: every unit that reaches
+                # here is confirmed to contain the exact shape known to raise.
+                if not any(
+                    _is_bare_builtin_call_with_output(assignment.value_expr)
+                    for assignment, _depth in _walk_assignments(statements)
+                ):
+                    unattributed_divergences.append(
+                        f"{label}: generate_statements raised UnsupportedExpression but no "
+                        "bare-builtin-with-output assignment was found to explain it"
+                    )
+                else:
+                    attributed_divergences.append(label)
+                continue
             native_delta, fallback_delta = assignment_render_counts()
             total_native += native_delta
             total_fallback += fallback_delta
@@ -599,6 +707,8 @@ def test_generator_native_differential_over_the_corpus(
                 normalize_whitespace,
                 statement_expression_slices,
                 expression_slice_diverges,
+                fb_call_argument_would_truncate_old_path,
+                fb_call_callee_confuses_old_regex,
             )
             if problems:
                 unattributed_divergences.extend(problems)

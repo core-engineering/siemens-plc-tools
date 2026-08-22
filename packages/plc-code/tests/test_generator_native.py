@@ -40,6 +40,8 @@ per-argument-slice attribution could not surface on its own:
 
 from __future__ import annotations
 
+import pytest
+
 from plc_code.executor.generator import (
     _generate_statements_via_strings,
     _is_write_back_candidate,
@@ -50,6 +52,7 @@ from plc_code.executor.generator import (
     reset_call_render_counters,
     reset_control_flow_render_counters,
 )
+from plc_code.executor.renderer import UnsupportedExpression
 from plc_code.parser.lexer import TokenType, tokenize
 from plc_code.parser.statement_parser import parse_statements
 from plc_code.parser.statements import Call, Statement
@@ -192,6 +195,54 @@ def test_an_fb_instance_call_with_input_and_output_renders_natively() -> None:
     assert (native, fallback) == (1, 0)
 
 
+def test_an_indexed_callee_fb_call_renders_natively_with_correct_keyword_syntax() -> None:
+    """Task 9 step 3: an `Index` callee (`#arms[#i](...)`) widens the FB-instance branch.
+
+    The old dispatcher's `translate_fb_call` regex (`#(\\w+)\\s*\\(`) never matches an
+    indexed callee at all, so it falls through to translating the whole line as one bare
+    *expression* instead -- `OPERATOR_MAP` maps `:=` to `=`, and the standalone-`=`-to-`==`
+    rule then mangles that `=` too (nothing distinguishes it from a real `=` any more),
+    while `=>` -- collapsed to one token by `translate_simple_statement`'s own
+    normalisation before this ever runs -- survives untouched and merely keeps its name
+    discarded: `self.arms [ self.i ] ( x == self.a , y => self.b )`, a call that
+    *compiles* (`==` is a valid Python operator) and would call the FB positionally with a
+    boolean, while the `y => self.b` output binding is dropped as unparseable text sitting
+    inside a syntactically-invalid parameter list. Probed directly, not assumed. This is
+    the *existing* "bare call `:=` mangled to `==`" residual class (see
+    `test_renderer_calls.py`'s own pin of that class for a bare builtin), reached through
+    an indexed callee rather than a bare `FunctionCall` expression -- not a new one.
+    """
+    reset_call_render_counters()
+    source = "#arms[#i](x := #a, y => #b);"
+    old_lines = _generate_statements_via_strings(_statements(source))
+    new_lines = generate_statements(_statements(source))
+    assert old_lines == ["self.arms [ self.i ] ( x == self.a , y => self.b )"]
+    assert new_lines == ["self.arms[self.i](x=self.a)", "self.b = self.arms[self.i].y"]
+    native, fallback = call_render_counts()
+    assert (native, fallback) == (1, 0)
+
+
+def test_a_member_callee_fb_call_renders_natively_and_gets_the_clock_argument() -> None:
+    """A `Member` callee (`"db".TON(...)`) widens the same branch, with a timer marker.
+
+    `_callee_timer_marker_name` checks the `Member`'s own `.name` ("TON") against
+    `_TIMER_INSTANCE_MARKERS`, so this instance gets the trailing
+    `clock=self._runtime.clock` keyword argument the plain-`VariableRef` case already
+    gets for a name like `#tmr` -- the old dispatcher never reached its own timer check
+    for this callee shape at all (see `_callee_timer_marker_name`'s own docstring), so
+    there is no old behaviour to match, only what is correct.
+    """
+    reset_call_render_counters()
+    source = '"MyDb".TON(IN := #a, PT := #t, Q => #q);'
+    lines = generate_statements(_statements(source))
+    assert lines == [
+        'self._runtime.global_dbs["MyDb"].TON(IN=self.a, PT=self.t, clock=self._runtime.clock)',
+        'self.q = self._runtime.global_dbs["MyDb"].TON.Q',
+    ]
+    native, fallback = call_render_counts()
+    assert (native, fallback) == (1, 0)
+
+
 def test_an_fb_instance_call_drops_positional_arguments_same_as_the_dispatcher() -> None:
     """Reproduces `translate_fb_call`'s own silent-drop behaviour, bug for bug.
 
@@ -277,6 +328,29 @@ def test_an_assignment_from_a_named_call_with_outputs_renders_natively() -> None
     assert (native, fallback) == (0, 0)
 
 
+def test_an_assignment_from_a_bare_builtin_call_binding_an_output_fails_loudly() -> None:
+    """Task 9 step 3: this shape no longer falls back to the dispatcher -- it raises.
+
+    `#x := RD_SYS_T(OUT => #x);` -- a bare (non-quoted) system builtin binding a
+    parameter with `=>` -- has no correct Python to fall back to (see
+    `renderer._render_builtin_call`'s own docstring, and
+    `generator._generate_assignment`'s own docstring for the probed-and-confirmed old
+    dispatcher output this replaces: `self.x = RD_SYS_T ( OUT => self.x )`, a
+    `SyntaxError` at class-definition time). `generate_statements` now lets `render`'s
+    `UnsupportedExpression` propagate for this shape instead of silently reproducing
+    that broken text; `SCLTranspiler.transpile`'s own top-level exception handler turns
+    it into `TranspileResult(success=False, ...)` -- see
+    `test_transpiler.py`/`test_cli_transpile.py`-level coverage of that, this test only
+    pins the generator's own half.
+    """
+    source = "#x := RD_SYS_T(OUT => #x);"
+    with pytest.raises(UnsupportedExpression) as exc_info:
+        generate_statements(_statements(source))
+    message = str(exc_info.value)
+    assert "RD_SYS_T" in message
+    assert "OUT" in message
+
+
 def _first_call_argument_value_expr(source: str, index: int = 0):
     """The parsed value of one `Call` statement's `index`-th argument, for a direct unit check."""
     (call,) = _statements(source)
@@ -326,35 +400,48 @@ def test_a_global_db_name_with_a_dot_is_not_a_write_back_candidate() -> None:
     assert len(new_lines) == len(old_lines) == 1
 
 
-def test_a_closing_paren_inside_a_string_argument_falls_back_same_as_a_grouped_expression() -> None:
-    """Fix round 1 (Important 1): widened to scan `STRING` token text, not just `RPAREN`.
+def test_a_closing_paren_inside_a_string_argument_renders_whole_natively() -> None:
+    """Task 9 step 3: the closing-parenthesis guard is gone -- this now renders natively.
 
-    Probed: `StatementTranslator().translate_simple_statement("#tmr ( IN := 'a)b' , PT :=
-    #t ) ;")` truncates mid-literal and drops `PT` entirely, exactly like the grouped-
-    expression case already covered by `test_an_fb_instance_call_...` -- the closing `)`
-    that trips the regex is inside the string token's own text, not a token of its own.
+    Before this change, `_generate_fb_instance_call` refused (fell back to the
+    dispatcher) whenever an argument's raw value contained a `)`, so the dispatcher's
+    own `translate_fb_call` truncation (`self.tmr(IN='a)` -- `PT` silently dropped, see
+    `generator._has_closing_parenthesis`'s own docstring) was reproduced byte for byte.
+    That guard is gone: this shape now renders the call whole and correctly, diverging
+    from the old (still-truncating) dispatcher on purpose -- the fifth attributed
+    residual class the corpus differential now recognises (see
+    `tests/test_generator_native_differential.py`'s module docstring and its
+    `fb_call_argument_would_truncate_old_path` fixture).
     """
     reset_call_render_counters()
     source = "#tmr(IN := 'a)b', PT := #t);"
     old_lines = _generate_statements_via_strings(_statements(source))
     new_lines = generate_statements(_statements(source))
-    assert new_lines == old_lines
+    assert old_lines == ["self.tmr(IN='a)"]
+    assert new_lines == ["self.tmr(IN='a)b', PT=self.t)"]
     native, fallback = call_render_counts()
-    assert (native, fallback) == (0, 1)
-    assert call_fallback_reasons() == {"closing_parenthesis": 1}
+    assert (native, fallback) == (1, 0)
+    assert call_fallback_reasons() == {}
 
 
 def test_call_fallback_reasons_are_split_by_cause() -> None:
-    """Fix round 1 (Important 2): `call_fallback_reasons` breaks the one `fallback` count down.
+    """`call_fallback_reasons` breaks the one `fallback` count down.
 
-    Two different `Call` statements, two different reasons, neither collides with the other.
+    Two different `Call` statements, two different reasons, neither collides with the
+    other. `"closing_parenthesis"` no longer occurs (see
+    `test_a_closing_paren_inside_a_string_argument_renders_whole_natively` above), and
+    an indexed or member callee (`#arr[1](...)`, `"db".TON(...)`) no longer falls back
+    at all -- `_generate_fb_instance_call` renders both natively now (Task 9 step 3, see
+    `generator._generate_call`'s own docstring) -- so this now pairs
+    `unsupported_expression` with `not_a_simple_callee` from an *absolute-address*
+    callee (`%M0(...)`), the one shape still outside every native branch.
     """
     reset_call_render_counters()
     generate_statements(_statements('"Block"(x := ABS(y => #out));'))  # unsupported_expression
-    generate_statements(_statements("#tmr(IN := 'a)b');"))  # closing_parenthesis
+    generate_statements(_statements("%M0(x := #a);"))  # not_a_simple_callee
     reasons = call_fallback_reasons()
     assert reasons["unsupported_expression"] == 1
-    assert reasons["closing_parenthesis"] == 1
+    assert reasons["not_a_simple_callee"] == 1
     native, fallback = call_render_counts()
     assert (native, fallback) == (0, 2)
     assert sum(reasons.values()) == fallback

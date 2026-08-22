@@ -70,7 +70,7 @@ from collections import Counter
 
 from plc_code.executor.codegen import StatementTranslator
 from plc_code.executor.renderer import UnsupportedExpression, render
-from plc_code.parser.expressions import Expression, FunctionCall, Member, VariableRef
+from plc_code.parser.expressions import Expression, FunctionCall, Index, Member, VariableRef
 from plc_code.parser.lexer import Token, TokenType
 from plc_code.parser.statements import Assignment, Call, Case, Exit, For, If, Return, Statement, While
 
@@ -205,13 +205,15 @@ def call_fallback_reasons() -> Counter[str]:
     A copy, not the live counter -- the caller cannot mutate module state through it.
     The keys in practice (see :func:`_record_call_fallback`'s call sites):
     ``"not_a_simple_callee"`` (`callee_expr` has no tree, is not a plain `VariableRef`,
-    or is an absolute address -- :func:`_generate_call` itself), ``"closing_parenthesis"``
-    (an FB-call argument's raw value contains a `)`, so `translate_fb_call`'s own
-    paren-truncation is not attempted -- :func:`_generate_fb_instance_call`),
+    or is an absolute address -- :func:`_generate_call` itself),
     ``"missing_argument_tree"`` (a named argument's `value_expr` is ``None`` -- either
     native renderer), and ``"unsupported_expression"`` (:func:`render` raised -- either
     native renderer). Every key's total sums to :func:`call_render_counts`'s fallback
     figure.
+
+    ``"closing_parenthesis"`` no longer occurs (Task 9 step 3 removed
+    :func:`_generate_fb_instance_call`'s guard against it -- that shape renders whole
+    now, see its own docstring); a corpus run should read zero for that key.
 
     Returns
     -------
@@ -830,12 +832,35 @@ def _generate_assignment(
 
     1. ``statement.target_expr`` or ``statement.value_expr`` is ``None`` (the slice
        failed to parse as an expression) -- there is no tree to render.
-    2. :func:`render` (or, for the named-call-with-outputs shape,
-       :func:`_generate_named_call_assignment`'s own use of it) raises
-       :class:`~plc_code.executor.renderer.UnsupportedExpression` for either side -- a
-       node the renderer has no visitor for (or refuses to render, e.g. a bare builtin
-       call binding an output). Rather than enumerating every such shape by hand, any
-       node the tree alone cannot render falls back.
+    2. For the named-call-with-outputs shape only, :func:`_generate_named_call_assignment`
+       returns ``None`` -- its own target or a named argument's tree is missing, or
+       :func:`render` raised for one of them.
+
+    Task 9 step 3 removes the third, former fallback reason: :func:`render` raising
+    :class:`~plc_code.executor.renderer.UnsupportedExpression` for the plain (not
+    named-call-with-outputs) ``target``/``value`` render used to fall back to the
+    dispatcher too, silently reproducing whatever the dispatcher's own text-rewriting
+    happened to produce -- which, for the one shape this ever fired on in the corpus (a
+    bare, non-quoted system builtin call binding a parameter with ``=>``, e.g.
+    ``#x := RD_SYS_T(OUT => #x)``), was not merely different text but invalid Python.
+    Probed directly against the real reconstruction path (not assumed): the dispatcher's
+    own ``translate_simple_statement`` collapses ``= >`` to ``=>`` in its *first*
+    normalisation pass, before the assignment's right-hand side ever reaches
+    ``ExpressionTranslator.translate`` -- so the standalone-``=``-to-``==`` rule's own
+    negative lookahead (`` (?![>=]) ``) already sees the joined ``=>`` and leaves it
+    alone; ``RD_SYS_T`` has no entry in ``BUILTIN_MAP`` either, so nothing rewrites it.
+    The result is ``self.x = RD_SYS_T ( OUT => self.x )`` -- the bare ``=>`` survives
+    into the generated Python untouched, and ``compile()`` rejects it outright
+    (``SyntaxError: invalid syntax`` at the ``=>``), a class-definition-time failure, not
+    a call-time one. There is no correct Python to fall back to for this shape
+    (:func:`~plc_code.executor.renderer._render_builtin_call`
+    raises deliberately: a bare call has nowhere to route an output binding, so rendering
+    it as an input would run without error and silently drop the write -- see that
+    function's own docstring), so this now lets the exception propagate instead of
+    swallowing it: :class:`~plc_code.executor.transpiler.SCLTranspiler.transpile`'s own
+    top-level exception handler turns it into ``TranspileResult(success=False, ...)``
+    with the raised message, which is more useful than either the old silent
+    ``SyntaxError``-producing text or a fallback line that could never have been correct.
 
     A compound assignment (``#a += 1``) needs none of this: the statement parser
     desugars it into an ordinary ``:=`` ``Assignment`` before it ever reaches the
@@ -846,11 +871,11 @@ def _generate_assignment(
     Every call increments exactly one of the module-level counters (see
     :func:`reset_assignment_render_counters` / :func:`assignment_render_counts`):
     ``_native_assignment_renders`` when this returns the native line, otherwise
-    ``_fallback_assignment_renders``. A caller comparing this function's output
-    against the dispatcher's for the same input can only ever agree on a fallback
-    (both sides call the same dispatcher), so the split those counters expose is what
-    tells such a comparison how much of what it measured actually exercised the new
-    path.
+    ``_fallback_assignment_renders`` -- or, since step 3, raises before reaching either.
+    A caller comparing this function's output against the dispatcher's for the same
+    input can only ever agree on a fallback (both sides call the same dispatcher), so
+    the split those counters expose is what tells such a comparison how much of what it
+    measured actually exercised the new path.
 
     Parameters
     ----------
@@ -869,6 +894,13 @@ def _generate_assignment(
     list[str]
         One line (native) or the dispatcher's lines (fallback), each already
         prefixed with ``prefix``.
+
+    Raises
+    ------
+    UnsupportedExpression
+        :func:`render` raised for ``statement.target_expr`` or ``statement.value_expr``
+        (the named-call-with-outputs shape is unaffected -- it still falls back, see
+        above).
     """
     global _native_assignment_renders, _fallback_assignment_renders
     if statement.target_expr is None or statement.value_expr is None:
@@ -881,12 +913,8 @@ def _generate_assignment(
             return _generate_assignment_via_dispatcher(statement, prefix, translator, string_constants)
         _native_assignment_renders += 1
         return [prefix + line for line in named_call_lines]
-    try:
-        target_text = render(statement.target_expr, string_constants)
-        value_text = render(statement.value_expr, string_constants)
-    except UnsupportedExpression:
-        _fallback_assignment_renders += 1
-        return _generate_assignment_via_dispatcher(statement, prefix, translator, string_constants)
+    target_text = render(statement.target_expr, string_constants)
+    value_text = render(statement.value_expr, string_constants)
     _native_assignment_renders += 1
     return [f"{prefix}{target_text} = {value_text}"]
 
@@ -1024,6 +1052,39 @@ def _render_case_label(
 #: reproduces rather than calls (Task 9 deletes ``translate_fb_call``; see
 #: :func:`_generate_call`'s own docstring).
 _TIMER_INSTANCE_MARKERS = ("timer", "ton", "tof", "tp")
+
+
+def _callee_timer_marker_name(callee_expr: VariableRef | Index | Member) -> str | None:
+    """The name :func:`_generate_fb_instance_call` checks against :data:`_TIMER_INSTANCE_MARKERS`.
+
+    A plain ``VariableRef`` callee (``#tmr``) checks its own name, exactly as
+    ``translate_fb_call`` always did. Task 9 step 3 widens the callee shapes
+    :func:`_generate_fb_instance_call` accepts to ``Index`` (``#arms[#i]``) and ``Member``
+    (``"db".TON``); the old dispatcher never reached its timer-marker check for either
+    shape at all (its regex never recognised them as an FB call in the first place -- see
+    :func:`_generate_fb_instance_call`'s own docstring), so there is no old behaviour to
+    match here, only a choice of what is *correct*: a ``Member`` callee's own ``.name`` is
+    the natural analogue of an instance's own name (probed against the corpus: the one
+    ``Member`` callee found is ``"...".TON``, and ``"ton"`` is exactly one of the markers),
+    so that is what is checked. An ``Index`` callee's own indices carry no comparable name
+    (``#arms[#i]``'s ``#i`` is a loop/selector variable, not an instance name), and its
+    ``base`` is not always a plain ``VariableRef`` either -- so this returns ``None`` for an
+    ``Index`` callee, and the caller adds no clock argument rather than guess at one.
+
+    Parameters
+    ----------
+    callee_expr : VariableRef | Index | Member
+        The call's own callee, already known to be one of these three shapes.
+
+    Returns
+    -------
+    str | None
+        ``callee_expr.name`` for a ``VariableRef`` or ``Member`` callee; ``None`` for an
+        ``Index`` callee (no timer-marker check is made for it).
+    """
+    if isinstance(callee_expr, Index):
+        return None
+    return callee_expr.name
 
 
 def _generate_call_via_dispatcher(
@@ -1166,11 +1227,15 @@ def _has_closing_parenthesis(tokens: list[Token]) -> bool:
       taken -- would not have matched. Checking each ``STRING`` token's own text (not a
       regex: a plain ``in`` substring test) closes that gap.
 
-    :func:`_generate_fb_instance_call` does not attempt to reproduce either truncation
-    from the tree -- see its own docstring -- so this flags the shape up front and lets
-    :func:`_generate_call` fall back to the dispatcher instead, which reproduces the bug
-    byte for byte **for the FB-instance-call path only** (it calls the very same
-    ``translate_fb_call``). This predicate exists solely for that path.
+    :func:`_generate_fb_instance_call` no longer falls back on this shape (Task 9 step 3
+    -- it renders the call whole instead, see its own docstring), so this predicate has
+    no remaining production caller; it survives as the corpus differential's own
+    classifier for the resulting residual (a diverging ``Call`` whose own argument
+    matches this is accepted as the fifth attributed residual class -- "old path
+    truncates the call at a nested ``)``" -- see
+    ``tests/test_generator_native_differential.py``'s module docstring and its
+    ``fb_call_argument_would_truncate_old_path`` fixture in ``conftest.py``, which wraps
+    this same function).
 
     The quoted-block call statement path (:func:`_generate_named_call_statement`)
     deliberately has NO matching guard, even though its own dispatcher route
@@ -1214,32 +1279,50 @@ def _generate_fb_instance_call(
     direction (mirrors ``translate_fb_call``'s own per-param ``":=" in param`` / ``"=>" in
     param`` check, which a bare value text never satisfies), a ``:=`` argument becomes
     ``name=value`` in the call's keyword arguments, an ``=>`` argument becomes a trailing
-    ``target = self.instance.name`` line, and an instance name containing ``"timer"``,
-    ``"ton"``, ``"tof"`` or ``"tp"`` (case-insensitively) gets a trailing
-    ``clock=self._runtime.clock`` keyword argument -- see :data:`_TIMER_INSTANCE_MARKERS`.
-    Each argument's value comes from :func:`render`, not ``translate_fb_call``'s
-    text-based ``ExpressionTranslator.translate`` -- a divergence between the two is an
+    ``target = {callee}.name`` line, and a callee whose own timer-marker name contains
+    ``"timer"``, ``"ton"``, ``"tof"`` or ``"tp"`` (case-insensitively) gets a trailing
+    ``clock=self._runtime.clock`` keyword argument -- see :data:`_TIMER_INSTANCE_MARKERS`
+    and :func:`_callee_timer_marker_name`. Each argument's value comes from
+    :func:`render`, not ``translate_fb_call``'s text-based
+    ``ExpressionTranslator.translate`` -- a divergence between the two is an
     expression-level residual, attributed the same way every other native renderer's is.
 
-    Unlike ``translate_fb_call``, this never re-parses the callee itself with a regex, so
-    it has no equivalent of that function's own silent no-match fallback (a callee like
-    ``#arr[1](...)`` or ``#a.b(...)``, which the regex ``#(\\w+)\\s*\\(`` cannot match
-    either): :func:`_generate_call` never calls this function for such a callee in the
-    first place, since ``callee_expr`` for either shape parses to an ``Index``/``Member``
-    node, not a plain ``VariableRef`` -- see that function's own docstring. It also refuses
-    -- returns ``None``, the same fallback signal as any other case here -- when any
-    argument's raw value contains a closing parenthesis (see
-    :func:`_has_closing_parenthesis`): reproducing ``translate_fb_call``'s own
-    paren-truncation bug from the tree is not attempted, so this shape defers to the
-    dispatcher instead of silently rendering something more correct than the byte-identity
-    bar allows.
+    Task 9 step 3 widens this beyond the local-``VariableRef`` callee (``#instance``) it
+    started with (Task 8) to an ``Index`` (``#arms[#i](...)``) or ``Member``
+    (``"db".TON(...)``) callee too -- both render through :func:`render` the same way any
+    other callee here does, so the call's own text (``self.arms[self.i](...)`` /
+    ``self._runtime.global_dbs["db"].TON(...)``) comes from the tree either way, not from
+    a hardcoded ``self.{name}``. The old dispatcher never recognised either shape as an FB
+    call at all: ``translate_fb_call``'s own regex (``#(\\w+)\\s*\\(``) requires the
+    callee to be a bare ``#name`` immediately followed by ``(``, so an indexed or member
+    callee falls through to its "not an FB call" branch and gets translated as one bare
+    *expression* instead -- which also runs every argument's ``:=`` through
+    ``OPERATOR_MAP`` (``:=`` -> ``=``, then the standalone-``=``-to-``==`` rule catches
+    the result) and ``:=``'s own name is discarded, both silently: the old path's output
+    compiles and calls the FB instance with booleans as positional arguments, matching
+    neither the caller's intent nor the instance's actual parameter names. This joins the
+    *existing* "bare call ``:=`` mangled to ``==``" residual class (see
+    ``tests/test_generator_native_differential.py``'s module docstring and
+    ``test_renderer_calls.py``'s own pin of that class for a bare *builtin* call), not a
+    new one -- the underlying bug is the same ``OPERATOR_MAP``/standalone-``=`` mangling,
+    only reached here through a call statement's callee rather than through a bare
+    ``FunctionCall`` expression.
+
+    Task 9 step 3 also removes this function's former guard against an argument whose raw
+    value contains a closing parenthesis: ``translate_fb_call``'s own truncation at a
+    nested ``)`` (see :func:`_has_closing_parenthesis`) is a bug, not a shape worth
+    reproducing, so this now renders such a call whole -- the correct full call, in full,
+    where the old dispatcher would have silently dropped every argument after the
+    embedded ``)``. The resulting divergence is the fifth attributed residual class the
+    corpus differential recognises ("old path truncates the call at a nested ``)``");
+    see :func:`_has_closing_parenthesis`'s own docstring for where that classifier lives.
 
     Parameters
     ----------
     statement : Call
         The call to generate; ``statement.callee_expr`` must already be known to be a
-        local (``is_local=True``) ``VariableRef`` (the caller's job, in
-        :func:`_generate_call`).
+        local (``is_local=True``) ``VariableRef``, an ``Index``, or a ``Member`` (the
+        caller's job, in :func:`_generate_call`).
     string_constants : dict[str, int] | None
         Forwarded to every :func:`render` call.
 
@@ -1247,16 +1330,17 @@ def _generate_fb_instance_call(
     -------
     list[str] | None
         The rendered lines (unindented -- the caller prefixes them), or ``None`` when a
-        named argument's ``value_expr`` is ``None``, any argument's raw value contains a
-        closing parenthesis, or :func:`render` raises
-        :class:`~plc_code.executor.renderer.UnsupportedExpression` -- signalling the
-        caller to fall back to the dispatcher.
+        named argument's ``value_expr`` is ``None`` or :func:`render` raises
+        :class:`~plc_code.executor.renderer.UnsupportedExpression` for the callee or any
+        argument -- signalling the caller to fall back to the dispatcher.
     """
-    assert isinstance(statement.callee_expr, VariableRef)
-    if any(_has_closing_parenthesis(argument.value) for argument in statement.arguments):
-        _record_call_fallback("closing_parenthesis")
+    callee_expr = statement.callee_expr
+    assert isinstance(callee_expr, VariableRef | Index | Member)
+    try:
+        callee_text = render(callee_expr, string_constants)
+    except UnsupportedExpression:
+        _record_call_fallback("unsupported_expression")
         return None
-    instance_name = statement.callee_expr.name
     input_params: list[str] = []
     output_assignments: list[str] = []
     for argument in statement.arguments:
@@ -1271,15 +1355,18 @@ def _generate_fb_instance_call(
             _record_call_fallback("unsupported_expression")
             return None
         if argument.is_output:
-            output_assignments.append(f"{value_text} = self.{instance_name}.{argument.name}")
+            output_assignments.append(f"{value_text} = {callee_text}.{argument.name}")
         else:
             input_params.append(f"{argument.name}={value_text}")
     call_params = ", ".join(input_params)
-    if any(marker in instance_name.lower() for marker in _TIMER_INSTANCE_MARKERS):
+    timer_marker_name = _callee_timer_marker_name(callee_expr)
+    if timer_marker_name is not None and any(
+        marker in timer_marker_name.lower() for marker in _TIMER_INSTANCE_MARKERS
+    ):
         call_params = (
             f"{call_params}, clock=self._runtime.clock" if call_params else "clock=self._runtime.clock"
         )
-    return [f"self.{instance_name}({call_params})", *output_assignments]
+    return [f"{callee_text}({call_params})", *output_assignments]
 
 
 def _generate_call(
@@ -1294,27 +1381,26 @@ def _generate_call(
     text with regular expressions; this reads the same distinction straight off
     ``statement.callee_expr`` instead:
 
-    * ``callee_expr`` is a ``VariableRef`` with ``is_local`` True (``#instance``) -- an FB
-      instance call, rendered by :func:`_generate_fb_instance_call`.
+    * ``callee_expr`` is a ``VariableRef`` with ``is_local`` True (``#instance``), an
+      ``Index`` (``#arms[#i]``), or a ``Member`` (``"db".TON``) -- an FB instance call,
+      rendered by :func:`_generate_fb_instance_call`. The ``Index``/``Member`` shapes are
+      Task 9 step 3's own widening -- see that function's own docstring for why the old
+      dispatcher never recognised either as a call at all.
     * ``callee_expr`` is a ``VariableRef`` with neither ``is_local`` nor ``is_absolute``
       (``"Block"``) -- a quoted-block call statement, rendered by
       :func:`_generate_named_call_statement`.
     * Anything else -- ``callee_expr`` is ``None`` (the slice failed to parse, or parsed
       to something no statement callee can be, e.g. a bare unquoted, unprefixed name such
-      as a builtin call used as a statement), a ``VariableRef`` with ``is_absolute`` True,
-      or any other node type (``Member``/``Index`` for a dotted or indexed callee, e.g.
-      ``#a.b(...)`` or ``#arr[1](...)`` -- probed directly: neither parses to a
-      ``VariableRef``) -- falls back to :func:`_generate_call_via_dispatcher`, the same
-      text-rewriting path :func:`_generate_statements_via_strings` uses for every
-      ``Call``.
+      as a builtin call used as a statement) or a ``VariableRef`` with ``is_absolute``
+      True -- falls back to :func:`_generate_call_via_dispatcher`, the same text-rewriting
+      path :func:`_generate_statements_via_strings` uses for every ``Call``.
 
     Either native renderer returning ``None`` (a named argument with no tree, or
-    :func:`render` raising :class:`~plc_code.executor.renderer.UnsupportedExpression`,
-    or -- FB calls only -- a closing parenthesis in an argument's raw value) also falls
-    back; each such renderer records its own reason via :func:`_record_call_fallback`
-    before returning, so this function only needs to record its own ("no usable callee
-    shape") when it never reaches a renderer at all -- see :func:`call_fallback_reasons`
-    for the full reason set.
+    :func:`render` raising :class:`~plc_code.executor.renderer.UnsupportedExpression` for
+    the callee or an argument) also falls back; each such renderer records its own reason
+    via :func:`_record_call_fallback` before returning, so this function only needs to
+    record its own ("no usable callee shape") when it never reaches a renderer at all --
+    see :func:`call_fallback_reasons` for the full reason set.
 
     Every call increments exactly one of :data:`_native_call_renders` /
     :data:`_fallback_call_renders` (see :func:`reset_call_render_counters` /
@@ -1347,6 +1433,8 @@ def _generate_call(
             lines = _generate_fb_instance_call(statement, string_constants)
         else:
             lines = _generate_named_call_statement(statement, translator, string_constants)
+    elif isinstance(callee_expr, Index | Member):
+        lines = _generate_fb_instance_call(statement, string_constants)
     else:
         _record_call_fallback("not_a_simple_callee")
     if lines is None:
