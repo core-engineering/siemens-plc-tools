@@ -40,6 +40,46 @@ from plc_code.parser.statements import Assignment, Call, Case, Exit, For, If, Re
 
 INDENT = "    "
 
+#: How many `Assignment` statements `_generate_assignment` has rendered natively (from
+#: the tree) versus routed to `_generate_assignment_via_dispatcher`, since the last
+#: :func:`reset_assignment_render_counters` call. Process-global, mutable, and not
+#: thread-safe by design -- this exists purely so a differential run can answer "how
+#: much of what it just measured was actually exercising the native path?" (see
+#: :func:`assignment_render_counts`), a question "586 agree" alone cannot answer: an
+#: `Assignment` that falls back compares the dispatcher against itself, which can only
+#: ever agree, so a differential dominated by fallbacks would look reassuring for the
+#: wrong reason. Never read directly outside this module; use the accessor functions.
+_native_assignment_renders = 0
+_fallback_assignment_renders = 0
+
+
+def reset_assignment_render_counters() -> None:
+    """Reset both `Assignment`-rendering counters to zero.
+
+    Call this immediately before the measurement whose native/fallback split you want
+    to attribute -- typically right before one `generate_statements` call over one
+    unit -- so a later :func:`assignment_render_counts` read reflects only that
+    measurement and not whatever ran before it in the same process.
+    """
+    global _native_assignment_renders, _fallback_assignment_renders
+    _native_assignment_renders = 0
+    _fallback_assignment_renders = 0
+
+
+def assignment_render_counts() -> tuple[int, int]:
+    """The `Assignment`-rendering counts accumulated since the last reset.
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(native, fallback)`` -- how many `Assignment` statements
+        :func:`_generate_assignment` has rendered from the tree versus routed to
+        :func:`_generate_assignment_via_dispatcher`, since the last
+        :func:`reset_assignment_render_counters` call (or process start, if never
+        reset).
+    """
+    return _native_assignment_renders, _fallback_assignment_renders
+
 
 class UnsupportedStatement(Exception):
     """A statement kind the generator has no branch for.
@@ -446,6 +486,15 @@ def _generate_assignment(
     ``value_expr`` already the fully parsed ``BinaryOp`` for ``#a + 1`` -- probed
     directly and confirmed, it renders natively with no special case.
 
+    Every call increments exactly one of the module-level counters (see
+    :func:`reset_assignment_render_counters` / :func:`assignment_render_counts`):
+    ``_native_assignment_renders`` when this returns the native line, otherwise
+    ``_fallback_assignment_renders``. A caller comparing this function's output
+    against the dispatcher's for the same input can only ever agree on a fallback
+    (both sides call the same dispatcher), so the split those counters expose is what
+    tells such a comparison how much of what it measured actually exercised the new
+    path.
+
     Parameters
     ----------
     statement : Assignment
@@ -464,15 +513,20 @@ def _generate_assignment(
         One line (native) or the dispatcher's lines (fallback), each already
         prefixed with ``prefix``.
     """
+    global _native_assignment_renders, _fallback_assignment_renders
     if statement.target_expr is None or statement.value_expr is None:
+        _fallback_assignment_renders += 1
         return _generate_assignment_via_dispatcher(statement, prefix, translator, string_constants)
     if _is_named_call_with_output_binding(statement.value_expr):
+        _fallback_assignment_renders += 1
         return _generate_assignment_via_dispatcher(statement, prefix, translator, string_constants)
     try:
         target_text = render(statement.target_expr, string_constants)
         value_text = render(statement.value_expr, string_constants)
     except UnsupportedExpression:
+        _fallback_assignment_renders += 1
         return _generate_assignment_via_dispatcher(statement, prefix, translator, string_constants)
+    _native_assignment_renders += 1
     return [f"{prefix}{target_text} = {value_text}"]
 
 
