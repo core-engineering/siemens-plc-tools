@@ -42,11 +42,12 @@ FB instance call (`#instance(...)`) is reimplemented directly from the tree
 is deleted in the next task; a quoted-block call statement (`"Block"(...)`)
 instead calls `StatementTranslator._emit_named_call` directly
 (`_generate_named_call_statement`), the same runtime-producing method the
-dispatcher itself calls once its own regex has matched -- see
-`_named_call_placeholder` for why every argument value still goes through
-`render` rather than being handed to `_emit_named_call` as already-rendered
-Python text. `Call` falls back on the same terms as `Assignment`: no tree (or
-not a shape a statement callee can be), or `render` raising.
+dispatcher itself calls once its own regex has matched -- every argument
+value goes through `render`, then is handed to `_emit_named_call` as
+already-rendered Python text: `_emit_named_call` is a pure formatter (Task 9
+step 2), so no placeholder-and-substitute step is needed between the two.
+`Call` falls back on the same terms as `Assignment`: no tree (or not a shape a
+statement callee can be), or `render` raising.
 
 The body of a still-native `If`/`For`/`While`/`Case` recurses through
 `generate_statements` itself (via `_generate_body`), so already renders any
@@ -703,72 +704,6 @@ def _is_write_back_candidate(value_expr: Expression, string_constants: dict[str,
     return False
 
 
-def _named_call_placeholder(index: int, use_self_prefix: bool) -> str:
-    """An inert placeholder token standing in for one ``:=``/``=>`` argument's rendered value.
-
-    Shared by every caller of ``StatementTranslator._emit_named_call`` /
-    ``_build_named_call`` in this module (:func:`_generate_named_call_assignment`,
-    :func:`_generate_named_call_statement`) -- both methods re-translate whatever text
-    they are given for a value (``self.expr_translator.translate(value.strip())``), so
-    handing them the value's already-rendered Python text (e.g. ``"math.sqrt(self.x)"``)
-    directly would corrupt it exactly as :func:`~plc_code.executor.renderer._render_named_call`'s
-    own docstring documents for ``_build_named_call`` (probed there: ``translate`` doubles
-    ``math.sqrt(...)`` to ``math.math.sqrt(...)``) -- ``_emit_named_call`` calls the same
-    ``translate`` on the same kind of text and is exposed to the same risk. A bare
-    ``__ARGVAL<n>__`` token is untouched by every substitution ``translate`` performs
-    (probed directly, same as the renderer's own placeholder), so the caller substitutes
-    the real value back in once ``_emit_named_call`` has returned its lines.
-
-    ``_emit_named_call`` has one behaviour ``_build_named_call`` does not: for a ``:=``
-    (non-output) argument, it decides whether to also emit an in-out write-back line by
-    testing the *translated* value text itself (see :func:`_is_write_back_candidate`).
-    ``use_self_prefix`` carries that verdict in, computed by the caller from the tree
-    rather than from this function's placeholder text -- a bare placeholder never starts
-    with ``"self."``, so using one unconditionally would always suppress the write-back,
-    silently dropping it whenever the real value is the common in-out shape
-    (:func:`_is_write_back_candidate` True). ``translate`` leaves the prefixed form
-    untouched too (probed), so ``_emit_named_call`` sees exactly the verdict the caller
-    computed, before the placeholder is substituted back out.
-
-    Parameters
-    ----------
-    index : int
-        This argument's position, keeping every placeholder in one call unique.
-    use_self_prefix : bool
-        The caller's precomputed verdict -- True only for a ``:=`` (non-output) argument
-        whose value is :func:`_is_write_back_candidate`.
-
-    Returns
-    -------
-    str
-        ``f"self.__ARGVAL{index}__"`` when ``use_self_prefix``; ``f"__ARGVAL{index}__"``
-        otherwise.
-    """
-    return f"self.__ARGVAL{index}__" if use_self_prefix else f"__ARGVAL{index}__"
-
-
-def _substitute_named_call_placeholders(lines: list[str], placeholders: dict[str, str]) -> list[str]:
-    """Replace every :func:`_named_call_placeholder` token in ``lines`` with its real value.
-
-    Parameters
-    ----------
-    lines : list[str]
-        Python lines returned by ``StatementTranslator._emit_named_call``.
-    placeholders : dict[str, str]
-        Placeholder token -> the argument's real :func:`render` output.
-
-    Returns
-    -------
-    list[str]
-        ``lines`` with every placeholder token replaced by its mapped value. Distinct
-        indices never collide (each token embeds its own ``<n>``), so plain sequential
-        ``str.replace`` calls are safe regardless of order.
-    """
-    for token, value in placeholders.items():
-        lines = [line.replace(token, value) for line in lines]
-    return lines
-
-
 def _generate_named_call_assignment(
     statement: Assignment,
     translator: StatementTranslator,
@@ -778,11 +713,20 @@ def _generate_named_call_assignment(
 
     Calls ``StatementTranslator._emit_named_call`` directly (the same runtime-producing
     method ``_translate_named_call_assignment`` itself calls), with every argument value
-    and the assignment target taken from :func:`render` via the
-    :func:`_named_call_placeholder` trick, then appends the return-value line exactly as
+    and the assignment target taken from :func:`render` directly -- ``_emit_named_call``
+    is a pure formatter now (see its own docstring), so no placeholder-and-substitute
+    step is needed between the two. The in-out write-back flag it also now takes as data
+    is still computed from the tree via :func:`_is_write_back_candidate`, not from
+    :func:`render`'s own output text: the two can legitimately disagree (a global-DB
+    member access whose DB name contains a character ``GLOBAL_DB_PATTERN`` cannot
+    match still renders ``self.``-rooted here, but the old dispatcher's ``translate``
+    leaves it untouched and un-prefixed), so the write-back decision must still be made
+    the way the old dispatcher would have made it, not from what this path's own value
+    text happens to look like. Then appends the return-value line exactly as
     ``_translate_named_call_assignment`` does: ``f'{target} = {result_var}["{block_name}"]'``
     -- keyed by the callee's own name, not the argument named ``"out"`` (probed and
-    confirmed against ``test_generator_statements.py::test_an_assignment_from_a_named_call_with_outputs``).
+    confirmed against
+    ``test_generator_statements.py::test_an_assignment_from_a_named_call_with_outputs``).
 
     Parameters
     ----------
@@ -806,31 +750,25 @@ def _generate_named_call_assignment(
     assert isinstance(node, FunctionCall)
     if statement.target_expr is None:
         return None
-    placeholders: dict[str, str] = {}
-    bound_arguments: list[str] = []
-    for index, argument in enumerate(node.arguments):
+    bound_arguments: list[tuple[str, str, bool, bool]] = []
+    for argument in node.arguments:
         if not argument.name:
             continue
         try:
             value_text = render(argument.value, string_constants)
         except UnsupportedExpression:
             return None
-        use_self_prefix = not argument.is_output and _is_write_back_candidate(
-            argument.value, string_constants
-        )
-        token = _named_call_placeholder(index, use_self_prefix)
-        placeholders[token] = value_text
         name_text = f'"{argument.name}"' if argument.is_quoted_name else argument.name
-        direction = "=>" if argument.is_output else ":="
-        bound_arguments.append(f"{name_text} {direction} {token}")
+        write_back = not argument.is_output and _is_write_back_candidate(argument.value, string_constants)
+        bound_arguments.append((name_text, value_text, argument.is_output, write_back))
     try:
         target_text = render(statement.target_expr, string_constants)
     except UnsupportedExpression:
         return None
-    lines, result_var = translator._emit_named_call(node.name, ", ".join(bound_arguments))  # noqa: SLF001
+    lines, result_var = translator._emit_named_call(node.name, bound_arguments)  # noqa: SLF001
     lines = list(lines)
     lines.append(f'{target_text} = {result_var}["{node.name}"]')
-    return _substitute_named_call_placeholders(lines, placeholders)
+    return lines
 
 
 def _generate_assignment_via_dispatcher(
@@ -1144,7 +1082,9 @@ def _generate_named_call_statement(
     Calls ``StatementTranslator._emit_named_call`` directly -- the same runtime-producing
     method ``StatementTranslator._translate_named_block_call`` itself calls after its own
     depth-counting paren matching -- with every argument value taken from :func:`render`
-    via the :func:`_named_call_placeholder` trick. The result-dict variable
+    directly and its in-out write-back flag from :func:`_is_write_back_candidate`;
+    ``_emit_named_call`` is a pure formatter now (see its own docstring), so no
+    placeholder-and-substitute step is needed. The result-dict variable
     ``_emit_named_call`` also returns is discarded, matching
     ``_translate_named_block_call``'s own ``self._emit_named_call(block_name,
     params_str)[0]`` -- a standalone call statement never reads the block's return value.
@@ -1183,9 +1123,8 @@ def _generate_named_call_statement(
     """
     assert isinstance(statement.callee_expr, VariableRef)
     block_name = statement.callee_expr.name
-    placeholders: dict[str, str] = {}
-    bound_arguments: list[str] = []
-    for index, argument in enumerate(statement.arguments):
+    bound_arguments: list[tuple[str, str, bool, bool]] = []
+    for argument in statement.arguments:
         if not argument.name:
             continue
         if argument.value_expr is None:
@@ -1196,15 +1135,12 @@ def _generate_named_call_statement(
         except UnsupportedExpression:
             _record_call_fallback("unsupported_expression")
             return None
-        use_self_prefix = not argument.is_output and _is_write_back_candidate(
+        write_back = not argument.is_output and _is_write_back_candidate(
             argument.value_expr, string_constants
         )
-        token = _named_call_placeholder(index, use_self_prefix)
-        placeholders[token] = value_text
-        direction = "=>" if argument.is_output else ":="
-        bound_arguments.append(f"{argument.name} {direction} {token}")
-    lines, _result_var = translator._emit_named_call(block_name, ", ".join(bound_arguments))  # noqa: SLF001
-    return _substitute_named_call_placeholders(list(lines), placeholders)
+        bound_arguments.append((argument.name, value_text, argument.is_output, write_back))
+    lines, _result_var = translator._emit_named_call(block_name, bound_arguments)  # noqa: SLF001
+    return list(lines)
 
 
 def _has_closing_parenthesis(tokens: list[Token]) -> bool:

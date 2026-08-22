@@ -20,8 +20,8 @@ singled out the same way ``ExpressionTranslator._translate_array_bounds`` single
 them out -- see :func:`_render_builtin_call`. A quoted block call (``is_quoted=True``,
 e.g. ``"Scaling"(input := #x)``) renders through
 ``ExpressionTranslator._build_named_call`` itself rather than a structural copy of
-it -- see :func:`_render_named_call` for why that call needed a placeholder rather
-than a direct argument.
+it -- see :func:`_render_named_call`, which passes each argument's already-rendered
+value to it directly.
 """
 
 from __future__ import annotations
@@ -597,35 +597,26 @@ def _render_builtin_call(node: FunctionCall, string_constants: dict[str, int] | 
 def _render_named_call(node: FunctionCall, string_constants: dict[str, int] | None = None) -> str:
     """A quoted block call, rendered by calling ``ExpressionTranslator._build_named_call``.
 
-    ``_build_named_call`` takes the argument list as unparsed text and re-derives
-    Python from it -- it re-splits on top-level commas and recursively calls
-    ``self.translate`` on each value's *text*. Handing it this node's already-rendered
-    Python for that text is unsafe, not merely inelegant: probing it directly showed
-    two independent corruptions -- ``self.translate("math.sqrt(self.x)")`` doubles to
-    ``"math.math.sqrt(self.x)"`` (the builtin substitution's own regex re-matches the
-    ``sqrt(`` already inside ``math.sqrt(``), and ``self.translate("self.notReady")``
-    becomes ``"self.not Ready"`` (the acknowledged ``NOT``-prefix bug, triggered here
-    on text that never should have reached it a second time). So this calls
-    ``_build_named_call`` with each argument's value replaced by an inert
-    ``__ARGVAL<n>__`` placeholder -- a bare word token none of ``translate``'s regex
-    passes touch, confirmed by probe -- and substitutes this function's own
-    :func:`render` output back in once ``_build_named_call`` has returned, the same
-    placeholder-then-restore shape ``_extract_string_literals`` and
-    ``_extract_named_calls`` already use internally for the same reason. The result is
+    ``_build_named_call`` is now a pure formatter: it takes each argument as an
+    already-rendered ``(name, value)`` pair and does no parsing or translation of its
+    own -- see its own docstring. So this function renders every bound argument's
+    value through :func:`render` directly and hands the ``(name, value)`` pairs to
+    ``_build_named_call`` as data, with no placeholder-and-substitute step in between.
+    (An earlier version of this function had to route the value through a
+    ``__ARGVAL<n>__`` placeholder instead, because the version of ``_build_named_call``
+    it called back then still re-translated its argument text internally -- calling
+    ``translate`` a second time on already-rendered Python corrupted it, e.g.
+    ``self.translate("math.sqrt(self.x)")`` doubled to
+    ``"math.math.sqrt(self.x)"``. That risk no longer exists: a pure formatter never
+    looks at its arguments as anything but opaque text to embed.) The result is
     ``_build_named_call``'s own argument-selection rule (an argument with no name, or
-    written ``name => value``, is dropped -- see its ``":=" in param`` check) and its
-    own wrapping text, not a re-derived copy of either.
+    written ``name => value``, is dropped) and its own wrapping text, not a re-derived
+    copy of either.
 
     A parameter name written quoted (``"x" := #a``) is passed through quoted, because
     that is what reproduces ``_build_named_call``'s own (pre-existing, unrelated to
     this task) mishandling of that shape -- calling the real method is what makes that
     reproduction structural rather than a duplicated guess at its bug.
-
-    Caveat: the ``__ARGVAL<n>__`` placeholder scheme assumes no real SCL identifier is
-    ever spelled that way. A source identifier that happened to match one exactly
-    would collide with it and be substituted like any other placeholder -- inherited
-    as-is from the text path's own placeholder scheme, not a new risk this function
-    introduces.
 
     Parameters
     ----------
@@ -637,20 +628,13 @@ def _render_named_call(node: FunctionCall, string_constants: dict[str, int] | No
     Returns
     -------
     str
-        ``_build_named_call``'s own output, with every placeholder replaced by the
-        corresponding argument's :func:`render` text.
+        ``_build_named_call``'s own output.
     """
-    placeholders: dict[str, str] = {}
-    bound_arguments: list[str] = []
-    for index, argument in enumerate(node.arguments):
+    bound_arguments: list[tuple[str, str]] = []
+    for argument in node.arguments:
         if argument.is_output or not argument.name:
             continue
-        token = f"__ARGVAL{index}__"
-        placeholders[token] = render(argument.value, string_constants)
         name_text = f'"{argument.name}"' if argument.is_quoted_name else argument.name
-        bound_arguments.append(f"{name_text} := {token}")
-    params_str = ", ".join(bound_arguments)
-    result = _TRANSLATOR._build_named_call(node.name, params_str)  # noqa: SLF001
-    for token, value in placeholders.items():
-        result = result.replace(token, value)
-    return result
+        value_text = render(argument.value, string_constants)
+        bound_arguments.append((name_text, value_text))
+    return _TRANSLATOR._build_named_call(node.name, bound_arguments)  # noqa: SLF001

@@ -284,7 +284,8 @@ class ExpressionTranslator:
                 if depth == 0:
                     params_str = expr[match.end() : j - 1]
                     placeholder = f"__NCALL{len(placeholders)}__"
-                    placeholders[placeholder] = self._build_named_call(match.group(1), params_str)
+                    arguments = self._translate_named_call_arguments(params_str)
+                    placeholders[placeholder] = self._build_named_call(match.group(1), arguments)
                     out.append(placeholder)
                     i = j
                     continue
@@ -292,23 +293,31 @@ class ExpressionTranslator:
             i += 1
         return "".join(out), placeholders
 
-    def _build_named_call(self, block_name: str, params_str: str) -> str:
-        """Build a ``call_named_block(...)`` expression returning the FUNCTION's value.
+    def _translate_named_call_arguments(self, params_str: str) -> list[tuple[str, str]]:
+        """Parse and translate a raw ``:=`` argument list's *input* parameters.
+
+        The text-carving half of what ``_build_named_call`` used to do in one step,
+        kept apart from it so that function can be a pure formatter -- see its own
+        docstring. Only ``:=`` (input) parameters are kept, matching
+        ``_build_named_call``'s pre-existing filter: an unnamed or ``=>`` (output)
+        parameter contributes nothing to a quoted call used in expression position,
+        since that position can only return one value.
 
         Parameters
         ----------
-        block_name : str
-            The sub-block name (without quotes).
         params_str : str
             The raw argument list between the outer parentheses.
 
         Returns
         -------
-        str
-            A Python expression that calls the sub-block and evaluates to its
-            return value.
+        list[tuple[str, str]]
+            One ``(name, translated_value)`` pair per ``:=`` parameter, in source
+            order. ``name`` is the raw stripped text before ``:=`` -- including its
+            own quote characters when the parameter name itself was written quoted
+            (``"x" := #a``), so :func:`_build_named_call`'s single re-wrap of it
+            reproduces that shape's pre-existing double-quoting exactly as before.
         """
-        inputs: list[str] = []
+        arguments: list[tuple[str, str]] = []
         for param in self._split_top_level_commas(params_str):
             param = param.strip()
             if not param:
@@ -317,7 +326,40 @@ class ExpressionTranslator:
             if ":=" in param:
                 name, value = param.split(":=", 1)
                 # Recursively translate the argument value (handles #vars, operators...).
-                inputs.append(f'"{name.strip()}": {self.translate(value.strip())}')
+                arguments.append((name.strip(), self.translate(value.strip())))
+        return arguments
+
+    def _build_named_call(self, block_name: str, arguments: list[tuple[str, str]]) -> str:
+        """Build a ``call_named_block(...)`` expression returning the FUNCTION's value.
+
+        A pure formatter: every argument value must already be rendered Python text
+        by the time it reaches here. Neither this function nor ``_emit_named_call``
+        below call ``translate`` or carve a raw parameter-list string -- the text
+        path's own caller (:func:`_extract_named_calls`, via
+        :func:`_translate_named_call_arguments`) does that translation itself before
+        calling this; the tree path's caller
+        (``plc_code.executor.renderer._render_named_call``) calls
+        ``plc_code.executor.renderer.render`` instead. This split is what lets the
+        renderer hand this function already-rendered argument text directly, with no
+        placeholder-and-substitute step in between (see that function's own
+        docstring for what the placeholder step used to guard against).
+
+        Parameters
+        ----------
+        block_name : str
+            The sub-block name (without quotes).
+        arguments : list[tuple[str, str]]
+            One ``(name, rendered_value)`` pair per ``:=`` (input) parameter to bind,
+            in source order -- see :func:`_translate_named_call_arguments` for how
+            the text path builds this list.
+
+        Returns
+        -------
+        str
+            A Python expression that calls the sub-block and evaluates to its
+            return value.
+        """
+        inputs = [f'"{name}": {value}' for name, value in arguments]
         inputs_dict = "{" + ", ".join(inputs) + "}"
         return f'self._runtime.call_named_block("{block_name}", {inputs_dict}, {{}})["{block_name}"]'
 
@@ -809,37 +851,38 @@ class StatementTranslator:
 
         params_str = stripped[paren_start : pos - 1]  # content between outer parens
 
-        return self._emit_named_call(block_name, params_str)[0]
+        return self._emit_named_call(block_name, self._translate_named_call_bindings(params_str))[0]
 
-    def _emit_named_call(self, block_name: str, params_str: str) -> tuple[list[str], str]:
-        """Emit the Python statements for a ``"BlockName"(...)`` call.
+    def _translate_named_call_bindings(self, params_str: str) -> list[tuple[str, str, bool, bool]]:
+        """Parse and translate a raw ``:=``/``=>`` argument list into bound-argument tuples.
 
-        Shared by the standalone-call path and the return-value-assignment path
-        so both wire ``=>`` outputs (and ``:=`` in-out write-back) identically.
+        The text-carving half of what ``_emit_named_call`` used to do in one step, kept
+        apart from it so that function can be a pure formatter -- see its own docstring.
+        This includes the in-out write-back decision, computed here from the *translated*
+        value text exactly as ``_emit_named_call`` used to compute it internally (see
+        ``write_back`` below) -- moved here, not dropped, because it is itself a piece of
+        text-carving no pure formatter should still do.
 
         Parameters
         ----------
-        block_name : str
-            The sub-block name (without quotes).
         params_str : str
             The raw argument list between the outer parentheses.
 
         Returns
         -------
-        tuple[list[str], str]
-            The call + output-assignment statements, and the result-dict
-            variable name (so the caller can also read the return value).
+        list[tuple[str, str, bool, bool]]
+            One ``(name, translated_value, is_output, write_back)`` tuple per
+            ``:=``/``=>`` parameter, in source order -- ``is_output`` True for ``=>``,
+            False for ``:=``; ``write_back`` (only meaningful when ``is_output`` is
+            False) True when the translated value is a bare ``self.``-rooted,
+            space-free reference, the same in-out candidate test
+            ``_emit_named_call`` used to apply to its own translated text. An
+            unnamed (positional) parameter is dropped, matching the pre-existing
+            behaviour: a bare value satisfies neither the ``":=" in param`` nor the
+            ``"=>" in param`` check.
         """
-        # Parse parameters: split by top-level commas
-        params = self._split_params(params_str)
-
-        # Categorise parameters:
-        #   param := val   ->  input (or in-out passed in)
-        #   param => var   ->  output assignment
-        input_params: dict[str, str] = {}  # name -> translated value expr
-        output_params: list[tuple[str, str]] = []  # (block_output_name, target_var_expr)
-
-        for param in params:
+        bindings: list[tuple[str, str, bool, bool]] = []
+        for param in self._split_params(params_str):
             param = param.strip()
             if not param:
                 continue
@@ -850,19 +893,65 @@ class StatementTranslator:
 
             if ":=" in param:
                 name, value = param.split(":=", 1)
-                name = name.strip()
-                value_expr = self.expr_translator.translate(value.strip())
-                input_params[name] = value_expr
+                translated = self.expr_translator.translate(value.strip())
+                write_back = translated.startswith("self.") and " " not in translated.strip()
+                bindings.append((name.strip(), translated, False, write_back))
             elif "=>" in param:
                 name, target = param.split("=>", 1)
-                name = name.strip()
-                target_expr = self.expr_translator.translate(target.strip())
-                output_params.append((name, target_expr))
+                bindings.append((name.strip(), self.expr_translator.translate(target.strip()), True, False))
+        return bindings
+
+    def _emit_named_call(
+        self, block_name: str, arguments: list[tuple[str, str, bool, bool]]
+    ) -> tuple[list[str], str]:
+        """Emit the Python statements for a ``"BlockName"(...)`` call.
+
+        A pure formatter: every argument value must already be rendered Python text, and
+        the in-out write-back decision already made, by the time either reaches here --
+        see :func:`ExpressionTranslator._build_named_call`'s docstring, which this
+        mirrors. This function no longer inspects a value's own text to decide whether to
+        emit a write-back line (a form of string-carving a pure formatter should not do,
+        and one that a rendered value's text cannot always answer correctly -- see
+        :func:`_translate_named_call_bindings` and
+        ``plc_code.executor.generator._is_write_back_candidate`` for why the tree-based
+        and text-based verdicts can legitimately disagree for the same argument, e.g. a
+        global-DB member access whose DB name contains a character
+        ``GLOBAL_DB_PATTERN`` cannot match). Shared by the standalone-call path and the
+        return-value-assignment path so both wire ``=>`` outputs (and ``:=`` in-out
+        write-back) identically.
+
+        Parameters
+        ----------
+        block_name : str
+            The sub-block name (without quotes).
+        arguments : list[tuple[str, str, bool, bool]]
+            One ``(name, rendered_value, is_output, write_back)`` tuple per bound
+            parameter, in source order -- ``write_back`` is only consulted when
+            ``is_output`` is False; see :func:`_translate_named_call_bindings` for how
+            the text path builds this list.
+
+        Returns
+        -------
+        tuple[list[str], str]
+            The call + output-assignment statements, and the result-dict
+            variable name (so the caller can also read the return value).
+        """
+        # Categorise parameters:
+        #   :=  ->  input (or in-out passed in)
+        #   =>  ->  output assignment
+        input_params: dict[str, tuple[str, bool]] = {}  # name -> (rendered value expr, write_back)
+        output_params: list[tuple[str, str]] = []  # (block_output_name, target_var_expr)
+
+        for name, value_expr, is_output, write_back in arguments:
+            if is_output:
+                output_params.append((name, value_expr))
+            else:
+                input_params[name] = (value_expr, write_back)
 
         # Build Python statements
         # 1. Call the sub-block and capture its result dict
         result_var = f"_sub_{block_name.replace(' ', '_')}_result"
-        inputs_dict = "{" + ", ".join(f'"{k}": {v}' for k, v in input_params.items()) + "}"
+        inputs_dict = "{" + ", ".join(f'"{k}": {v}' for k, (v, _) in input_params.items()) + "}"
         call_line = f"{result_var} = self._runtime.call_named_block(" f'"{block_name}", {inputs_dict}, {{}})'
         result_lines = [call_line]
 
@@ -874,9 +963,8 @@ class StatementTranslator:
         #    we read them back from the result dict if they appear there.
         #    The `:=` in-out semantics: value goes in, updated value comes out.
         #    We handle this by updating the target variable if the param appears in result.
-        for in_name, value_expr in input_params.items():
-            # Only write back if the value_expr is a self.xxx reference (not a literal)
-            if value_expr.startswith("self.") and " " not in value_expr.strip():
+        for in_name, (value_expr, write_back) in input_params.items():
+            if write_back:
                 # This param may be an in-out: write back if present in result
                 result_lines.append(
                     f'if "{in_name}" in {result_var}: {value_expr} = {result_var}["{in_name}"]'
@@ -894,7 +982,8 @@ class StatementTranslator:
         emit the output-assignment statements), so this routes such a call
         through the multi-statement form and assigns the return value last.
         """
-        result_lines, result_var = self._emit_named_call(block_name, params_str)
+        bindings = self._translate_named_call_bindings(params_str)
+        result_lines, result_var = self._emit_named_call(block_name, bindings)
         result_lines.append(f'{target_expr} = {result_var}["{block_name}"]')
         return result_lines
 
