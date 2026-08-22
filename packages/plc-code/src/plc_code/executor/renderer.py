@@ -62,8 +62,8 @@ _BUILTIN_MAP = BUILTIN_MAP
 #: :func:`_is_array_bound_call`.
 _ARRAY_BOUND_BUILTINS = frozenset({"LOWER_BOUND", "UPPER_BOUND"})
 
-#: Binary operators the current translator leaves exactly as written -- their SCL
-#: spelling is already valid Python -- because they carry no entry in
+#: Binary operators the old text translator left exactly as written -- their SCL
+#: spelling is already valid Python -- because they carried no entry in
 #: ``OPERATOR_MAP``. ``&`` belongs here, not mapped to ``and``: see the module
 #: docstring and :func:`_render_binary_op`.
 _PASSTHROUGH_BINARY_OPERATORS = frozenset({"&", "+", "-", "*", "/", "<", ">", "<=", ">=", "**"})
@@ -417,7 +417,7 @@ def _render_unary_op(node: UnaryOp, string_constants: dict[str, int] | None = No
     Structural equivalent of the old text translator's ``_translate_operators`` pass: ``NOT``
     is looked up in :data:`_OPERATOR_MAP` (``"not"``); ``-`` has no entry there
     because its SCL and Python spellings are identical, so it renders as-is. Either
-    way the current translator's regex passes always leave a space between the
+    way the old text translator's regex passes always left a space between the
     operator and its operand, so this does too.
 
     Parameters
@@ -451,10 +451,10 @@ def _render_binary_op(node: BinaryOp, string_constants: dict[str, int] | None = 
 
     Structural equivalent of the old text translator's ``_translate_operators`` pass: looks
     ``node.operator`` up in :data:`_OPERATOR_MAP` first (``AND``, ``OR``, ``<>``,
-    ``MOD``, ``DIV``), then falls back to the standalone-``=`` rule the current
-    translator applies with its own regex rather than through ``OPERATOR_MAP``
+    ``MOD``, ``DIV``), then falls back to the standalone-``=`` rule the old text
+    translator applied with its own regex rather than through ``OPERATOR_MAP``
     (``=`` becomes ``==``), then to :data:`_PASSTHROUGH_BINARY_OPERATORS` for
-    everything the current translator leaves exactly as written -- including
+    everything the old text translator left exactly as written -- including
     ``&``, which stays ``&`` rather than becoming ``and``: see the module
     docstring.
 
@@ -549,8 +549,8 @@ def _render_builtin_call(node: FunctionCall, string_constants: dict[str, int] | 
     with ``_translate_array_bounds``, which runs first and claims ``LOWER_BOUND``/
     ``UPPER_BOUND`` before the generic substitution ever sees them (see that
     method's own skip of both names). An unmapped name -- ``node.name`` not a key
-    of :data:`_BUILTIN_MAP` -- keeps its bare spelling, exactly as the current
-    translator leaves a call it has no table entry for untouched.
+    of :data:`_BUILTIN_MAP` -- keeps its bare spelling, exactly as the old text
+    translator left a call it had no table entry for untouched.
 
     Unlike :func:`_render_named_call`, which filters ``is_output`` arguments out of
     the dict it builds, this function has no destination to route an output binding

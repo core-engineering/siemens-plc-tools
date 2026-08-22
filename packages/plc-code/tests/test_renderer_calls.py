@@ -102,7 +102,7 @@ def test_a_quoted_call_with_a_positional_argument_drops_it() -> None:
     assert render(call) == 'self._runtime.call_named_block("Block", {}, {})["Block"]'
 
 
-def test_a_quoted_parameter_name_reproduces_the_current_translators_double_quote_bug() -> None:
+def test_a_quoted_parameter_name_reproduces_the_old_text_translators_double_quote_bug() -> None:
     """Pinned because it comes from calling `_build_named_call`, not from reasoning
     about what it should do -- see `renderer._render_named_call`'s docstring."""
     call = FunctionCall(

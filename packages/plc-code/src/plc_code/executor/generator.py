@@ -181,11 +181,25 @@ def _is_write_back_candidate(value_expr: Expression, string_constants: dict[str,
     ``_emit_named_call`` is a pure formatter (Task 9 step 2): it takes this verdict as
     data (its ``write_back`` flag) rather than inspecting the value's own rendered text,
     because the rendered text cannot always answer the question correctly on its own --
-    see case 3 below. This function computes the verdict from the tree instead, mirroring
-    exactly what :func:`~plc_code.executor.renderer.render` itself renders space-free and
-    ``self.``-prefixed for (its ``_render_variable_ref`` / ``_render_member`` /
-    ``_is_global_db_ref``). There are exactly three such tree shapes, probed directly and
-    confirmed, not merely reasoned about:
+    see case 3 below. This function computes the verdict from the tree instead.
+
+    The invariant it mirrors is the OLD text path's spelling, not :func:`render`'s.
+    :func:`~plc_code.executor.renderer.render` renders almost everything space-free and
+    ``self.``-prefixed -- an index (``#arr[#i]`` -> ``self.arr[self.i]``), a plain local
+    member (``#a.b`` -> ``self.a.b``), a two-level global-DB chain (``"DB".a.b`` ->
+    ``self._runtime.global_dbs["DB"].a.b``) all qualify by that description too, yet none
+    of the three is a write-back candidate: probed directly, `render`'s own output being
+    space-free is not what distinguishes them. What actually distinguished a write-back
+    candidate was the OLD path's own reconstruction: `scl_text` joined every token with a
+    space (``"# a . b"``), and only these three tree shapes happened to have their spaces
+    fully consumed by one of the old translator's own regex substitutions --
+    ``INSTANCE_VAR_PATTERN`` collapsing ``"# name"`` to ``"self.name"`` whole (case 1),
+    the string-constant substitution's own whole-literal replacement (case 2), and
+    ``GLOBAL_DB_PATTERN``'s single-shot match of ``'"Name" . member'`` (case 3) -- every
+    other shape, including the three above, kept at least one space somewhere in the old
+    reconstruction even though the *new* renderer never introduces one anywhere. There are
+    exactly three such tree shapes, probed directly and confirmed, not merely reasoned
+    about:
 
     1. A bare local variable, ``#name`` -- renders as ``self.name``.
     2. A bare *global* variable, ``"Name"``, whose quoted spelling is a
@@ -451,10 +465,13 @@ def _render_case_label(expr: Expression | None, string_constants: dict[str, int]
     would resolve to at runtime. This is deliberately NOT the same substitution
     `render`'s own `_render_variable_ref` performs for that identical tree shape
     everywhere else (`self.NAME`): applying that substitution here would turn
-    `if self.s == 1:` into `if self.s == self.MODE_ONE:`, which
-    `test_case_labels.py::TestSymbolicLabels` (an executable CASE, not a text
-    comparison) catches immediately, since `self.MODE_ONE` differs textually from the
-    generated class's own bare-integer class attribute for the same constant.
+    `if self.s == 1:` into `if self.s == self.MODE_ONE:`. Note that `self.MODE_ONE` is
+    NOT an unassigned attribute that would fail at run time -- `transpiler.py` emits
+    `MODE_ONE: int = 1` as a class attribute for every mapped string constant, so
+    `self.s == self.MODE_ONE` would evaluate identically to `self.s == 1` and no
+    executable test could tell the two apart. The reason for this ruling is textual
+    byte-identity with the old path's own bare-integer output for a CASE label, not
+    anything an executable test would catch.
 
     Parameters
     ----------

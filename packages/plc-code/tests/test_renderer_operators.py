@@ -2,7 +2,7 @@
 
 Every expected value was taken by running `ExpressionTranslator().translate(...)`
 directly (see the task report), not copied from the brief's table. `&` is the row
-that matters most: the current translator leaves it as Python's `&` rather than
+that matters most: the old text translator left it as Python's `&` rather than
 translating it to `and`, and that is preserved here on purpose -- see
 `test_the_ampersand_keeps_its_own_spelling`.
 """

@@ -27,6 +27,42 @@ def test_a_hex_literal_is_lowercase() -> None:
     assert render(TypedLiteral(line=1, column=1, prefix="16", value="FF")) == "0xff"
 
 
+def test_a_size_prefixed_hex_literal_strips_the_size_and_recurses() -> None:
+    """`B#16#FF` -- a size prefix (`_SIZE_PREFIXES`) wrapping a chained hex literal.
+
+    The node is exactly what the expression parser produces for `B#16#FF` (probed
+    directly, not guessed): `TypedLiteral(prefix="B", value="16#FF")`. `_render_typed_literal`
+    strips the size prefix (Python has no distinct byte-literal syntax) and recurses
+    into the rest, which is itself a `TypedLiteral(prefix="16", value="FF")` --
+    `_render_typed_literal` again, not `_render_literal`.
+    """
+    node = TypedLiteral(line=1, column=1, prefix="B", value="16#FF")
+    assert render(node) == "0xff"
+
+
+def test_a_size_prefixed_bare_value_strips_the_size_and_renders_the_literal() -> None:
+    """`REAL#1000.0` -- a size prefix wrapping a bare (non-chained) value.
+
+    Probed directly: `TypedLiteral(prefix="REAL", value="1000.0")`. The value has no
+    further `#`, so `_render_typed_literal` strips the size prefix and renders what is
+    left through `_render_literal` -- `"1000.0"` is already a valid Python float
+    literal.
+    """
+    node = TypedLiteral(line=1, column=1, prefix="REAL", value="1000.0")
+    assert render(node) == "1000.0"
+
+
+def test_a_prefix_with_its_own_value_syntax_raises() -> None:
+    """`DATE#...` is not a size prefix -- it carries its own value syntax, unlike
+    `B#`/`REAL#`/etc, so there is no Python literal to strip down to.
+
+    Probed directly: `TypedLiteral(prefix="DATE", value="2024-01-01")`.
+    """
+    node = TypedLiteral(line=1, column=1, prefix="DATE", value="2024-01-01")
+    with pytest.raises(UnsupportedExpression):
+        render(node)
+
+
 def test_a_duration_literal_becomes_seconds() -> None:
     assert render(TypedLiteral(line=1, column=1, prefix="T", value="5s")) == "5.0"
 
@@ -66,12 +102,12 @@ def test_a_node_with_no_visitor_raises() -> None:
 
 def test_a_quoted_global_alone_keeps_its_quotes() -> None:
     """Structural: `GLOBAL_DB_PATTERN` requires a `.` right after the quoted name --
-    a bare global reference is left untouched by the current translator."""
+    a bare global reference was left untouched by the old text translator."""
     assert render(VariableRef(line=1, column=1, name="Db", is_local=False)) == '"Db"'
 
 
 def test_eno_is_the_one_bare_global() -> None:
-    """The current translator's only unquoted, non-local identifier."""
+    """The old text translator's only unquoted, non-local identifier."""
     assert render(VariableRef(line=1, column=1, name="ENO", is_local=False)) == "ENO"
 
 
@@ -80,8 +116,8 @@ def test_an_absolute_address_is_unchanged() -> None:
 
 
 def test_a_local_member_carries_its_own_hash() -> None:
-    """`.#name` -- the current translator's `INSTANCE_VAR_PATTERN` still matches the
-    `#name` inside a member chain, so the member itself also becomes `self.name`."""
+    """`.#name` -- the old text translator's `INSTANCE_VAR_PATTERN` still matched the
+    `#name` inside a member chain, so the member itself also became `self.name`."""
     node = Member(
         line=1,
         column=1,

@@ -734,15 +734,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   output-assignment lines — receiving every argument pre-rendered from the tree;
   nothing left in the executor still constructs Python by rewriting SCL text.
 
-  Measured, not estimated (`git show <pre-deletion-sha>:<path> | wc -l`, this
-  repository's history): `codegen.py` goes from 1,058 lines to 225 (966 deleted, 133
-  added — the survivors' own docstrings); `generator.py` goes from 1,601 lines to 792
-  (1,203 deleted, 394 added). `codegen.py`'s 38 `re.` module calls, and its only
-  `import re`, are gone; `generator.py` never called `re` directly. Five test files
-  are deleted outright: the expression-level and unit-level differentials (177 and
-  623 lines) and three unit-test files whose only subject was the deleted text
-  machinery (`test_codegen.py` 169, `test_normalize_spacing_quoting.py` 107,
-  `test_generator_reconstruction.py` 35) — 1,111 lines of tests.
+  Measured, not estimated (`git show 02de048:<path> | wc -l` against `wc -l <path>`
+  at the tip of this branch; `02de048` is this branch's own point of divergence from
+  `main`, the one base both figures below are measured against): `codegen.py` goes
+  from 1,058 lines to 225 (966 deleted, 133 added — the survivors' own docstrings).
+  `generator.py` *grows*, from 270 lines to 838 (694 added, 126 deleted): most of
+  this branch's earlier work moved statement-level rendering (`Assignment`,
+  `If`/`For`/`While`/`Case` headers, `Call`/`Return`/`Exit`) natively into this
+  module, one function per shape, where it used to live in the dispatcher this
+  change deletes — `generator.py` was never the file being emptied, `codegen.py`
+  and the dispatcher were. `codegen.py`'s 38 `re.` module calls, and its only
+  `import re`, are gone; `generator.py` never called `re` directly at either end of
+  this range. Five test files are deleted outright: the expression-level and
+  unit-level differentials (177 and 623 lines) and three unit-test files whose only
+  subject was the deleted text machinery (`test_codegen.py` 169,
+  `test_normalize_spacing_quoting.py` 107, `test_generator_reconstruction.py` 35) —
+  1,111 lines of tests.
 
   Two corpus-wide differentials proved the tree-driven renderer and generator
   equivalent to the deleted text machinery before any of it was removed: the
@@ -753,8 +760,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   both were true when measured, since the external reference corpus is regenerated
   by its owner and had grown between the two measurements.)
 
-  Every remaining divergence was one of five named,
-  deliberate exceptions where the **old** path was itself wrong, not a difference the
+  Every remaining divergence was one of five named, deliberate exceptions where the
+  **old** path was itself wrong, not a difference the
   new path introduced: a bare (unquoted) call binding a parameter by name, where the
   old path mangled `:=` to `==` via `OPERATOR_MAP`; a global DB name containing a
   character the old `GLOBAL_DB_PATTERN` regex's `\w+` requirement could not match; the
@@ -777,7 +784,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   output binding, the only one of the six whose output actually compiled, calling the
   FB instance positionally with a boolean instead of by keyword.
 
-  A related, seventh shape is a deliberate behaviour change, not a defect found:
+  A seventh defect is reproduced deliberately, not fixed: a positional argument to an
+  `#instance(...)` FB call is silently dropped (`#tmr(#x, #y)` renders as `self.tmr()`)
+  — kept bug-for-bug so the switch stays byte-identical for this shape; the corpus
+  population is unmeasured. The same kind of pre-existing bug, reproduced beside it:
+  a quoted-block call's own parameter name written itself quoted (`"x" := #a`) renders
+  with doubled quotes (`{""x"": self.a}`, not valid Python) rather than the one pair a
+  reader would expect. Both are pinned as intentional reproductions, not defects this
+  pass introduced, by their own tests (`test_generator_native.py`,
+  `test_renderer_calls.py`).
+
+  A related, eighth shape is a deliberate behaviour change, not a defect found:
   an assignment whose right-hand side is a bare (unquoted) system builtin binding an
   `=>` output — 6 `GET_DIAG`, 2 `RD_SYS_T`, 2 `DPRD_DAT`, 1 `RH_CTRL`, 1 `Serialize`
   in the corpus — used to reach the old dispatcher and leave a bare `=>` in the
