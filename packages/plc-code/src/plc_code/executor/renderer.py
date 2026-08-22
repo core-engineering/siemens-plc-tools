@@ -131,7 +131,7 @@ class UnsupportedExpression(Exception):
         self.node = node
 
 
-def render(expression: Expression) -> str:
+def render(expression: Expression, string_constants: dict[str, int] | None = None) -> str:
     """Render one expression node as Python source.
 
     Dispatches on ``expression``'s runtime type. There is no fallback branch: a node
@@ -142,6 +142,19 @@ def render(expression: Expression) -> str:
     ----------
     expression : Expression
         A node from :mod:`plc_code.parser.expressions`.
+    string_constants : dict[str, int] | None, optional
+        Mapping from a quoted string-constant literal (e.g. ``'"USER_FREEWHEEL"'``,
+        quotes included) to the integer value assigned to it, as collected by
+        ``SCLTranspiler._collect_string_constants``. Mirrors the substitution
+        ``plc_code.executor.generator._map_string_constants`` performs on text: a
+        non-local, non-absolute :class:`~plc_code.parser.expressions.VariableRef`
+        whose quoted spelling is a key of this table renders as ``self.NAME``
+        instead of the quoted literal it would otherwise render as -- see
+        :func:`_render_variable_ref`. A CASE label is not affected by this
+        parameter; that substitution (a matching literal becomes its bare integer)
+        is a different mapping, applied by the generator directly, not by this
+        function. ``None`` (the default) renders every non-local global as a
+        quoted literal, unconditionally.
 
     Returns
     -------
@@ -158,19 +171,19 @@ def render(expression: Expression) -> str:
     if isinstance(expression, TypedLiteral):
         return _render_typed_literal(expression)
     if isinstance(expression, VariableRef):
-        return _render_variable_ref(expression)
+        return _render_variable_ref(expression, string_constants)
     if isinstance(expression, Member):
-        return _render_member(expression)
+        return _render_member(expression, string_constants)
     if isinstance(expression, Index):
-        return _render_index(expression)
+        return _render_index(expression, string_constants)
     if isinstance(expression, Grouping):
-        return f"({render(expression.inner)})"
+        return f"({render(expression.inner, string_constants)})"
     if isinstance(expression, UnaryOp):
-        return _render_unary_op(expression)
+        return _render_unary_op(expression, string_constants)
     if isinstance(expression, BinaryOp):
-        return _render_binary_op(expression)
+        return _render_binary_op(expression, string_constants)
     if isinstance(expression, FunctionCall):
-        return _render_function_call(expression)
+        return _render_function_call(expression, string_constants)
     raise UnsupportedExpression(expression)
 
 
@@ -250,23 +263,27 @@ def _render_typed_literal(node: TypedLiteral) -> str:
     raise UnsupportedExpression(node)
 
 
-def _render_variable_ref(node: VariableRef) -> str:
+def _render_variable_ref(node: VariableRef, string_constants: dict[str, int] | None = None) -> str:
     """``#name`` as an instance attribute; ``%name`` and a quoted global as-is.
 
     Parameters
     ----------
     node : VariableRef
         The variable reference to render.
+    string_constants : dict[str, int] | None, optional
+        See :func:`render`. When ``node`` is a non-local, non-absolute, non-``ENO``
+        global and its quoted spelling (``f'"{node.name}"'``) is a key of this
+        table, it renders as ``self.{name}`` instead of the quoted literal.
 
     Returns
     -------
     str
-        ``self.{name}`` for a local (``#name``); ``%{name}`` unchanged for an
-        absolute address (``%name``); the bare name for ``ENO``; ``"{name}"``
-        (quoted) for any other global, matching what the current translator leaves
-        untouched when a quoted name is not immediately followed by ``.member``
-        (``GLOBAL_DB_PATTERN`` requires the dot; ``Member`` handles that case, not
-        this function).
+        ``self.{name}`` for a local (``#name``) or a mapped string constant;
+        ``%{name}`` unchanged for an absolute address (``%name``); the bare name
+        for ``ENO``; ``"{name}"`` (quoted) for any other global, matching what the
+        current translator leaves untouched when a quoted name is not immediately
+        followed by ``.member`` (``GLOBAL_DB_PATTERN`` requires the dot; ``Member``
+        handles that case, not this function).
     """
     if node.is_local:
         return f"self.{node.name}"
@@ -274,47 +291,64 @@ def _render_variable_ref(node: VariableRef) -> str:
         return f"%{node.name}"
     if node.name.upper() == _IMPLICIT_BARE_NAME:
         return node.name
-    return f'"{node.name}"'
+    quoted = f'"{node.name}"'
+    if string_constants and quoted in string_constants:
+        return f"self.{node.name}"
+    return quoted
 
 
-def _is_global_db_ref(node: Expression) -> bool:
+def _is_global_db_ref(node: Expression, string_constants: dict[str, int] | None = None) -> bool:
     """Whether ``node`` is the bare quoted global a ``Member`` base substitutes for.
 
     Parameters
     ----------
     node : Expression
         A ``Member``'s ``base``.
+    string_constants : dict[str, int] | None, optional
+        See :func:`render`. A ``VariableRef`` whose quoted spelling is a key of
+        this table is a mapped string constant, not a global DB, and returns
+        False here -- the substitution in :func:`_render_variable_ref` takes
+        priority, mirroring the order the text path applies its own
+        ``_map_string_constants`` rewrite before ``GLOBAL_DB_PATTERN`` ever sees
+        the text.
 
     Returns
     -------
     bool
         True for a ``VariableRef`` that is neither local (``#name``) nor absolute
-        (``%name``) nor the bare ``ENO`` -- i.e. one that renders quoted, as
-        ``ExpressionTranslator.GLOBAL_DB_PATTERN`` requires (a literal ``"name"``
-        immediately followed by ``.``).
+        (``%name``) nor the bare ``ENO`` nor a mapped string constant -- i.e. one
+        that renders quoted, as ``ExpressionTranslator.GLOBAL_DB_PATTERN`` requires
+        (a literal ``"name"`` immediately followed by ``.``).
     """
-    return (
+    if not (
         isinstance(node, VariableRef)
         and not node.is_local
         and not node.is_absolute
         and node.name.upper() != _IMPLICIT_BARE_NAME
-    )
+    ):
+        return False
+    if string_constants and f'"{node.name}"' in string_constants:
+        return False
+    return True
 
 
-def _render_member(node: Member) -> str:
+def _render_member(node: Member, string_constants: dict[str, int] | None = None) -> str:
     """``base.name``, substituting the runtime lookup for a bare global base.
 
     Structural equivalent of ``ExpressionTranslator._translate_global_db``: when the
     base is a bare quoted global (see :func:`_is_global_db_ref`), it renders through
     ``self._runtime.global_dbs[...]`` instead of through :func:`_render_variable_ref`,
     exactly as the current translator's ``GLOBAL_DB_PATTERN`` substitutes there. Any
-    other base -- local, absolute, or itself a ``Member``/``Index``/``Grouping`` --
-    renders through :func:`render` normally.
+    other base -- local, absolute, a mapped string constant, or itself a
+    ``Member``/``Index``/``Grouping`` -- renders through :func:`render` normally.
 
     Parameters
     ----------
     node : Member
         The member access to render.
+    string_constants : dict[str, int] | None, optional
+        See :func:`render`. Forwarded to :func:`_is_global_db_ref` and to the
+        base's own render.
 
     Returns
     -------
@@ -323,11 +357,11 @@ def _render_member(node: Member) -> str:
         was written ``.#name``; ``{base}.%{name}`` when written ``.%name``;
         ``{base}."{name}"`` when written ``."name"``.
     """
-    if _is_global_db_ref(node.base):
+    if _is_global_db_ref(node.base, string_constants):
         assert isinstance(node.base, VariableRef)  # narrowed by _is_global_db_ref
         base_text = f'self._runtime.global_dbs["{node.base.name}"]'
     else:
-        base_text = render(node.base)
+        base_text = render(node.base, string_constants)
 
     if node.is_local:
         return f"{base_text}.self.{node.name}"
@@ -338,7 +372,7 @@ def _render_member(node: Member) -> str:
     return f"{base_text}.{node.name}"
 
 
-def _render_index(node: Index) -> str:
+def _render_index(node: Index, string_constants: dict[str, int] | None = None) -> str:
     """``base[i]`` for one subscript; ``base[i, j]`` chained as ``base[i][j]``.
 
     Structural equivalent of ``ExpressionTranslator._translate_multi_index``: the base
@@ -351,17 +385,20 @@ def _render_index(node: Index) -> str:
     ----------
     node : Index
         The indexing operation to render.
+    string_constants : dict[str, int] | None, optional
+        See :func:`render`. Forwarded to every recursive render of the base and
+        each subscript.
 
     Returns
     -------
     str
         The base followed by one ``[...]`` per entry in ``node.indices``.
     """
-    base_text = render(node.base)
-    return base_text + "".join(f"[{render(index)}]" for index in node.indices)
+    base_text = render(node.base, string_constants)
+    return base_text + "".join(f"[{render(index, string_constants)}]" for index in node.indices)
 
 
-def _render_unary_op(node: UnaryOp) -> str:
+def _render_unary_op(node: UnaryOp, string_constants: dict[str, int] | None = None) -> str:
     """``NOT x`` as ``not x``; ``-x`` unchanged, both with a space after the operator.
 
     Structural equivalent of ``ExpressionTranslator._translate_operators``: ``NOT``
@@ -374,6 +411,8 @@ def _render_unary_op(node: UnaryOp) -> str:
     ----------
     node : UnaryOp
         The unary operator to render.
+    string_constants : dict[str, int] | None, optional
+        See :func:`render`. Forwarded to the operand's render.
 
     Returns
     -------
@@ -391,10 +430,10 @@ def _render_unary_op(node: UnaryOp) -> str:
         py_operator = "-"
     else:
         raise UnsupportedExpression(node)
-    return f"{py_operator} {render(node.operand)}"
+    return f"{py_operator} {render(node.operand, string_constants)}"
 
 
-def _render_binary_op(node: BinaryOp) -> str:
+def _render_binary_op(node: BinaryOp, string_constants: dict[str, int] | None = None) -> str:
     """One binary operator between its rendered operands.
 
     Structural equivalent of ``ExpressionTranslator._translate_operators``: looks
@@ -410,6 +449,8 @@ def _render_binary_op(node: BinaryOp) -> str:
     ----------
     node : BinaryOp
         The binary operator to render.
+    string_constants : dict[str, int] | None, optional
+        See :func:`render`. Forwarded to both operands' render.
 
     Returns
     -------
@@ -431,16 +472,18 @@ def _render_binary_op(node: BinaryOp) -> str:
         py_operator = node.operator
     else:
         raise UnsupportedExpression(node)
-    return f"{render(node.left)} {py_operator} {render(node.right)}"
+    return f"{render(node.left, string_constants)} {py_operator} {render(node.right, string_constants)}"
 
 
-def _render_function_call(node: FunctionCall) -> str:
+def _render_function_call(node: FunctionCall, string_constants: dict[str, int] | None = None) -> str:
     """Dispatch a call node to its builtin or quoted-block renderer.
 
     Parameters
     ----------
     node : FunctionCall
         The call to render.
+    string_constants : dict[str, int] | None, optional
+        See :func:`render`. Forwarded to whichever renderer handles the call.
 
     Returns
     -------
@@ -449,8 +492,8 @@ def _render_function_call(node: FunctionCall) -> str:
         from :func:`_render_builtin_call` otherwise.
     """
     if node.is_quoted:
-        return _render_named_call(node)
-    return _render_builtin_call(node)
+        return _render_named_call(node, string_constants)
+    return _render_builtin_call(node, string_constants)
 
 
 def _is_array_bound_call(node: FunctionCall) -> bool:
@@ -486,7 +529,7 @@ def _is_array_bound_call(node: FunctionCall) -> bool:
     )
 
 
-def _render_builtin_call(node: FunctionCall) -> str:
+def _render_builtin_call(node: FunctionCall, string_constants: dict[str, int] | None = None) -> str:
     """A bare (unquoted) call: a mapped builtin, the ``ARR``/``DIM`` bound pair, or neither.
 
     Structural equivalent of ``ExpressionTranslator._translate_builtins`` together
@@ -515,6 +558,8 @@ def _render_builtin_call(node: FunctionCall) -> str:
     ----------
     node : FunctionCall
         The call to render; ``node.is_quoted`` is False.
+    string_constants : dict[str, int] | None, optional
+        See :func:`render`. Forwarded to every argument's render.
 
     Returns
     -------
@@ -542,15 +587,15 @@ def _render_builtin_call(node: FunctionCall) -> str:
     upper_name = node.name.upper()
     if upper_name in _ARRAY_BOUND_BUILTINS and _is_array_bound_call(node):
         py_func = _BUILTIN_MAP[upper_name]
-        arr_text = render(node.arguments[0].value)
-        dim_text = render(node.arguments[1].value)
+        arr_text = render(node.arguments[0].value, string_constants)
+        dim_text = render(node.arguments[1].value, string_constants)
         return f"({py_func})({arr_text}, {dim_text})"
     py_func = _BUILTIN_MAP.get(upper_name, node.name)
-    args_text = ", ".join(render(argument.value) for argument in node.arguments)
+    args_text = ", ".join(render(argument.value, string_constants) for argument in node.arguments)
     return f"{py_func}({args_text})"
 
 
-def _render_named_call(node: FunctionCall) -> str:
+def _render_named_call(node: FunctionCall, string_constants: dict[str, int] | None = None) -> str:
     """A quoted block call, rendered by calling ``ExpressionTranslator._build_named_call``.
 
     ``_build_named_call`` takes the argument list as unparsed text and re-derives
@@ -587,6 +632,8 @@ def _render_named_call(node: FunctionCall) -> str:
     ----------
     node : FunctionCall
         The call to render; ``node.is_quoted`` is True.
+    string_constants : dict[str, int] | None, optional
+        See :func:`render`. Forwarded to every bound argument's render.
 
     Returns
     -------
@@ -600,7 +647,7 @@ def _render_named_call(node: FunctionCall) -> str:
         if argument.is_output or not argument.name:
             continue
         token = f"__ARGVAL{index}__"
-        placeholders[token] = render(argument.value)
+        placeholders[token] = render(argument.value, string_constants)
         name_text = f'"{argument.name}"' if argument.is_quoted_name else argument.name
         bound_arguments.append(f"{name_text} := {token}")
     params_str = ", ".join(bound_arguments)
