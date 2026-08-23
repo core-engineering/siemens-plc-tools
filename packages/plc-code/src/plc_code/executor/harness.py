@@ -193,6 +193,7 @@ class FBTestHarness:
         result = compile_block(
             block,
             fb_type_resolver=lambda n: runtime.block_kind(n) == "FUNCTION_BLOCK",
+            signature_resolver=runtime.block_signature,
         )
         if not result.success:
             raise ValueError(

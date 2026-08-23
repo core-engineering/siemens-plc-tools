@@ -1,0 +1,26 @@
+FUNCTION "CallsPositional" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+    VAR_INPUT
+        value : Real;
+    END_VAR
+    VAR_OUTPUT
+        doubled : Real;
+        tripled : Real;
+        ret : Real;
+        viaStatement : Real;
+    END_VAR
+    VAR_TEMP
+        intermediate : Real;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        // Positional input on an assignment whose RHS is a quoted-name call:
+        // `value` binds to RetWithOut's first declared input, `x`.
+        #ret := "RetWithOut"(#value, dbl => #doubled, trp => #tripled);
+        // Positional input on a quoted-name call statement with a write-back.
+        "Doubler"(#value, result := #intermediate);
+        #viaStatement := #intermediate;
+    END_NETWORK
+END_FUNCTION

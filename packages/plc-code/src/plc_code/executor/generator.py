@@ -59,6 +59,15 @@ left anywhere in this module.
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
+from typing import Protocol
+
+from plc_code.executor.arguments import (
+    PositionalBindingError,
+    SignatureResolver,
+    positional_parameter_names,
+)
 from plc_code.executor.codegen import StatementTranslator
 from plc_code.executor.renderer import render
 from plc_code.parser.expression_parser import parse_expression
@@ -93,11 +102,26 @@ class UnsupportedStatement(Exception):
         self.line = line
 
 
+class _NamedArgument(Protocol):
+    """The one field :func:`_positional_names` reads from either argument shape."""
+
+    @property
+    def name(self) -> str | None: ...
+
+
+@dataclass(frozen=True)
+class _Context:
+    """What every generator site forwards unchanged: the two render-time lookups."""
+
+    string_constants: dict[str, int] | None
+    signature_resolver: SignatureResolver | None
+
+
 def _generate_body(
     statements: list[Statement],
     indent: int,
     translator: StatementTranslator,
-    string_constants: dict[str, int] | None,
+    ctx: _Context,
 ) -> list[str]:
     """Generate a nested body's lines via :func:`generate_statements`, padding when empty.
 
@@ -117,7 +141,7 @@ def _generate_body(
         the header this body follows).
     translator : StatementTranslator
         Shared translator instance, forwarded unchanged.
-    string_constants : dict[str, int] | None
+    ctx : _Context
         Forwarded unchanged; see :func:`generate_statements`.
 
     Returns
@@ -126,7 +150,7 @@ def _generate_body(
         Python lines for the body. Never empty: ``["pass"]`` (at ``indent``)
         stands in for a body that generated no lines of its own.
     """
-    lines = generate_statements(statements, indent, translator, string_constants)
+    lines = _generate_statements(statements, indent, translator, ctx)
     if not lines:
         lines.append(INDENT * indent + "pass")
     return lines
@@ -259,10 +283,33 @@ def _is_write_back_candidate(value_expr: Expression, string_constants: dict[str,
     return False
 
 
+def _positional_names(
+    block_name: str, arguments: Sequence[_NamedArgument], ctx: _Context, line: int
+) -> Iterator[str]:
+    """Names for the unnamed arguments of a named-block call, in order, or raise.
+
+    Delegates to :func:`plc_code.executor.arguments.positional_parameter_names` and
+    turns its :class:`PositionalBindingError` into an :class:`UnsupportedStatement`
+    located at ``line``. Accepts both argument shapes (expression-AST ``Argument`` and
+    statement-AST ``CallArgument``): only ``.name`` is read.
+    """
+    positional_count = sum(1 for argument in arguments if not argument.name)
+    try:
+        names = positional_parameter_names(
+            block_name,
+            positional_count=positional_count,
+            already_named={argument.name for argument in arguments if argument.name},
+            resolver=ctx.signature_resolver,
+        )
+    except PositionalBindingError as error:
+        raise UnsupportedStatement(f"Call at line {line}: {error}", line=line) from error
+    return iter(names)
+
+
 def _generate_named_call_assignment(
     statement: Assignment,
     translator: StatementTranslator,
-    string_constants: dict[str, int] | None,
+    ctx: _Context,
 ) -> list[str]:
     """Native lines for ``#ret := "Block"(x := #a, out => #b)``, the shape :func:`render` cannot express.
 
@@ -282,7 +329,7 @@ def _generate_named_call_assignment(
         satisfy :func:`_is_named_call_with_output_binding` (the caller's job).
     translator : StatementTranslator
         Shared translator instance; only ``_emit_named_call`` is used.
-    string_constants : dict[str, int] | None
+    ctx : _Context
         Forwarded to every :func:`render` call.
 
     Returns
@@ -303,15 +350,17 @@ def _generate_named_call_assignment(
         raise UnsupportedStatement(
             f"Assignment at line {statement.line} has no parsed target expression", line=statement.line
         )
+    names_for_positional = _positional_names(node.name, node.arguments, ctx, statement.line)
     bound_arguments: list[tuple[str, str, bool, bool]] = []
     for argument in node.arguments:
+        value_text = render(argument.value, ctx.string_constants, ctx.signature_resolver)
         if not argument.name:
-            continue
-        value_text = render(argument.value, string_constants)
-        name_text = f'"{argument.name}"' if argument.is_quoted_name else argument.name
-        write_back = not argument.is_output and _is_write_back_candidate(argument.value, string_constants)
+            name_text = next(names_for_positional)
+        else:
+            name_text = f'"{argument.name}"' if argument.is_quoted_name else argument.name
+        write_back = not argument.is_output and _is_write_back_candidate(argument.value, ctx.string_constants)
         bound_arguments.append((name_text, value_text, argument.is_output, write_back))
-    target_text = render(statement.target_expr, string_constants)
+    target_text = render(statement.target_expr, ctx.string_constants, ctx.signature_resolver)
     lines, result_var = translator._emit_named_call(node.name, bound_arguments)  # noqa: SLF001
     lines = list(lines)
     lines.append(f'{target_text} = {result_var}["{node.name}"]')
@@ -322,7 +371,7 @@ def _generate_assignment(
     statement: Assignment,
     prefix: str,
     translator: StatementTranslator,
-    string_constants: dict[str, int] | None,
+    ctx: _Context,
 ) -> list[str]:
     """One ``Assignment``'s Python line(s), rendered natively from the tree.
 
@@ -343,7 +392,7 @@ def _generate_assignment(
         Indentation to prepend to the emitted line.
     translator : StatementTranslator
         Shared translator instance, forwarded to :func:`_generate_named_call_assignment`.
-    string_constants : dict[str, int] | None
+    ctx : _Context
         Forwarded to :func:`render`; see :func:`generate_statements`.
 
     Returns
@@ -373,23 +422,21 @@ def _generate_assignment(
             f"Assignment at line {statement.line} has no parsed expression tree", line=statement.line
         )
     if _is_named_call_with_output_binding(statement.value_expr):
-        named_call_lines = _generate_named_call_assignment(statement, translator, string_constants)
+        named_call_lines = _generate_named_call_assignment(statement, translator, ctx)
         return [prefix + line for line in named_call_lines]
-    target_text = render(statement.target_expr, string_constants)
-    value_text = render(statement.value_expr, string_constants)
+    target_text = render(statement.target_expr, ctx.string_constants, ctx.signature_resolver)
+    value_text = render(statement.value_expr, ctx.string_constants, ctx.signature_resolver)
     return [f"{prefix}{target_text} = {value_text}"]
 
 
-def _render_header_expression(
-    expr: Expression | None, string_constants: dict[str, int] | None, description: str, line: int
-) -> str:
+def _render_header_expression(expr: Expression | None, ctx: _Context, description: str, line: int) -> str:
     """One control-flow header expression: an `If`/`While` condition, a `For` bound, or a `Case` selector.
 
     Parameters
     ----------
     expr : Expression | None
         The slice's parsed tree, or `None` when it failed to parse.
-    string_constants : dict[str, int] | None
+    ctx : _Context
         Forwarded to :func:`render`; see :func:`generate_statements`.
     description : str
         What this slice is, for the `UnsupportedStatement` message -- e.g. `"If
@@ -413,10 +460,10 @@ def _render_header_expression(
     """
     if expr is None:
         raise UnsupportedStatement(f"{description} has no parsed expression tree", line=line)
-    return render(expr, string_constants)
+    return render(expr, ctx.string_constants, ctx.signature_resolver)
 
 
-def _render_for_variable(tokens: list[Token], string_constants: dict[str, int] | None) -> str:
+def _render_for_variable(tokens: list[Token], ctx: _Context) -> str:
     """A `For` loop's own variable name, parsed from its raw token slice and rendered.
 
     Unlike every other header slice, a `For` loop's `variable` field carries no
@@ -431,7 +478,7 @@ def _render_for_variable(tokens: list[Token], string_constants: dict[str, int] |
     ----------
     tokens : list[Token]
         `For.variable` -- always a bare `#name` reference in valid SCL.
-    string_constants : dict[str, int] | None
+    ctx : _Context
         Forwarded to :func:`render`; see :func:`generate_statements`.
 
     Returns
@@ -452,15 +499,15 @@ def _render_for_variable(tokens: list[Token], string_constants: dict[str, int] |
         raise UnsupportedStatement(
             f"For loop variable at line {line} has no parsed expression tree", line=line
         )
-    return render(result.expression, string_constants)
+    return render(result.expression, ctx.string_constants, ctx.signature_resolver)
 
 
-def _render_case_label(expr: Expression | None, string_constants: dict[str, int] | None, line: int) -> str:
+def _render_case_label(expr: Expression | None, ctx: _Context, line: int) -> str:
     """One `Case` label: a mapped symbolic constant renders as its bare integer, everything else natively.
 
     A label is a different mapping from an ordinary expression position. A label whose
     tree is a non-local, non-absolute `VariableRef` (`"MODE_ONE"`, never `#name` or
-    `%name`) with quoted spelling (`f'"{name}"'`) present in `string_constants` emits
+    `%name`) with quoted spelling (`f'"{name}"'`) present in `ctx` emits
     that mapping's bare integer, the same value a matching `Assignment` right-hand side
     would resolve to at runtime. This is deliberately NOT the same substitution
     `render`'s own `_render_variable_ref` performs for that identical tree shape
@@ -477,7 +524,7 @@ def _render_case_label(expr: Expression | None, string_constants: dict[str, int]
     ----------
     expr : Expression | None
         The label's parsed tree (`CaseBranch.values_expr[i]`), or `None`.
-    string_constants : dict[str, int] | None
+    ctx : _Context
         Forwarded to :func:`render` and consulted directly for the symbolic-label
         ruling.
     line : int
@@ -501,9 +548,9 @@ def _render_case_label(expr: Expression | None, string_constants: dict[str, int]
         raise UnsupportedStatement("Case label has no parsed expression tree", line=line)
     if isinstance(expr, VariableRef) and not expr.is_local and not expr.is_absolute:
         quoted = f'"{expr.name}"'
-        if string_constants and quoted in string_constants:
-            return str(string_constants[quoted])
-    return render(expr, string_constants)
+        if ctx.string_constants and quoted in ctx.string_constants:
+            return str(ctx.string_constants[quoted])
+    return render(expr, ctx.string_constants, ctx.signature_resolver)
 
 
 #: An FB instance name substring that makes :func:`_generate_fb_instance_call` add a
@@ -544,11 +591,12 @@ def _callee_timer_marker_name(callee_expr: VariableRef | Index | Member) -> str 
 
 def _generate_fb_instance_call(
     statement: Call,
-    string_constants: dict[str, int] | None,
+    ctx: _Context,
 ) -> list[str]:
     """Native lines for an FB instance call: ``#instance(...)``, ``#arms[#i](...)``, or ``"db".TON(...)``.
 
-    A positional (unnamed) argument is dropped in either direction, a ``:=`` argument
+    A positional (unnamed) argument raises (the instance's FB type is not known
+    here, so there is no signature to bind it against), a ``:=`` argument
     becomes ``name=value`` in the call's keyword arguments, an ``=>`` argument becomes a
     trailing ``target = {callee}.name`` line, and a callee whose own timer-marker name
     contains ``"timer"``, ``"ton"``, ``"tof"`` or ``"tp"`` (case-insensitively) gets a
@@ -565,7 +613,7 @@ def _generate_fb_instance_call(
         The call to generate; ``statement.callee_expr`` must already be known to be a
         local (``is_local=True``) ``VariableRef``, an ``Index``, or a ``Member`` (the
         caller's job, in :func:`_generate_call`).
-    string_constants : dict[str, int] | None
+    ctx : _Context
         Forwarded to every :func:`render` call.
 
     Returns
@@ -582,18 +630,22 @@ def _generate_fb_instance_call(
     """
     callee_expr = statement.callee_expr
     assert isinstance(callee_expr, VariableRef | Index | Member)
-    callee_text = render(callee_expr, string_constants)
+    callee_text = render(callee_expr, ctx.string_constants, ctx.signature_resolver)
     input_params: list[str] = []
     output_assignments: list[str] = []
     for argument in statement.arguments:
         if not argument.name:
-            continue
+            raise UnsupportedStatement(
+                f"Call at line {statement.line}: FB instance call passes a positional argument; "
+                "the instance's type is not resolvable here, call it with named arguments",
+                line=statement.line,
+            )
         if argument.value_expr is None:
             raise UnsupportedStatement(
                 f"Call at line {statement.line} argument {argument.name!r} has no parsed expression tree",
                 line=statement.line,
             )
-        value_text = render(argument.value_expr, string_constants)
+        value_text = render(argument.value_expr, ctx.string_constants, ctx.signature_resolver)
         if argument.is_output:
             output_assignments.append(f"{value_text} = {callee_text}.{argument.name}")
         else:
@@ -612,7 +664,7 @@ def _generate_fb_instance_call(
 def _generate_named_call_statement(
     statement: Call,
     translator: StatementTranslator,
-    string_constants: dict[str, int] | None,
+    ctx: _Context,
 ) -> list[str]:
     """Native lines for a quoted-block call statement (``"Block"(x := #a, out => #b);``).
 
@@ -630,7 +682,7 @@ def _generate_named_call_statement(
         job, in :func:`_generate_call`).
     translator : StatementTranslator
         Shared translator instance; only ``_emit_named_call`` is used.
-    string_constants : dict[str, int] | None
+    ctx : _Context
         Forwarded to every :func:`render` call.
 
     Returns
@@ -647,20 +699,20 @@ def _generate_named_call_statement(
     """
     assert isinstance(statement.callee_expr, VariableRef)
     block_name = statement.callee_expr.name
+    names_for_positional = _positional_names(block_name, statement.arguments, ctx, statement.line)
     bound_arguments: list[tuple[str, str, bool, bool]] = []
     for argument in statement.arguments:
-        if not argument.name:
-            continue
+        name = argument.name or next(names_for_positional)
         if argument.value_expr is None:
             raise UnsupportedStatement(
-                f"Call at line {statement.line} argument {argument.name!r} has no parsed expression tree",
+                f"Call at line {statement.line} argument {name!r} has no parsed expression tree",
                 line=statement.line,
             )
-        value_text = render(argument.value_expr, string_constants)
+        value_text = render(argument.value_expr, ctx.string_constants, ctx.signature_resolver)
         write_back = not argument.is_output and _is_write_back_candidate(
-            argument.value_expr, string_constants
+            argument.value_expr, ctx.string_constants
         )
-        bound_arguments.append((argument.name, value_text, argument.is_output, write_back))
+        bound_arguments.append((name, value_text, argument.is_output, write_back))
     lines, _result_var = translator._emit_named_call(block_name, bound_arguments)  # noqa: SLF001
     return list(lines)
 
@@ -669,7 +721,7 @@ def _generate_call(
     statement: Call,
     prefix: str,
     translator: StatementTranslator,
-    string_constants: dict[str, int] | None,
+    ctx: _Context,
 ) -> list[str]:
     """One ``Call``'s Python line(s), rendered natively from ``statement.callee_expr``'s own shape:
 
@@ -692,7 +744,7 @@ def _generate_call(
         Indentation to prepend to the emitted line(s).
     translator : StatementTranslator
         Shared translator instance, forwarded to :func:`_generate_named_call_statement`.
-    string_constants : dict[str, int] | None
+    ctx : _Context
         Forwarded to :func:`render`; see :func:`generate_statements`.
 
     Returns
@@ -711,11 +763,11 @@ def _generate_call(
     callee_expr = statement.callee_expr
     if isinstance(callee_expr, VariableRef) and not callee_expr.is_absolute:
         if callee_expr.is_local:
-            lines = _generate_fb_instance_call(statement, string_constants)
+            lines = _generate_fb_instance_call(statement, ctx)
         else:
-            lines = _generate_named_call_statement(statement, translator, string_constants)
+            lines = _generate_named_call_statement(statement, translator, ctx)
     elif isinstance(callee_expr, Index | Member):
-        lines = _generate_fb_instance_call(statement, string_constants)
+        lines = _generate_fb_instance_call(statement, ctx)
     else:
         raise UnsupportedStatement(
             f"Call at line {statement.line} has no supported callee shape", line=statement.line
@@ -728,6 +780,7 @@ def generate_statements(
     indent: int = 0,
     translator: StatementTranslator | None = None,
     string_constants: dict[str, int] | None = None,
+    signature_resolver: SignatureResolver | None = None,
 ) -> list[str]:
     """Generate Python lines for a list of statements, natively from the tree.
 
@@ -751,6 +804,12 @@ def generate_statements(
         ``string_constants`` parameter). ``None`` (the default) renders every string
         literal as itself.
 
+    signature_resolver : SignatureResolver | None
+        Resolves a called block's name to its declared input names in order, so a
+        positional call argument binds to a parameter. ``None`` (the default) makes
+        any positional argument to a named block raise instead of being dropped; see
+        :mod:`plc_code.executor.arguments`.
+
     Returns
     -------
     list[str]
@@ -764,13 +823,27 @@ def generate_statements(
     plc_code.executor.renderer.UnsupportedExpression
         For a tree node :func:`render` has no visitor for, or refuses to render.
     """
-    translator = translator if translator is not None else StatementTranslator()
+    return _generate_statements(
+        statements,
+        indent,
+        translator if translator is not None else StatementTranslator(),
+        _Context(string_constants=string_constants, signature_resolver=signature_resolver),
+    )
+
+
+def _generate_statements(
+    statements: list[Statement],
+    indent: int,
+    translator: StatementTranslator,
+    ctx: _Context,
+) -> list[str]:
+    """The loop behind :func:`generate_statements`, with the context already built."""
     prefix = INDENT * indent
     lines: list[str] = []
 
     for statement in statements:
         if isinstance(statement, Assignment):
-            lines.extend(_generate_assignment(statement, prefix, translator, string_constants))
+            lines.extend(_generate_assignment(statement, prefix, translator, ctx))
             continue
 
         if isinstance(statement, If):
@@ -778,66 +851,61 @@ def generate_statements(
                 keyword = "if" if position == 0 else "elif"
                 condition = _render_header_expression(
                     branch.condition_expr,
-                    string_constants,
+                    ctx,
                     f"If branch {position} condition",
                     statement.line,
                 )
                 lines.append(f"{prefix}{keyword} {condition}:")
-                lines.extend(_generate_body(branch.body, indent + 1, translator, string_constants))
+                lines.extend(_generate_body(branch.body, indent + 1, translator, ctx))
             if statement.else_body:
                 lines.append(f"{prefix}else:")
-                lines.extend(_generate_body(statement.else_body, indent + 1, translator, string_constants))
+                lines.extend(_generate_body(statement.else_body, indent + 1, translator, ctx))
             continue
 
         if isinstance(statement, For):
-            variable = _render_for_variable(statement.variable, string_constants)
+            variable = _render_for_variable(statement.variable, ctx)
             start = _render_header_expression(
-                statement.start_expr, string_constants, "For loop start bound", statement.line
+                statement.start_expr, ctx, "For loop start bound", statement.line
             )
-            end = _render_header_expression(
-                statement.end_expr, string_constants, "For loop end bound", statement.line
-            )
+            end = _render_header_expression(statement.end_expr, ctx, "For loop end bound", statement.line)
             bounds = f"{start}, {end} + 1"
             if statement.step:
-                step = _render_header_expression(
-                    statement.step_expr, string_constants, "For loop step", statement.line
-                )
+                step = _render_header_expression(statement.step_expr, ctx, "For loop step", statement.line)
                 bounds += f", {step}"
             lines.append(f"{prefix}for {variable} in range({bounds}):")
-            lines.extend(_generate_body(statement.body, indent + 1, translator, string_constants))
+            lines.extend(_generate_body(statement.body, indent + 1, translator, ctx))
             continue
 
         if isinstance(statement, While):
             condition = _render_header_expression(
-                statement.condition_expr, string_constants, "While condition", statement.line
+                statement.condition_expr, ctx, "While condition", statement.line
             )
             lines.append(f"{prefix}while {condition}:")
-            lines.extend(_generate_body(statement.body, indent + 1, translator, string_constants))
+            lines.extend(_generate_body(statement.body, indent + 1, translator, ctx))
             continue
 
         if isinstance(statement, Case):
             selector = _render_header_expression(
-                statement.selector_expr, string_constants, "Case selector", statement.line
+                statement.selector_expr, ctx, "Case selector", statement.line
             )
             for position, arm in enumerate(statement.branches):
                 keyword = "if" if position == 0 else "elif"
                 values = [
-                    _render_case_label(value_expr, string_constants, statement.line)
-                    for value_expr in arm.values_expr
+                    _render_case_label(value_expr, ctx, statement.line) for value_expr in arm.values_expr
                 ]
                 if len(values) == 1:
                     test = f"{selector} == {values[0]}"
                 else:
                     test = f"{selector} in ({', '.join(values)})"
                 lines.append(f"{prefix}{keyword} {test}:")
-                lines.extend(_generate_body(arm.body, indent + 1, translator, string_constants))
+                lines.extend(_generate_body(arm.body, indent + 1, translator, ctx))
             if statement.default:
                 lines.append(f"{prefix}else:")
-                lines.extend(_generate_body(statement.default, indent + 1, translator, string_constants))
+                lines.extend(_generate_body(statement.default, indent + 1, translator, ctx))
             continue
 
         if isinstance(statement, Call):
-            lines.extend(_generate_call(statement, prefix, translator, string_constants))
+            lines.extend(_generate_call(statement, prefix, translator, ctx))
             continue
 
         if isinstance(statement, Return):

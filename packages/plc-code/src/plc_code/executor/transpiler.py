@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from plc_code.executor.arguments import SignatureResolver
 from plc_code.executor.codegen import CodeGenContext
 from plc_code.executor.generator import UnsupportedStatement, generate_statements
 from plc_code.executor.models import CompileResult, TranspileOptions, TranspileResult
@@ -39,6 +40,7 @@ class SCLTranspiler:
     options: TranspileOptions = field(default_factory=TranspileOptions)
     type_mapper: TypeMapper = field(default_factory=TypeMapper)
     fb_type_resolver: Callable[[str], bool] | None = None
+    signature_resolver: SignatureResolver | None = None
     _lines: list[str] = field(default_factory=list, repr=False)
     _ctx: CodeGenContext = field(default_factory=CodeGenContext, repr=False)
     _errors: list[str] = field(default_factory=list, repr=False)
@@ -692,7 +694,11 @@ class SCLTranspiler:
                 self._errors.append(problem)
                 self._error_lines.append(None)
             return []
-        return generate_statements(result.statements, string_constants=self._string_constants)
+        return generate_statements(
+            result.statements,
+            string_constants=self._string_constants,
+            signature_resolver=self.signature_resolver,
+        )
 
 
 def build_runtime_globals() -> dict[str, Any]:
@@ -740,6 +746,7 @@ def transpile_block(
     options: TranspileOptions | None = None,
     type_mapper: TypeMapper | None = None,
     fb_type_resolver: Callable[[str], bool] | None = None,
+    signature_resolver: SignatureResolver | None = None,
 ) -> TranspileResult:
     """Transpile an SCL block to Python code.
 
@@ -756,6 +763,12 @@ def transpile_block(
         FUNCTION_BLOCK (rather than a UDT/TYPE).  When supplied, scalar FB
         members are emitted as persistent runtime-bound instances.  When None,
         every ``_.`` member keeps the legacy ``_AutoStruct`` behaviour.
+    signature_resolver : SignatureResolver | None
+        Resolves a called block's name to its input parameter names in declaration
+        order, so a positional argument (``"Block"(#a, #b)``) binds to a parameter.
+        ``PLCRuntime.block_signature`` is the production one. When None, any
+        positional argument to a named block fails the transpile rather than being
+        dropped (see :mod:`plc_code.executor.arguments`).
 
     Returns
     -------
@@ -767,6 +780,7 @@ def transpile_block(
         options=options or TranspileOptions(),
         type_mapper=type_mapper or TypeMapper(),
         fb_type_resolver=fb_type_resolver,
+        signature_resolver=signature_resolver,
     )
     return transpiler.transpile()
 
@@ -777,6 +791,7 @@ def compile_block(
     type_mapper: TypeMapper | None = None,
     extra_globals: dict[str, Any] | None = None,
     fb_type_resolver: Callable[[str], bool] | None = None,
+    signature_resolver: SignatureResolver | None = None,
 ) -> CompileResult:
     """Transpile and compile an SCL block to an executable Python class.
 
@@ -797,6 +812,12 @@ def compile_block(
         Optional predicate identifying which ``_.Name`` member types are
         FUNCTION_BLOCKs (forwarded to :func:`transpile_block`).  When None,
         legacy ``_AutoStruct`` behaviour is preserved for every ``_.`` member.
+    signature_resolver : SignatureResolver | None
+        Resolves a called block's name to its input parameter names in declaration
+        order, so a positional argument (``"Block"(#a, #b)``) binds to a parameter.
+        ``PLCRuntime.block_signature`` is the production one. When None, any
+        positional argument to a named block fails the transpile rather than being
+        dropped (forwarded to :func:`transpile_block`).
 
     Returns
     -------
@@ -809,7 +830,7 @@ def compile_block(
         return compile_ladder_block(block)
 
     # First transpile
-    transpile_result = transpile_block(block, options, type_mapper, fb_type_resolver)
+    transpile_result = transpile_block(block, options, type_mapper, fb_type_resolver, signature_resolver)
 
     if not transpile_result.success:
         return CompileResult(

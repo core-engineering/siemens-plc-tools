@@ -91,7 +91,10 @@ def test_a_quoted_call_with_two_named_arguments() -> None:
     assert render(call) == expected
 
 
-def test_a_quoted_call_with_a_positional_argument_drops_it() -> None:
+def test_a_quoted_call_with_a_positional_argument_and_no_resolver_raises() -> None:
+    """Without a signature resolver the argument cannot be bound; the old text path
+    dropped it and called the block with no inputs. See `test_positional_arguments.py`
+    for the bound case."""
     call = FunctionCall(
         line=1,
         column=1,
@@ -99,7 +102,8 @@ def test_a_quoted_call_with_a_positional_argument_drops_it() -> None:
         is_quoted=True,
         arguments=[CallArgument(value=_local("a"))],
     )
-    assert render(call) == 'self._runtime.call_named_block("Block", {}, {})["Block"]'
+    with pytest.raises(UnsupportedExpression, match="positional argument"):
+        render(call)
 
 
 def test_a_quoted_parameter_name_reproduces_the_old_text_translators_double_quote_bug() -> None:

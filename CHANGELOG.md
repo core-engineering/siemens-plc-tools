@@ -241,6 +241,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   numbers directly.
 
 ### Fixed
+- **plc-code (executor)** — a positional argument to a named-block call is bound to
+  the callee's declared parameter, read from the project sources; it was silently
+  dropped.
+
+  SCL lets a FUNCTION be called positionally — `"Scaling"(#raw, 2.0)` — and binds each
+  value to the block's interface in declaration order. The translator only ever handled `name := value` and skipped everything else, so
+  such a call reached the runtime with an empty input dictionary and the callee ran on
+  its defaults, with nothing reported. Five production projects hold 97 such calls in
+  3 blocks, every one of them wrong in this way until now.
+
+  The runtime already resolves a block by name to read its kind (`PLCRuntime.block_kind`,
+  the `fb_type_resolver` hook); the new `PLCRuntime.block_signature` resolves the same
+  file for the names positional arguments bind to, and reaches the transpiler as a
+  `signature_resolver` callable (`transpile_block`, `compile_block`, `check_block`,
+  `generate_statements`, `render`), threaded alongside `string_constants`. It offers
+  the `VAR_INPUT` names in order, followed by the `VAR_IN_OUT` names only when the
+  block declares no `VAR_OUTPUT` — the one case where their positional order is
+  beyond doubt; a block with outputs offers its inputs alone, and a call reaching
+  past them is refused rather than bound on an assumption about how TIA orders the
+  rest. Where a binding would otherwise be a guess — no resolver, a block that cannot
+  be found or parsed, or a positional argument that collides (case-insensitively,
+  as SCL compares names) with a named one in the same call — the transpile fails
+  with a message naming the block and the reason (`executor/arguments.py`). On the
+  corpus every one of the 97 calls in the 3 blocks now binds; no block gained a
+  failure.
+
+  `plc code transpile` builds a resolver over the tree it was given, in both modes:
+  `--check` binds what the harness binds, and the plain emit mode — which used to
+  print the code of a failed transpile without a word — now says so on stderr (the
+  exit code stays 0; emitting is for reading the output, not judging it). The
+  runtime's block lookup, shared by `block_kind`, `block_signature` and
+  `call_named_block`, used to look one directory level below each search path; it
+  now indexes each search path once, recursively, since a callee may sit several
+  folders away from its caller.
+
+  A positional argument to an `#instance(...)` FB call raises rather than binding:
+  the instance's FB type is not resolvable from inside the caller. The corpus has no
+  such call. Builtins (`ABS(#x)`, `SQRT(#x)`) are positional by nature and unchanged.
+
 - **plc-code (parser)** — two SCL constructs the expression grammar did not read.
 
   A call whose callee is a quoted block name — `"ConvertAngleSafetyProcess"(#x)` —
@@ -784,15 +823,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   output binding, the only one of the six whose output actually compiled, calling the
   FB instance positionally with a boolean instead of by keyword.
 
-  A seventh defect is reproduced deliberately, not fixed: a positional argument to an
-  `#instance(...)` FB call is silently dropped (`#tmr(#x, #y)` renders as `self.tmr()`)
-  — kept bug-for-bug so the switch stays byte-identical for this shape; the corpus
-  population is unmeasured. The same kind of pre-existing bug, reproduced beside it:
+  A seventh defect — a positional argument to an `#instance(...)` FB call silently
+  dropped (`#tmr(#x, #y)` rendered as `self.tmr()`) — was first reproduced
+  bug-for-bug and is now fixed; see the positional-argument entry under *Fixed*.
+  The same kind of pre-existing bug, reproduced beside it:
   a quoted-block call's own parameter name written itself quoted (`"x" := #a`) renders
   with doubled quotes (`{""x"": self.a}`, not valid Python) rather than the one pair a
-  reader would expect. Both are pinned as intentional reproductions, not defects this
-  pass introduced, by their own tests (`test_generator_native.py`,
-  `test_renderer_calls.py`).
+  reader would expect. Pinned as an intentional reproduction, not a defect this pass
+  introduced, by its own test (`test_renderer_calls.py`).
 
   A related, eighth shape is a deliberate behaviour change, not a defect found:
   an assignment whose right-hand side is a bare (unquoted) system builtin binding an

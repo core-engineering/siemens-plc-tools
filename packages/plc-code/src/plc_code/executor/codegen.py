@@ -124,9 +124,10 @@ class ExpressionTranslator:
             The sub-block name (without quotes).
         arguments : list[tuple[str, str]]
             One ``(name, rendered_value)`` pair per ``:=`` (input) parameter to bind, in
-            source order. An argument with no name, or written ``name => value``
-            (output-bound), is not included here -- the caller filters both out before
-            calling this, since an expression-position call can only return one value.
+            source order. An argument written ``name => value`` (output-bound) is not
+            included here -- the caller filters it out before calling this, since an
+            expression-position call can only return one value; an argument with no
+            name arrives already bound to its declared parameter name.
 
         Returns
         -------

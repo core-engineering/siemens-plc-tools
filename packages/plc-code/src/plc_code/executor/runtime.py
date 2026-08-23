@@ -369,6 +369,8 @@ class PLCRuntime:
     block_search_paths: list[Path] = field(default_factory=list)
     _named_block_cache: dict[str, Any] = field(default_factory=dict, repr=False)
     _block_kind_cache: dict[str, BlockType | None] = field(default_factory=dict, repr=False)
+    _block_signature_cache: dict[str, list[str] | None] = field(default_factory=dict, repr=False)
+    _block_file_index: dict[Path, dict[str, Path]] = field(default_factory=dict, repr=False)
     _fb_instantiating: set[str] = field(default_factory=set, repr=False)
 
     def __post_init__(self) -> None:
@@ -485,6 +487,7 @@ class PLCRuntime:
             result = compile_block(
                 parsed,
                 fb_type_resolver=lambda n: self.block_kind(n) == "FUNCTION_BLOCK",
+                signature_resolver=self.block_signature,
             )
             if not result.success:
                 raise ValueError(f"Failed to compile sub-block '{block_name}': {result.compile_error}")
@@ -536,6 +539,12 @@ class PLCRuntime:
     def _find_block_file(self, block_name: str) -> Path | None:
         """Search for an SCL file by block name in the registered search paths.
 
+        Each search path is walked once, recursively, the first time it is needed
+        and indexed by file name (``_block_file_index``); a project tree nests blocks
+        by folder and a callee may sit several levels away from its caller. A file
+        directly under the search path wins over a nested one of the same name, and
+        the search paths are consulted in registration order.
+
         Parameters
         ----------
         block_name : str
@@ -548,15 +557,16 @@ class PLCRuntime:
         """
         filename = f"{block_name}.s7dcl"
         for search_dir in self.block_search_paths:
-            candidate = search_dir / filename
-            if candidate.exists():
-                return candidate
-            # Also search recursively one level deep
-            for subdir in search_dir.iterdir() if search_dir.is_dir() else []:
-                if subdir.is_dir():
-                    candidate2 = subdir / filename
-                    if candidate2.exists():
-                        return candidate2
+            index = self._block_file_index.get(search_dir)
+            if index is None:
+                index = {}
+                if search_dir.is_dir():
+                    for candidate in sorted(search_dir.rglob("*.s7dcl"), key=lambda c: len(c.parts)):
+                        index.setdefault(candidate.name, candidate)
+                self._block_file_index[search_dir] = index
+            found = index.get(filename)
+            if found is not None:
+                return found
         return None
 
     def block_kind(self, name: str) -> BlockType | None:
@@ -593,6 +603,54 @@ class PLCRuntime:
                 kind = None
         self._block_kind_cache[name] = kind
         return kind
+
+    def block_signature(self, name: str) -> list[str] | None:
+        """Return the parameter names positional call arguments bind to, or ``None``.
+
+        ``VAR_INPUT`` names in declaration order, followed by the ``VAR_IN_OUT`` names
+        when the block declares no ``VAR_OUTPUT`` -- the only case where their
+        positional order is beyond doubt. A block with outputs offers its inputs
+        alone: how TIA orders outputs and in-outs among positional arguments is not
+        something this code can verify, so a call reaching past the inputs is
+        refused by the binder rather than guessed at. Resolved via the same search
+        paths as :meth:`block_kind`; results are cached. Handed to the transpiler as
+        its ``signature_resolver`` so ``"Block"(#a, #b)`` binds.
+
+        Parameters
+        ----------
+        name : str
+            The block name without quotes.
+
+        Returns
+        -------
+        list[str] | None
+            The names, possibly empty, or ``None`` if the block cannot be found or
+            parsed.
+        """
+        if name in self._block_signature_cache:
+            return self._block_signature_cache[name]
+        from plc_code.parser import parse_scl_file  # noqa: PLC0415
+
+        path = self._find_block_file(name)
+        signature: list[str] | None = None
+        if path is not None:
+            try:
+                parsed = parse_scl_file(path)
+                sections = parsed.variable_sections
+                offered: tuple[str, ...] = ("VAR_INPUT", "VAR_IN_OUT")
+                if any(section.section_type == "VAR_OUTPUT" for section in sections):
+                    offered = ("VAR_INPUT",)
+                signature = [
+                    variable.name
+                    for section_type in offered
+                    for section in sections
+                    if section.section_type == section_type
+                    for variable in section.variables
+                ]
+            except Exception:
+                signature = None
+        self._block_signature_cache[name] = signature
+        return signature
 
     def call_named_block(
         self,

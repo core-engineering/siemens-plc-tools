@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from plc_code.executor.diagnostics import check_block
+from plc_code.executor.runtime import PLCRuntime
 from plc_code.parser import parse_scl_file
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -51,7 +52,9 @@ def test_fixture_generates_resolvable_python(path: Path) -> None:
     if block is None or not block.name:
         pytest.skip(f"{path.name} holds no parsable block")
 
-    diagnostics = check_block(block, source_file=path)
+    # The fixtures call each other positionally; bind against the fixture tree.
+    resolver = PLCRuntime(block_search_paths=[path.parent]).block_signature
+    diagnostics = check_block(block, source_file=path, signature_resolver=resolver)
 
     if path.name in KNOWN_DEFECTS:
         assert diagnostics, (

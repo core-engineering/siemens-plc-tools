@@ -208,16 +208,14 @@ def test_a_member_callee_fb_call_renders_natively_and_gets_the_clock_argument() 
     ]
 
 
-def test_an_fb_instance_call_drops_positional_arguments_same_as_the_dispatcher() -> None:
-    """Reproduces the old text dispatcher's silent-drop behaviour, bug for bug.
-
-    A positional argument is neither `:=` nor `=>`, so `translate_fb_call`'s per-param
-    check dropped it (probed, before Task 9 step 3 deleted that path). The native path
-    reproduces this, not "fixes" it.
-    """
+def test_an_fb_instance_call_with_a_positional_argument_raises_instead_of_dropping_it() -> None:
+    """The old text dispatcher dropped a positional argument (neither `:=` nor `=>`)
+    and called the instance with nothing -- `#tmr(#x, #y)` became `self.tmr()`. An
+    instance's FB type is not resolvable from inside the caller, so there is no
+    signature to bind against: the native path refuses instead of losing the call."""
     source = "#tmr(#x, #y);"
-    lines = generate_statements(_statements(source))
-    assert lines == ["self.tmr()"]
+    with pytest.raises(UnsupportedStatement, match="positional argument"):
+        generate_statements(_statements(source))
 
 
 def test_a_quoted_name_block_call_statement_renders_natively_via_emit_named_call() -> None:

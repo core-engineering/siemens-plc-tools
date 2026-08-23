@@ -57,6 +57,7 @@ from pathlib import Path
 
 from plc_core.reporting import Severity
 
+from plc_code.executor.arguments import SignatureResolver
 from plc_code.executor.models import TranspileOptions
 from plc_code.executor.transpiler import build_runtime_globals, transpile_block
 from plc_code.parser.models import Block
@@ -164,6 +165,7 @@ def check_block(
     *,
     source_file: Path | None = None,
     options: TranspileOptions | None = None,
+    signature_resolver: SignatureResolver | None = None,
 ) -> list[Diagnostic]:
     """Transpile ``block`` and report what is wrong with the generated Python.
 
@@ -176,6 +178,9 @@ def check_block(
         a whole project.
     options : TranspileOptions | None
         Passed straight through to :func:`transpile_block`.
+    signature_resolver : SignatureResolver | None
+        Passed straight through to :func:`transpile_block`; without one, a
+        positional argument to a named block is reported as a transpile failure.
 
     Returns
     -------
@@ -184,7 +189,7 @@ def check_block(
         failures, then the syntax error, then undefined names by first use.
     """
     block_name = block.name or ""
-    result = transpile_block(block, options)
+    result = transpile_block(block, options, signature_resolver=signature_resolver)
 
     if not result.success or result.errors:
         messages = result.errors or ["Transpilation failed"]

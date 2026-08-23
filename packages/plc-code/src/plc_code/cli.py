@@ -521,14 +521,32 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
         # unparsed statement does not mean a broken block.
         raise SystemExit(0)
 
+    # Positional call arguments bind against the callee's declaration, read from the
+    # same tree the blocks came from (searched recursively).
+    from plc_code.executor.runtime import PLCRuntime
+
+    search_root = path.parent if path.is_file() else path
+    resolver = PLCRuntime(block_search_paths=[search_root]).block_signature
+
     if not check:
+        # Emitting is for reading the output, not judging it: whatever was generated
+        # prints and the exit code stays 0, but a failed transpile is said out loud on
+        # stderr rather than left to be noticed from the code alone.
         for block_file, block in blocks:
             if len(blocks) > 1:
                 console.print(f"[bold]# {block_file.name} — {block.name}[/bold]")
-            print(transpile_block(block).python_code)
+            result = transpile_block(block, signature_resolver=resolver)
+            if not result.success:
+                for message in result.errors or ["Transpilation failed"]:
+                    console_err.print(f"[yellow]{block_file.name}: transpile failed:[/yellow] {message}")
+            print(result.python_code)
         raise SystemExit(0)
 
-    diagnostics = [d for block_file, block in blocks for d in check_block(block, source_file=block_file)]
+    diagnostics = [
+        d
+        for block_file, block in blocks
+        for d in check_block(block, source_file=block_file, signature_resolver=resolver)
+    ]
 
     if output_format == "json":
         print(

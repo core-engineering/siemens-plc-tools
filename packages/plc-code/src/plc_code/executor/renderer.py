@@ -26,6 +26,9 @@ value to it directly.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+from plc_code.executor.arguments import PositionalBindingError, SignatureResolver, positional_parameter_names
 from plc_code.executor.codegen import BUILTIN_MAP, OPERATOR_MAP, ExpressionTranslator
 from plc_code.executor.types import parse_time_literal
 from plc_code.parser.expressions import (
@@ -148,7 +151,27 @@ class UnsupportedExpression(Exception):
         return line if isinstance(line, int) else None
 
 
-def render(expression: Expression, string_constants: dict[str, int] | None = None) -> str:
+@dataclass(frozen=True)
+class _Context:
+    """What every visitor needs besides the node: carried by the recursion, built once.
+
+    Attributes
+    ----------
+    string_constants : dict[str, int] | None
+        See :func:`render`.
+    signature_resolver : SignatureResolver | None
+        See :func:`render`.
+    """
+
+    string_constants: dict[str, int] | None
+    signature_resolver: SignatureResolver | None
+
+
+def render(
+    expression: Expression,
+    string_constants: dict[str, int] | None = None,
+    signature_resolver: SignatureResolver | None = None,
+) -> str:
     """Render one expression node as Python source.
 
     Dispatches on ``expression``'s runtime type. There is no fallback branch: a node
@@ -170,6 +193,12 @@ def render(expression: Expression, string_constants: dict[str, int] | None = Non
         becomes its bare integer) is a different mapping, applied by the generator
         directly, not by this function. ``None`` (the default) renders every
         non-local global as a quoted literal, unconditionally.
+    signature_resolver : SignatureResolver | None, optional
+        Resolves a quoted block name to its declared input parameter names in order,
+        so a positional argument in a call to that block can be bound to the right
+        one. ``None`` means no project context: a call with positional arguments
+        then raises rather than dropping them, which is what the old text path did
+        silently. A call with only named arguments never consults it.
 
     Returns
     -------
@@ -181,24 +210,29 @@ def render(expression: Expression, string_constants: dict[str, int] | None = Non
     UnsupportedExpression
         ``expression`` is not one of the node types this function currently renders.
     """
+    return _render(expression, _Context(string_constants, signature_resolver))
+
+
+def _render(expression: Expression, ctx: _Context) -> str:
+    """Dispatch on the node type with the context already built."""
     if isinstance(expression, Literal):
         return _render_literal(expression)
     if isinstance(expression, TypedLiteral):
         return _render_typed_literal(expression)
     if isinstance(expression, VariableRef):
-        return _render_variable_ref(expression, string_constants)
+        return _render_variable_ref(expression, ctx)
     if isinstance(expression, Member):
-        return _render_member(expression, string_constants)
+        return _render_member(expression, ctx)
     if isinstance(expression, Index):
-        return _render_index(expression, string_constants)
+        return _render_index(expression, ctx)
     if isinstance(expression, Grouping):
-        return f"({render(expression.inner, string_constants)})"
+        return f"({_render(expression.inner, ctx)})"
     if isinstance(expression, UnaryOp):
-        return _render_unary_op(expression, string_constants)
+        return _render_unary_op(expression, ctx)
     if isinstance(expression, BinaryOp):
-        return _render_binary_op(expression, string_constants)
+        return _render_binary_op(expression, ctx)
     if isinstance(expression, FunctionCall):
-        return _render_function_call(expression, string_constants)
+        return _render_function_call(expression, ctx)
     raise UnsupportedExpression(expression)
 
 
@@ -278,14 +312,14 @@ def _render_typed_literal(node: TypedLiteral) -> str:
     raise UnsupportedExpression(node)
 
 
-def _render_variable_ref(node: VariableRef, string_constants: dict[str, int] | None = None) -> str:
+def _render_variable_ref(node: VariableRef, ctx: _Context) -> str:
     """``#name`` as an instance attribute; ``%name`` and a quoted global as-is.
 
     Parameters
     ----------
     node : VariableRef
         The variable reference to render.
-    string_constants : dict[str, int] | None, optional
+    ctx : _Context
         See :func:`render`. When ``node`` is a non-local, non-absolute, non-``ENO``
         global and its quoted spelling (``f'"{node.name}"'``) is a key of this
         table, it renders as ``self.{name}`` instead of the quoted literal.
@@ -307,7 +341,7 @@ def _render_variable_ref(node: VariableRef, string_constants: dict[str, int] | N
     if node.name.upper() == _IMPLICIT_BARE_NAME:
         return node.name
     quoted = f'"{node.name}"'
-    if string_constants and quoted in string_constants:
+    if ctx.string_constants and quoted in ctx.string_constants:
         return f"self.{node.name}"
     return quoted
 
@@ -344,7 +378,7 @@ def _is_global_db_ref(node: Expression, string_constants: dict[str, int] | None 
     return True
 
 
-def _render_member(node: Member, string_constants: dict[str, int] | None = None) -> str:
+def _render_member(node: Member, ctx: _Context) -> str:
     """``base.name``, substituting the runtime lookup for a bare global base.
 
     Structural equivalent of the old text translator's ``_translate_global_db`` pass: when the
@@ -358,7 +392,7 @@ def _render_member(node: Member, string_constants: dict[str, int] | None = None)
     ----------
     node : Member
         The member access to render.
-    string_constants : dict[str, int] | None, optional
+    ctx : _Context
         See :func:`render`. Forwarded to :func:`_is_global_db_ref` and to the
         base's own render.
 
@@ -369,11 +403,11 @@ def _render_member(node: Member, string_constants: dict[str, int] | None = None)
         was written ``.#name``; ``{base}.%{name}`` when written ``.%name``;
         ``{base}."{name}"`` when written ``."name"``.
     """
-    if _is_global_db_ref(node.base, string_constants):
+    if _is_global_db_ref(node.base, ctx.string_constants):
         assert isinstance(node.base, VariableRef)  # narrowed by _is_global_db_ref
         base_text = f'self._runtime.global_dbs["{node.base.name}"]'
     else:
-        base_text = render(node.base, string_constants)
+        base_text = _render(node.base, ctx)
 
     if node.is_local:
         return f"{base_text}.self.{node.name}"
@@ -384,7 +418,7 @@ def _render_member(node: Member, string_constants: dict[str, int] | None = None)
     return f"{base_text}.{node.name}"
 
 
-def _render_index(node: Index, string_constants: dict[str, int] | None = None) -> str:
+def _render_index(node: Index, ctx: _Context) -> str:
     """``base[i]`` for one subscript; ``base[i, j]`` chained as ``base[i][j]``.
 
     Structural equivalent of the old text translator's ``_translate_multi_index`` pass: the base
@@ -398,7 +432,7 @@ def _render_index(node: Index, string_constants: dict[str, int] | None = None) -
     ----------
     node : Index
         The indexing operation to render.
-    string_constants : dict[str, int] | None, optional
+    ctx : _Context
         See :func:`render`. Forwarded to every recursive render of the base and
         each subscript.
 
@@ -407,11 +441,11 @@ def _render_index(node: Index, string_constants: dict[str, int] | None = None) -
     str
         The base followed by one ``[...]`` per entry in ``node.indices``.
     """
-    base_text = render(node.base, string_constants)
-    return base_text + "".join(f"[{render(index, string_constants)}]" for index in node.indices)
+    base_text = _render(node.base, ctx)
+    return base_text + "".join(f"[{_render(index, ctx)}]" for index in node.indices)
 
 
-def _render_unary_op(node: UnaryOp, string_constants: dict[str, int] | None = None) -> str:
+def _render_unary_op(node: UnaryOp, ctx: _Context) -> str:
     """``NOT x`` as ``not x``; ``-x`` unchanged, both with a space after the operator.
 
     Structural equivalent of the old text translator's ``_translate_operators`` pass: ``NOT``
@@ -424,7 +458,7 @@ def _render_unary_op(node: UnaryOp, string_constants: dict[str, int] | None = No
     ----------
     node : UnaryOp
         The unary operator to render.
-    string_constants : dict[str, int] | None, optional
+    ctx : _Context
         See :func:`render`. Forwarded to the operand's render.
 
     Returns
@@ -443,10 +477,10 @@ def _render_unary_op(node: UnaryOp, string_constants: dict[str, int] | None = No
         py_operator = "-"
     else:
         raise UnsupportedExpression(node)
-    return f"{py_operator} {render(node.operand, string_constants)}"
+    return f"{py_operator} {_render(node.operand, ctx)}"
 
 
-def _render_binary_op(node: BinaryOp, string_constants: dict[str, int] | None = None) -> str:
+def _render_binary_op(node: BinaryOp, ctx: _Context) -> str:
     """One binary operator between its rendered operands.
 
     Structural equivalent of the old text translator's ``_translate_operators`` pass: looks
@@ -462,7 +496,7 @@ def _render_binary_op(node: BinaryOp, string_constants: dict[str, int] | None = 
     ----------
     node : BinaryOp
         The binary operator to render.
-    string_constants : dict[str, int] | None, optional
+    ctx : _Context
         See :func:`render`. Forwarded to both operands' render.
 
     Returns
@@ -485,17 +519,17 @@ def _render_binary_op(node: BinaryOp, string_constants: dict[str, int] | None = 
         py_operator = node.operator
     else:
         raise UnsupportedExpression(node)
-    return f"{render(node.left, string_constants)} {py_operator} {render(node.right, string_constants)}"
+    return f"{_render(node.left, ctx)} {py_operator} {_render(node.right, ctx)}"
 
 
-def _render_function_call(node: FunctionCall, string_constants: dict[str, int] | None = None) -> str:
+def _render_function_call(node: FunctionCall, ctx: _Context) -> str:
     """Dispatch a call node to its builtin or quoted-block renderer.
 
     Parameters
     ----------
     node : FunctionCall
         The call to render.
-    string_constants : dict[str, int] | None, optional
+    ctx : _Context
         See :func:`render`. Forwarded to whichever renderer handles the call.
 
     Returns
@@ -505,8 +539,8 @@ def _render_function_call(node: FunctionCall, string_constants: dict[str, int] |
         from :func:`_render_builtin_call` otherwise.
     """
     if node.is_quoted:
-        return _render_named_call(node, string_constants)
-    return _render_builtin_call(node, string_constants)
+        return _render_named_call(node, ctx)
+    return _render_builtin_call(node, ctx)
 
 
 def _is_array_bound_call(node: FunctionCall) -> bool:
@@ -542,7 +576,7 @@ def _is_array_bound_call(node: FunctionCall) -> bool:
     )
 
 
-def _render_builtin_call(node: FunctionCall, string_constants: dict[str, int] | None = None) -> str:
+def _render_builtin_call(node: FunctionCall, ctx: _Context) -> str:
     """A bare (unquoted) call: a mapped builtin, the ``ARR``/``DIM`` bound pair, or neither.
 
     Structural equivalent of the old text translator's ``_translate_builtins`` pass together
@@ -571,7 +605,7 @@ def _render_builtin_call(node: FunctionCall, string_constants: dict[str, int] | 
     ----------
     node : FunctionCall
         The call to render; ``node.is_quoted`` is False.
-    string_constants : dict[str, int] | None, optional
+    ctx : _Context
         See :func:`render`. Forwarded to every argument's render.
 
     Returns
@@ -600,15 +634,15 @@ def _render_builtin_call(node: FunctionCall, string_constants: dict[str, int] | 
     upper_name = node.name.upper()
     if upper_name in _ARRAY_BOUND_BUILTINS and _is_array_bound_call(node):
         py_func = _BUILTIN_MAP[upper_name]
-        arr_text = render(node.arguments[0].value, string_constants)
-        dim_text = render(node.arguments[1].value, string_constants)
+        arr_text = _render(node.arguments[0].value, ctx)
+        dim_text = _render(node.arguments[1].value, ctx)
         return f"({py_func})({arr_text}, {dim_text})"
     py_func = _BUILTIN_MAP.get(upper_name, node.name)
-    args_text = ", ".join(render(argument.value, string_constants) for argument in node.arguments)
+    args_text = ", ".join(_render(argument.value, ctx) for argument in node.arguments)
     return f"{py_func}({args_text})"
 
 
-def _render_named_call(node: FunctionCall, string_constants: dict[str, int] | None = None) -> str:
+def _render_named_call(node: FunctionCall, ctx: _Context) -> str:
     """A quoted block call, rendered by calling ``ExpressionTranslator._build_named_call``.
 
     ``_build_named_call`` is now a pure formatter: it takes each argument as an
@@ -623,8 +657,9 @@ def _render_named_call(node: FunctionCall, string_constants: dict[str, int] | No
     ``self.translate("math.sqrt(self.x)")`` doubled to
     ``"math.math.sqrt(self.x)"``. That risk no longer exists: a pure formatter never
     looks at its arguments as anything but opaque text to embed.) The result is
-    ``_build_named_call``'s own argument-selection rule (an argument with no name, or
-    written ``name => value``, is dropped) and its own wrapping text, not a re-derived
+    ``_build_named_call``'s own argument-selection rule (an argument written
+    ``name => value`` is dropped; one with no name is bound to the callee's next
+    declared input first, see the module ``arguments``) and its own wrapping text, not a re-derived
     copy of either.
 
     A parameter name written quoted (``"x" := #a``) is passed through quoted, because
@@ -636,7 +671,7 @@ def _render_named_call(node: FunctionCall, string_constants: dict[str, int] | No
     ----------
     node : FunctionCall
         The call to render; ``node.is_quoted`` is True.
-    string_constants : dict[str, int] | None, optional
+    ctx : _Context
         See :func:`render`. Forwarded to every bound argument's render.
 
     Returns
@@ -644,11 +679,29 @@ def _render_named_call(node: FunctionCall, string_constants: dict[str, int] | No
     str
         ``_build_named_call``'s own output.
     """
+    # A positional argument is bound to the callee's next declared input, read from
+    # the project through the resolver. Without one it raises: the old text path
+    # dropped such arguments and called the block with no inputs, silently.
+    positional = [argument for argument in node.arguments if not argument.name]
+    try:
+        positional_names = positional_parameter_names(
+            node.name,
+            positional_count=len(positional),
+            already_named={argument.name for argument in node.arguments if argument.name},
+            resolver=ctx.signature_resolver,
+        )
+    except PositionalBindingError as error:
+        raise UnsupportedExpression(node, str(error)) from error
+    names_for_positional = iter(positional_names)
+
     bound_arguments: list[tuple[str, str]] = []
     for argument in node.arguments:
-        if argument.is_output or not argument.name:
+        if argument.is_output:
             continue
-        name_text = f'"{argument.name}"' if argument.is_quoted_name else argument.name
-        value_text = render(argument.value, string_constants)
+        if argument.name:
+            name_text = f'"{argument.name}"' if argument.is_quoted_name else argument.name
+        else:
+            name_text = next(names_for_positional)
+        value_text = _render(argument.value, ctx)
         bound_arguments.append((name_text, value_text))
     return _TRANSLATOR._build_named_call(node.name, bound_arguments)  # noqa: SLF001

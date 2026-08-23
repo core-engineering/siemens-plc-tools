@@ -193,8 +193,10 @@ class TestEmitMode:
         """
         result = runner.invoke(cli, ["transpile", str(unsupported_block)])
         assert result.exit_code == 0
-        assert "class RepeatUser" in result.output
-        assert "UNTIL" not in result.output
+        assert "class RepeatUser" in result.stdout
+        assert "UNTIL" not in result.stdout
+        # ...but the failure is said out loud, on stderr, not left to be noticed.
+        assert "transpile failed" in result.stderr
 
     def test_missing_path_is_an_error(self, runner: CliRunner, tmp_path: Path) -> None:
         result = runner.invoke(cli, ["transpile", str(tmp_path / "nope.s7dcl")])
