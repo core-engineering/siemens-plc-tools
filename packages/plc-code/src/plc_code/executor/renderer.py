@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from plc_code.executor.arguments import PositionalBindingError, SignatureResolver, positional_parameter_names
 from plc_code.executor.codegen import BUILTIN_MAP, OPERATOR_MAP, ExpressionTranslator
 from plc_code.executor.models import python_identifier
+from plc_code.executor.runtime import SLICE_WIDTHS
 from plc_code.executor.types import parse_time_literal
 from plc_code.parser.expressions import (
     BinaryOp,
@@ -370,6 +371,23 @@ def _is_global_db_ref(node: Expression, string_constants: dict[str, int] | None 
     )
 
 
+def slice_selector(name: str) -> tuple[int | None, int]:
+    """``("X", 3)`` from ``X3`` -> ``(1, 3)``: the slice's width in bits and its index.
+
+    ``(None, 0)`` when ``name`` is not a slice selector (``DBX31`` is absolute
+    addressing, not a slice of a value).
+    """
+    if len(name) < 2 or name[0].upper() not in SLICE_WIDTHS or not name[1:].isdigit():
+        return None, 0
+    return SLICE_WIDTHS[name[0].upper()], int(name[1:])
+
+
+def _is_absolute_base(node: Expression) -> bool:
+    while isinstance(node, Member | Index):
+        node = node.base
+    return isinstance(node, VariableRef) and node.is_absolute
+
+
 def _member_path(name: str) -> str:
     """``a.b[0]`` from a quoted member name, each segment a Python identifier."""
     out: list[str] = []
@@ -415,10 +433,16 @@ def _render_member(node: Member, ctx: _Context) -> str:
         base_text = _render(node.base, ctx)
 
     if node.is_absolute:
-        # `.%X0` reads a bit (byte, word) of the base value. The harness has no
-        # slice semantics yet; refusing here gives a located TRANSPILE diagnostic
-        # instead of Python that does not parse.
-        raise UnsupportedExpression(node, f"bit/byte slice access '.%{node.name}' is not supported")
+        # `.%X0` reads bit 0 of the base value (`%B1` byte 1, `%W0` word 0): an
+        # integer read through the runtime's slice helper. An absolute address as
+        # the base (`%DB5.%DBX31.1`) is absolute addressing, which the harness does
+        # not model.
+        width, index = slice_selector(node.name)
+        if width is None or _is_absolute_base(node.base):
+            raise UnsupportedExpression(
+                node, f"absolute or unknown slice access '.%{node.name}' is not supported"
+            )
+        return f"_bit_slice({base_text}, {width}, {index})"
     if node.is_quoted:
         # A quoted member is a path TIA exports as one name when the member is a
         # nested struct: `"DataLog"."armStatus.isActive"` is `.armStatus.isActive`.

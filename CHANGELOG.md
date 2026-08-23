@@ -20,6 +20,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   them deliberately.
 
 ### Added
+- **plc-code (executor)** — the last of the production sweep: 348 of 349 blocks
+  with code load (the one left reads an absolute address, `%DB5.%DBX31.1`, which
+  the harness does not model and refuses with its line).
+
+  - Bit, byte and word slices of a value: `#status.%X7` reads bit 7, `#word.%X0 :=
+    #on` writes it (the base is the lvalue), `%B1`/`%W0` likewise —
+    `PLCRuntime._bit_slice` / `_with_bit_slice`. Five production blocks.
+  - System instructions with `=>` outputs in expression or statement position —
+    `#ret := GET_DIAG(MODE := 1, LADDR := #a, CNT_DIAG => #n)`, refused until now
+    — compile to `PLCRuntime.system_call(name, inputs, outputs)`, whose result
+    feeds each output and the return value. `RD_SYS_T` is real: `OUT` is a DTL
+    struct from the simulated clock (`PLCRuntime.system_time`, `epoch` +
+    `clock`), and `DTL_TO_LDT` converts it. Every other instruction (`GET_DIAG`,
+    `DPRD_DAT`, `DPWR_DAT`, `Serialize`, `RH_CTRL`, and the value-only `LED`,
+    `DeviceStates`, `ModuleStates`, `RUNTIME`, `RH_GetPrimaryID`) is a stub with
+    no hardware behind it, returning 0 and appending to
+    `PLCRuntime.system_call_log` so a test can assert what the block asked of the
+    system. `INT_TO_BYTE`, `BYTE_TO_WORD` mapped.
+- **workspace (tests)** — `TestSuiteResult`, `TestCaseResult` and `TestingConfig`
+  no longer raise a `PytestCollectionWarning` in every file that imports them.
+
 - **plc-code (parser, CLI)** — a token-driven SCL statement parser, and
   `plc code transpile --conformance` to report what it reads.
 

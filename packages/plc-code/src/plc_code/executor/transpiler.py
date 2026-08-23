@@ -171,7 +171,7 @@ class SCLTranspiler:
 
         # _clone_value backs the generated __call__ (S7 VAR_INPUT copy-in
         # semantics); FUNCTION_BLOCKs always get a __call__, so import it there.
-        runtime_imports = ["PLCRuntime"]
+        runtime_imports = ["PLCRuntime", "_bit_slice", "_with_bit_slice"]
         if self.block.block_type == "FUNCTION_BLOCK":
             runtime_imports.append("_clone_value")
         # Import _AutoStruct and Any when UDT variables are present
@@ -714,6 +714,8 @@ def build_runtime_globals() -> dict[str, Any]:
         "field": __import__("dataclasses").field,
         "PLCRuntime": runtime_mod.PLCRuntime,
         "_AutoStruct": runtime_mod._AutoStruct,
+        "_bit_slice": runtime_mod._bit_slice,
+        "_with_bit_slice": runtime_mod._with_bit_slice,
         "Any": __import__("typing").Any,
     }
 

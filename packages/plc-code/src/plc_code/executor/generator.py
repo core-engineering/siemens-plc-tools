@@ -70,11 +70,11 @@ from plc_code.executor.arguments import (
 )
 from plc_code.executor.codegen import StatementTranslator
 from plc_code.executor.models import python_identifier
-from plc_code.executor.renderer import render
+from plc_code.executor.renderer import render, slice_selector
 from plc_code.executor.timers import timer_class_name
 from plc_code.parser.expression_parser import parse_expression
-from plc_code.parser.expressions import Expression, FunctionCall, Index, Member, VariableRef
-from plc_code.parser.lexer import Token
+from plc_code.parser.expressions import CallArgument, Expression, FunctionCall, Index, Member, VariableRef
+from plc_code.parser.lexer import Token, TokenType
 from plc_code.parser.statements import Assignment, Call, Case, Exit, For, If, Return, Statement, While
 
 INDENT = "    "
@@ -193,6 +193,40 @@ def _is_named_call_with_output_binding(expression: Expression | None) -> bool:
         and expression.is_quoted
         and any(argument.is_output for argument in expression.arguments)
     )
+
+
+def _is_system_call_with_output_binding(expression: Expression | None) -> bool:
+    """A bare (unquoted) system instruction binding at least one ``=>`` output.
+
+    ``#ret := GET_DIAG(MODE := 1, CNT_DIAG => #n)``: the renderer refuses this shape
+    (a positional call has nowhere to route the output); it is generated here as a
+    ``PLCRuntime.system_call`` whose result dict feeds each output target.
+    """
+    return (
+        isinstance(expression, FunctionCall)
+        and not expression.is_quoted
+        and any(argument.is_output for argument in expression.arguments)
+    )
+
+
+def _generate_system_call(
+    call: FunctionCall, line: int, ctx: _Context, return_target: str | None
+) -> list[str]:
+    """Lines for a system instruction with ``=>`` outputs; see :meth:`PLCRuntime.system_call`."""
+    inputs = ", ".join(
+        f'"{argument.name}": {render(argument.value, ctx.string_constants, ctx.signature_resolver)}'
+        for argument in call.arguments
+        if not argument.is_output
+    )
+    outputs = [argument for argument in call.arguments if argument.is_output]
+    output_names = ", ".join(f'"{argument.name}"' for argument in outputs)
+    lines = [f'_sys = self._runtime.system_call("{call.name}", {{{inputs}}}, [{output_names}])']
+    for argument in outputs:
+        target = render(argument.value, ctx.string_constants, ctx.signature_resolver)
+        lines.append(f'{target} = _sys["{argument.name}"]')
+    if return_target is not None:
+        lines.append(f'{return_target} = _sys["RET_VAL"]')
+    return lines
 
 
 #: Mirrors ``renderer._IMPLICIT_BARE_NAME`` -- the one quoted name :func:`render` leaves
@@ -427,8 +461,24 @@ def _generate_assignment(
     if _is_named_call_with_output_binding(statement.value_expr):
         named_call_lines = _generate_named_call_assignment(statement, translator, ctx)
         return [prefix + line for line in named_call_lines]
-    target_text = render(statement.target_expr, ctx.string_constants, ctx.signature_resolver)
+    if _is_system_call_with_output_binding(statement.value_expr):
+        assert isinstance(statement.value_expr, FunctionCall)
+        target_text = render(statement.target_expr, ctx.string_constants, ctx.signature_resolver)
+        system_lines = _generate_system_call(statement.value_expr, statement.line, ctx, target_text)
+        return [prefix + line for line in system_lines]
     value_text = render(statement.value_expr, ctx.string_constants, ctx.signature_resolver)
+    target = statement.target_expr
+    if isinstance(target, Member) and target.is_absolute:
+        # `#word.%X3 := v` rewrites the slice inside the base: the base is the lvalue.
+        width, index = slice_selector(target.name)
+        if width is None:
+            raise UnsupportedStatement(
+                f"Assignment at line {statement.line}: absolute or unknown slice target '.%{target.name}'",
+                line=statement.line,
+            )
+        base_text = render(target.base, ctx.string_constants, ctx.signature_resolver)
+        return [f"{prefix}{base_text} = _with_bit_slice({base_text}, {width}, {index}, {value_text})"]
+    target_text = render(target, ctx.string_constants, ctx.signature_resolver)
     return [f"{prefix}{target_text} = {value_text}"]
 
 
@@ -741,6 +791,28 @@ def _generate_call(
         :func:`render` raised for the callee or an argument.
     """
     callee_expr = statement.callee_expr
+    if (
+        callee_expr is None
+        and len(statement.callee) == 1
+        and statement.callee[0].type is TokenType.IDENTIFIER
+    ):
+        # `GET_DIAG(MODE := 1, CNT_DIAG => #n);`: a system instruction as a statement.
+        call = FunctionCall(
+            line=statement.line,
+            column=statement.callee[0].column,
+            name=statement.callee[0].value,
+            arguments=[
+                CallArgument(value=argument.value_expr, name=argument.name, is_output=argument.is_output)
+                for argument in statement.arguments
+                if argument.value_expr is not None
+            ],
+        )
+        if len(call.arguments) != len(statement.arguments):
+            raise UnsupportedStatement(
+                f"Call at line {statement.line}: an argument has no parsed expression tree",
+                line=statement.line,
+            )
+        return [prefix + line for line in _generate_system_call(call, statement.line, ctx, None)]
     if isinstance(callee_expr, VariableRef) and not callee_expr.is_absolute:
         if callee_expr.is_local:
             lines = _generate_fb_instance_call(statement, ctx)

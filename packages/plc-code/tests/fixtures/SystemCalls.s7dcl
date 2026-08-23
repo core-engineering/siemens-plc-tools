@@ -1,0 +1,20 @@
+FUNCTION_BLOCK "SystemCalls"
+    VAR_OUTPUT
+        status : Int;
+        year : Int;
+        count : UInt;
+        ldt : LInt;
+    END_VAR
+    VAR
+        sysTime : DTL;
+        diagStatus : Int;
+    END_VAR
+    { S7_Language := "SCL" }
+    NETWORK
+        #status := RD_SYS_T(OUT => #sysTime);
+        #year := #sysTime.YEAR;
+        #ldt := DTL_TO_LDT(#sysTime);
+        GET_DIAG(MODE := 1, LADDR := 16#100, CNT_DIAG => #count);
+        #diagStatus := GET_DIAG(MODE := 1, LADDR := 16#100, CNT_DIAG => #count);
+    END_NETWORK
+END_FUNCTION_BLOCK

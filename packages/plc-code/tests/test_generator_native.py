@@ -266,26 +266,19 @@ def test_an_assignment_from_a_named_call_with_outputs_renders_natively() -> None
     ]
 
 
-def test_an_assignment_from_a_bare_builtin_call_binding_an_output_fails_loudly() -> None:
-    """Task 9 step 3: this shape no longer falls back to any dispatcher -- it raises.
+def test_an_assignment_from_a_bare_builtin_call_binding_an_output_is_a_system_call() -> None:
+    """`#x := RD_SYS_T(OUT => #t);` -- a bare system builtin binding a `=>` output.
 
-    `#x := RD_SYS_T(OUT => #x);` -- a bare (non-quoted) system builtin binding a
-    parameter with `=>` -- has no correct Python to fall back to (see
-    `renderer._render_builtin_call`'s own docstring, and
-    `generator._generate_assignment`'s own docstring for the probed-and-confirmed old
-    dispatcher output this replaces: `self.x = RD_SYS_T ( OUT => self.x )`, a
-    `SyntaxError` at class-definition time). `generate_statements` now lets `render`'s
-    `UnsupportedExpression` propagate for this shape; `SCLTranspiler.transpile`'s own
-    top-level exception handler turns it into `TranspileResult(success=False, ...)` --
-    see `test_cli_transpile.py`'s coverage of that, this test only pins the generator's
-    own half.
+    Once refused (a positional call has nowhere to route the output; the old text
+    dispatcher emitted `self.x = RD_SYS_T ( OUT => self.x )`, a SyntaxError). It is
+    a `PLCRuntime.system_call` now: the result dict feeds the output and the return.
     """
-    source = "#x := RD_SYS_T(OUT => #x);"
-    with pytest.raises(UnsupportedExpression) as exc_info:
-        generate_statements(_statements(source))
-    message = str(exc_info.value)
-    assert "RD_SYS_T" in message
-    assert "OUT" in message
+    source = "#x := RD_SYS_T(OUT => #t);"
+    assert generate_statements(_statements(source)) == [
+        '_sys = self._runtime.system_call("RD_SYS_T", {}, ["OUT"])',
+        'self.t = _sys["OUT"]',
+        'self.x = _sys["RET_VAL"]',
+    ]
 
 
 def _first_call_argument_value_expr(source: str, index: int = 0):

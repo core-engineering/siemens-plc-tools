@@ -69,6 +69,20 @@ BUILTIN_MAP: dict[str, str] = {
     # Interrupt control: nothing to disable in the harness; the status is 0 (ok).
     "DIS_AIRT": "lambda: 0",
     "EN_AIRT": "lambda: 0",
+    # System time, from the runtime's simulated clock (see PLCRuntime.system_time).
+    "RD_SYS_T": "self._runtime.rd_sys_t",
+    "DTL_TO_LDT": "self._runtime.dtl_to_ldt",
+    "INT_TO_BYTE": "lambda x: x & 0xFF",
+    "BYTE_TO_WORD": "int",
+    # Hardware/system queries with no model in the harness: logged stubs returning 0
+    # (see PLCRuntime.system_value and system_call_log).
+    "RUNTIME": "lambda mem: self._runtime.system_value('RUNTIME', mem) * 0.0",
+    "RH_GETPRIMARYID": "lambda: self._runtime.system_value('RH_GetPrimaryID')",  # keys are upper-cased
+    "DPWR_DAT": "lambda *args: self._runtime.system_value('DPWR_DAT', *args)",
+    "DPRD_DAT": "lambda *args: self._runtime.system_value('DPRD_DAT', *args)",
+    "LED": "lambda *args: self._runtime.system_value('LED', *args)",
+    "DEVICESTATES": "lambda *args: self._runtime.system_value('DeviceStates', *args)",
+    "MODULESTATES": "lambda *args: self._runtime.system_value('ModuleStates', *args)",
     "SIN": "math.sin",
     "COS": "math.cos",
     "TAN": "math.tan",

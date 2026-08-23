@@ -69,8 +69,8 @@ _UNDEFINED_NAME_DEFECT = _block(
 # out of transpilation entirely -> TRANSPILE, an error, same category as
 # `_TRANSPILE_DEFECT` above, not a warning caught only at run time like SEL.
 _OUTPUT_BINDING_DEFECT = _block(
-    "RdSysTUser",
-    "            #b := RD_SYS_T(OUT => #b);",
+    "AbsoluteUser",
+    "            #b := %DB5.%DBX31.1;",
 )
 
 
@@ -97,8 +97,8 @@ def undefined_name_block(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def output_binding_defect_block(tmp_path: Path) -> Path:
-    """A block whose only assignment binds a bare system builtin's `=>` output."""
-    path = tmp_path / "RdSysTUser.s7dcl"
+    """A block whose only assignment reads an absolute address, which the renderer refuses."""
+    path = tmp_path / "AbsoluteUser.s7dcl"
     path.write_text(_OUTPUT_BINDING_DEFECT, encoding="utf-8")
     return path
 
@@ -226,13 +226,13 @@ class TestCheckMode:
         assert "line 14, column" in result.output
         assert "(SCL line" not in result.output
 
-    def test_output_binding_on_a_bare_builtin_fails_the_transpile(
+    def test_a_refused_construct_fails_the_transpile_with_its_source_line(
         self, runner: CliRunner, output_binding_defect_block: Path
     ) -> None:
         """Task 9 step 3: what used to be a silently-broken fallback is now a hard failure."""
         result = runner.invoke(cli, ["transpile", "--check", str(output_binding_defect_block)])
         assert result.exit_code == 1
-        assert "RdSysTUser" in result.output
+        assert "AbsoluteUser" in result.output
 
         # This message does not state its own line, so text mode adds it from the
         # diagnostic's `source_line` -- a parser message ("line 14, column 19: ...")

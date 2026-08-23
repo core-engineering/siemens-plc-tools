@@ -1,0 +1,25 @@
+FUNCTION_BLOCK "BitSlices"
+    VAR_INPUT
+        status : Byte;
+        on : Bool;
+    END_VAR
+    VAR_OUTPUT
+        bit0 : Bool;
+        bit7 : Bool;
+        lowByte : Byte;
+        packed : Word;
+    END_VAR
+    VAR
+        word : Word;
+    END_VAR
+    { S7_Language := "SCL" }
+    NETWORK
+        #bit0 := #status.%X0;
+        #bit7 := #status.%X7;
+        #word := 16#A5F0;
+        #word.%X0 := #on;
+        #word.%X15 := FALSE;
+        #lowByte := #word.%B0;
+        #packed := #word;
+    END_NETWORK
+END_FUNCTION_BLOCK
