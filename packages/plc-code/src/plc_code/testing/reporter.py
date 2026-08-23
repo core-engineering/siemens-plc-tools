@@ -20,6 +20,8 @@ class TestReporter:
     >>> summary_md = reporter.generate_summary_page(project_result)
     """
 
+    __test__ = False  # not a pytest test class
+
     def generate_block_badge(self, result: BlockTestResult) -> str:
         """Generate test badge for individual block markdown.
 

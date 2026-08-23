@@ -76,7 +76,7 @@ BUILTIN_MAP: dict[str, str] = {
     "BYTE_TO_WORD": "int",
     # Hardware/system queries with no model in the harness: logged stubs returning 0
     # (see PLCRuntime.system_value and system_call_log).
-    "RUNTIME": "lambda mem: self._runtime.system_value('RUNTIME', mem) * 0.0",
+    "RUNTIME": "lambda mem: self._runtime.runtime_measure()",
     "RH_GETPRIMARYID": "lambda: self._runtime.system_value('RH_GetPrimaryID')",  # keys are upper-cased
     "DPWR_DAT": "lambda *args: self._runtime.system_value('DPWR_DAT', *args)",
     "DPRD_DAT": "lambda *args: self._runtime.system_value('DPRD_DAT', *args)",
@@ -98,6 +98,57 @@ BUILTIN_MAP: dict[str, str] = {
         "and isinstance(arr[0], (list, tuple)) else len(arr) - 1)"
     ),
 }
+
+
+#: System instructions the generator compiles to ``PLCRuntime.system_call`` when
+#: they bind a ``=>`` output. Anything else binding an output stays a refusal: a
+#: user block called without quotes, or an instruction not listed here, must not
+#: be silently routed to a stub.
+SYSTEM_INSTRUCTIONS: frozenset[str] = frozenset(
+    {
+        "GET_DIAG",
+        "RD_SYS_T",
+        "RD_LOC_T",
+        "WR_SYS_T",
+        "WR_LOC_T",
+        "DPRD_DAT",
+        "DPWR_DAT",
+        "RDREC",
+        "WRREC",
+        "RALRM",
+        "SERIALIZE",
+        "DESERIALIZE",
+        "RH_CTRL",
+        "RH_GETPRIMARYID",
+        "LED",
+        "DEVICESTATES",
+        "MODULESTATES",
+        "GET_NAME",
+        "GET_IM_DATA",
+        "GEO2LOG",
+        "LOG2GEO",
+        "RD_ADDR",
+        "GET_ERR_ID",
+        "GET_ERROR",
+        "RE_TRIGR",
+        "GET_CLK",
+        "SET_CLK",
+        "READ_DBL",
+        "WRIT_DBL",
+        "T_CONFIG",
+        "TSEND_C",
+        "TRCV_C",
+        "TMAIL_C",
+        "MOVE_BLK",
+        "UMOVE_BLK",
+        "FILL_BLK",
+        "UFILL_BLK",
+        "SCATTER",
+        "GATHER",
+        "STRG_VAL",
+        "VAL_STRG",
+    }
+)
 
 
 @dataclass

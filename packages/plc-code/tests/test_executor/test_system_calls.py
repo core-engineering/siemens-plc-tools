@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from plc_code.executor.harness import create_harness
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -40,4 +42,41 @@ def test_value_only_system_instructions_are_logged_stubs() -> None:
     assert render(tree) == "(lambda *args: self._runtime.system_value('LED', *args))(self.addr, 1)"
     runtime = PLCRuntime()
     assert runtime.system_value("RH_GetPrimaryID") == 0
-    assert runtime.system_call_log == [("RH_GetPrimaryID", {}, [])]
+    assert list(runtime.system_call_log) == [("RH_GetPrimaryID", {}, [])]
+
+
+def test_stubs_keep_a_struct_or_array_output_and_only_known_instructions_are_stubbed() -> None:
+    from plc_code.executor.generator import UnsupportedStatement, generate_statements
+    from plc_code.executor.runtime import PLCRuntime, _AutoStruct
+    from plc_code.parser.lexer import TokenType, tokenize
+    from plc_code.parser.statement_parser import parse_statements
+
+    runtime = PLCRuntime()
+    record = _AutoStruct()
+    result = runtime.system_call("DPRD_DAT", {"LADDR": 1}, {"RECORD": record, "LEN": 7})
+    assert result["RECORD"] is record and result["LEN"] == 0 and result["RET_VAL"] == 0
+    runtime.system_stub_status = 0x8080
+    assert runtime.system_call("GET_DIAG", {}, {})["RET_VAL"] == 0x8080
+
+    def lines(source: str) -> list[str]:
+        return generate_statements(
+            parse_statements([t for t in tokenize(source) if t.type is not TokenType.EOF]).statements
+        )
+
+    assert lines("GET_DIAG(MODE := 1, CNT_DIAG => #n);")[0].startswith(
+        '_sys = self._runtime.system_call("GET_DIAG"'
+    )
+    with pytest.raises(UnsupportedStatement):  # a user FUNCTION called without quotes is not a stub
+        lines("MyHelperFC(a := 1, o => #x);")
+    with pytest.raises(UnsupportedStatement, match="positional"):
+        lines("#r := GET_DIAG(1, CNT_DIAG => #n);")
+    assert lines("GET_DIAG(MODE := 1, CNT_DIAG => #w.%X0);")[1].startswith("self.w = _with_bit_slice(")
+
+
+def test_runtime_measures_simulated_time_between_calls() -> None:
+    from plc_code.executor.runtime import PLCRuntime
+
+    runtime = PLCRuntime()
+    assert runtime.runtime_measure() == 0.0
+    runtime.clock.advance(0.25)
+    assert runtime.runtime_measure() == 0.25

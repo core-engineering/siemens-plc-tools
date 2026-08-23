@@ -68,7 +68,7 @@ from plc_code.executor.arguments import (
     SignatureResolver,
     positional_parameter_names,
 )
-from plc_code.executor.codegen import StatementTranslator
+from plc_code.executor.codegen import SYSTEM_INSTRUCTIONS, StatementTranslator
 from plc_code.executor.models import python_identifier
 from plc_code.executor.renderer import render, slice_selector
 from plc_code.executor.timers import timer_class_name
@@ -196,15 +196,17 @@ def _is_named_call_with_output_binding(expression: Expression | None) -> bool:
 
 
 def _is_system_call_with_output_binding(expression: Expression | None) -> bool:
-    """A bare (unquoted) system instruction binding at least one ``=>`` output.
+    """A known system instruction (see ``codegen.SYSTEM_INSTRUCTIONS``) binding a ``=>`` output.
 
     ``#ret := GET_DIAG(MODE := 1, CNT_DIAG => #n)``: the renderer refuses this shape
     (a positional call has nowhere to route the output); it is generated here as a
-    ``PLCRuntime.system_call`` whose result dict feeds each output target.
+    ``PLCRuntime.system_call`` whose result dict feeds each output target. An
+    unlisted name binding an output stays refused -- never silently stubbed.
     """
     return (
         isinstance(expression, FunctionCall)
         and not expression.is_quoted
+        and expression.name.upper() in SYSTEM_INSTRUCTIONS
         and any(argument.is_output for argument in expression.arguments)
     )
 
@@ -212,21 +214,66 @@ def _is_system_call_with_output_binding(expression: Expression | None) -> bool:
 def _generate_system_call(
     call: FunctionCall, line: int, ctx: _Context, return_target: str | None
 ) -> list[str]:
-    """Lines for a system instruction with ``=>`` outputs; see :meth:`PLCRuntime.system_call`."""
+    """Lines for a system instruction with ``=>`` outputs; see :meth:`PLCRuntime.system_call`.
+
+    Every output target must be a plain reference (a variable, member or element):
+    the generated line assigns to it. A slice target (``=> #w.%X0``) is written
+    through ``_with_bit_slice``; anything else raises with the SCL line.
+    """
+    for argument in call.arguments:
+        if not argument.name:
+            raise UnsupportedStatement(
+                f"Call at line {line}: system instruction {call.name!r} takes a positional argument; "
+                "name it",
+                line=line,
+            )
     inputs = ", ".join(
         f'"{argument.name}": {render(argument.value, ctx.string_constants, ctx.signature_resolver)}'
         for argument in call.arguments
         if not argument.is_output
     )
     outputs = [argument for argument in call.arguments if argument.is_output]
-    output_names = ", ".join(f'"{argument.name}"' for argument in outputs)
-    lines = [f'_sys = self._runtime.system_call("{call.name}", {{{inputs}}}, [{output_names}])']
+    current_values: list[str] = []
+    assignments: list[str] = []
     for argument in outputs:
-        target = render(argument.value, ctx.string_constants, ctx.signature_resolver)
-        lines.append(f'{target} = _sys["{argument.name}"]')
+        target = argument.value
+        if isinstance(target, Member) and target.is_absolute:
+            width, index = slice_selector(target.name)
+            if width is None or _is_absolute_base(target.base):
+                raise UnsupportedStatement(
+                    f"Call at line {line}: output {argument.name!r} bound to an absolute address",
+                    line=line,
+                )
+            base_text = render(target.base, ctx.string_constants, ctx.signature_resolver)
+            current_values.append(f'"{argument.name}": _bit_slice({base_text}, {width}, {index})')
+            assignments.append(
+                f'{base_text} = _with_bit_slice({base_text}, {width}, {index}, _sys["{argument.name}"])'
+            )
+            continue
+        if not isinstance(target, VariableRef | Member | Index) or (
+            isinstance(target, VariableRef) and target.is_absolute
+        ):
+            raise UnsupportedStatement(
+                f"Call at line {line}: output {argument.name!r} is bound to something that cannot "
+                "be assigned",
+                line=line,
+            )
+        target_text = render(target, ctx.string_constants, ctx.signature_resolver)
+        current_values.append(f'"{argument.name}": {target_text}')
+        assignments.append(f'{target_text} = _sys["{argument.name}"]')
+    lines = [
+        f'_sys = self._runtime.system_call("{call.name}", {{{inputs}}}, {{{", ".join(current_values)}}})',
+        *assignments,
+    ]
     if return_target is not None:
         lines.append(f'{return_target} = _sys["RET_VAL"]')
     return lines
+
+
+def _is_absolute_base(node: Expression) -> bool:
+    while isinstance(node, Member | Index):
+        node = node.base
+    return isinstance(node, VariableRef) and node.is_absolute
 
 
 #: Mirrors ``renderer._IMPLICIT_BARE_NAME`` -- the one quoted name :func:`render` leaves
@@ -471,7 +518,7 @@ def _generate_assignment(
     if isinstance(target, Member) and target.is_absolute:
         # `#word.%X3 := v` rewrites the slice inside the base: the base is the lvalue.
         width, index = slice_selector(target.name)
-        if width is None:
+        if width is None or _is_absolute_base(target.base):
             raise UnsupportedStatement(
                 f"Assignment at line {statement.line}: absolute or unknown slice target '.%{target.name}'",
                 line=statement.line,
@@ -795,8 +842,10 @@ def _generate_call(
         callee_expr is None
         and len(statement.callee) == 1
         and statement.callee[0].type is TokenType.IDENTIFIER
+        and statement.callee[0].value.upper() in SYSTEM_INSTRUCTIONS
     ):
-        # `GET_DIAG(MODE := 1, CNT_DIAG => #n);`: a system instruction as a statement.
+        # `GET_DIAG(MODE := 1, CNT_DIAG => #n);`: a known system instruction as a
+        # statement. Any other bare callee keeps raising below.
         call = FunctionCall(
             line=statement.line,
             column=statement.callee[0].column,

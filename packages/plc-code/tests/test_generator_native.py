@@ -275,7 +275,7 @@ def test_an_assignment_from_a_bare_builtin_call_binding_an_output_is_a_system_ca
     """
     source = "#x := RD_SYS_T(OUT => #t);"
     assert generate_statements(_statements(source)) == [
-        '_sys = self._runtime.system_call("RD_SYS_T", {}, ["OUT"])',
+        '_sys = self._runtime.system_call("RD_SYS_T", {}, {"OUT": self.t})',
         'self.t = _sys["OUT"]',
         'self.x = _sys["RET_VAL"]',
     ]

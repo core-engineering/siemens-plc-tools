@@ -5,6 +5,7 @@ SCL code, including clock simulation and global data block management.
 """
 
 import re
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -117,16 +118,31 @@ class _GlobalDBs(dict):
 SLICE_WIDTHS: dict[str, int] = {"X": 1, "B": 8, "W": 16, "D": 32}
 
 
+def _slice_base(value: Any) -> int:
+    """The integer a slice is taken of; a Real has no bit slices in SCL."""
+    if isinstance(value, float):
+        raise TypeError(f"bit/byte slice of a Real value ({value!r}); SCL slices integers only")
+    return int(value)
+
+
 def _bit_slice(value: Any, width: int, index: int) -> Any:
-    """``value.%Xn`` / ``%Bn`` / ``%Wn`` / ``%Dn``: the slice read as an integer (a bit as bool)."""
-    bits = (int(value) >> (index * width)) & ((1 << width) - 1)
+    """``value.%Xn`` / ``%Bn`` / ``%Wn`` / ``%Dn``: the slice read as an integer (a bit as bool).
+
+    A negative base reads as its two's-complement bits (``-1 .%X15`` is True).
+    """
+    bits = (_slice_base(value) >> (index * width)) & ((1 << width) - 1)
     return bool(bits) if width == 1 else bits
 
 
 def _with_bit_slice(value: Any, width: int, index: int, new: Any) -> int:
-    """``value`` with its slice ``n`` of ``width`` bits replaced by ``new``."""
+    """``value`` with its slice ``n`` of ``width`` bits replaced by ``new``.
+
+    The result is an unbounded Python int: the base's declared width is not known
+    here, so setting the sign bit of an ``Int`` gives ``32768``, not ``-32768``.
+    Out of contract for signed bases; the corpus writes slices of ``Byte``/``Word``.
+    """
     mask = ((1 << width) - 1) << (index * width)
-    return (int(value) & ~mask) | ((int(new) << (index * width)) & mask)
+    return (_slice_base(value) & ~mask) | ((int(new) << (index * width)) & mask)
 
 
 class UnsetTag:
@@ -559,7 +575,17 @@ class PLCRuntime:
     cycle_count: int = 0
     global_dbs: dict[str, Any] = field(default_factory=dict)
     tags: dict[str, Any] = field(default_factory=dict)
-    system_call_log: list[tuple[str, dict[str, Any], list[str]]] = field(default_factory=list, repr=False)
+    #: What the simulated clock's zero stands for when a block reads the system time.
+    epoch: datetime = field(default=datetime(2026, 1, 1, tzinfo=UTC), repr=False)
+    #: The last 10 000 system instructions the blocks asked for (name, inputs, outputs).
+    system_call_log: deque[tuple[str, dict[str, Any], list[str]]] = field(
+        default_factory=lambda: deque(maxlen=10_000), repr=False
+    )
+    #: What a stubbed system instruction returns as ``RET_VAL``: ``0`` (no error) by
+    #: default, so a block's nominal path runs; set ``16#8080`` to exercise its
+    #: error handling instead. Every stub is logged either way.
+    system_stub_status: int = 0
+    _runtime_last_call: float | None = field(default=None, repr=False)
     fb_instances: dict[str, Any] = field(default_factory=dict)
     block_search_paths: list[Path] = field(default_factory=list)
     _named_block_cache: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -933,72 +959,101 @@ class PLCRuntime:
         self.clock.advance(self.cycle_time)
         self.cycle_count += 1
 
-    #: What the simulated clock's zero stands for when a block reads the system time.
-    epoch: datetime = field(default=datetime(2026, 1, 1, tzinfo=UTC), repr=False)
-
     def system_time(self) -> datetime:
         """The system time ``RD_SYS_T`` reports: ``epoch`` plus the simulated clock."""
         return self.epoch + timedelta(seconds=self.clock.get_time())
 
     def rd_sys_t(self, out: Any) -> int:
-        """``RD_SYS_T(OUT => #dtl)``: fill ``out``'s DTL fields from :meth:`system_time`; status 0."""
+        """``RD_SYS_T(OUT => #dtl)``: fill ``out``'s DTL fields from :meth:`system_time`; status 0.
+
+        ``out`` is the struct the block declared (an ``_AutoStruct``); a plain
+        ``dict`` is filled by key. Anything else is not a DTL and raises.
+        """
         now = self.system_time()
-        for name, value in (
-            ("YEAR", now.year),
-            ("MONTH", now.month),
-            ("DAY", now.day),
-            ("WEEKDAY", now.isoweekday() % 7 + 1),  # DTL: 1 = Sunday
-            ("HOUR", now.hour),
-            ("MINUTE", now.minute),
-            ("SECOND", now.second),
-            ("NANOSECOND", now.microsecond * 1000),
-        ):
-            try:
+        fields = {
+            "YEAR": now.year,
+            "MONTH": now.month,
+            "DAY": now.day,
+            "WEEKDAY": now.isoweekday() % 7 + 1,  # DTL: 1 = Sunday
+            "HOUR": now.hour,
+            "MINUTE": now.minute,
+            "SECOND": now.second,
+            "NANOSECOND": now.microsecond * 1000,
+        }
+        if isinstance(out, dict):
+            out.update(fields)
+        elif isinstance(out, _AutoStruct) or hasattr(out, "__dict__"):
+            for name, value in fields.items():
                 setattr(out, name, value)
-            except AttributeError:
-                if isinstance(out, dict):
-                    out[name] = value
+        else:
+            raise TypeError(f"RD_SYS_T's OUT must be a DTL struct, not {type(out).__name__}")
         return 0
 
-    def system_call(self, name: str, inputs: dict[str, Any], outputs: list[str]) -> dict[str, Any]:
+    def runtime_measure(self) -> float:
+        """``RUNTIME(#mem)``: seconds of simulated time since the previous call (0.0 the first)."""
+        now = self.clock.get_time()
+        elapsed = 0.0 if self._runtime_last_call is None else now - self._runtime_last_call
+        self._runtime_last_call = now
+        return elapsed
+
+    def system_call(self, name: str, inputs: dict[str, Any], outputs: dict[str, Any]) -> dict[str, Any]:
         """A system instruction with ``=>`` outputs (``GET_DIAG``, ``RD_SYS_T``, ``Serialize``).
 
-        ``RD_SYS_T`` is real: ``OUT`` is a DTL struct from :meth:`system_time`. Every
-        other instruction is a stub -- there is no hardware behind the harness --
-        returning ``RET_VAL = 0`` and ``0`` for each output, and every call is
-        appended to :attr:`system_call_log` so a test can assert what the block
-        asked of the system.
+        ``RD_SYS_T`` is real: ``OUT`` is filled from :meth:`system_time`. Every other
+        instruction is a stub -- there is no hardware behind the harness: each
+        output keeps its current value when it is a struct or an array and becomes
+        ``0`` when it is a scalar, ``RET_VAL`` is :attr:`system_stub_status`, and
+        the call is appended to :attr:`system_call_log`.
+
+        Parameters
+        ----------
+        name : str
+            The instruction.
+        inputs : dict[str, Any]
+            Each ``:=`` parameter's value.
+        outputs : dict[str, Any]
+            Each ``=>`` parameter's *current* value, so a stub can hand back a
+            struct or array untouched.
 
         Returns
         -------
         dict[str, Any]
-            One entry per name in ``outputs``, plus ``"RET_VAL"``.
+            One entry per output, plus ``"RET_VAL"``.
         """
         self.system_call_log.append((name, dict(inputs), list(outputs)))
-        result: dict[str, Any] = dict.fromkeys(outputs, 0)
+        result: dict[str, Any] = {}
         if name.upper() == "RD_SYS_T":
-            dtl = _AutoStruct()
-            self.rd_sys_t(dtl)
-            for output in outputs:
-                result[output] = dtl
-        result["RET_VAL"] = 0
+            for output, current in outputs.items():
+                target = current if isinstance(current, _AutoStruct | dict) else _AutoStruct()
+                self.rd_sys_t(target)
+                result[output] = target
+            result["RET_VAL"] = 0
+            return result
+        for output, current in outputs.items():
+            result[output] = current if isinstance(current, list | dict | _AutoStruct) else 0
+        result["RET_VAL"] = self.system_stub_status
         return result
 
     def system_value(self, name: str, *args: Any) -> int:
-        """A system instruction called for its value alone (``LED(...)``, ``RUNTIME(#m)``,
-        ``RH_GetPrimaryID()``): a logged stub returning ``0`` -- no hardware here."""
+        """A system instruction called for its value alone (``LED(...)``,
+        ``RH_GetPrimaryID()``): a logged stub returning :attr:`system_stub_status`."""
         self.system_call_log.append((name, {str(i): arg for i, arg in enumerate(args)}, []))
-        return 0
+        return self.system_stub_status
 
     @staticmethod
     def dtl_to_ldt(dtl: Any) -> int:
         """``DTL_TO_LDT``: a DTL as LDT, nanoseconds since 1970-01-01 UTC."""
 
         def part(name: str, default: int) -> int:
-            value = getattr(dtl, name, None)
-            if value is None and isinstance(dtl, dict):
-                value = dtl.get(name)
-            return int(value) if value is not None else default
+            value = dtl.get(name) if isinstance(dtl, dict) else getattr(dtl, name, None)
+            if value is None or isinstance(value, _AutoStruct):
+                return default  # an _AutoStruct auto-vivifies an unset field
+            if not isinstance(value, int | float):
+                raise TypeError(f"DTL_TO_LDT: field {name} of {dtl!r} is not a number")
+            return int(value)
+
+        if not isinstance(dtl, dict | _AutoStruct) and not hasattr(dtl, "YEAR"):
+            raise TypeError(f"DTL_TO_LDT expects a DTL struct, not {type(dtl).__name__}")
 
         moment = datetime(
             part("YEAR", 1970),
@@ -1020,6 +1075,7 @@ class PLCRuntime:
         self.clock.reset()
         self.tags.clear()
         self.system_call_log.clear()
+        self._runtime_last_call = None
         self.cycle_count = 0
         self.global_dbs.clear()
         self.fb_instances.clear()

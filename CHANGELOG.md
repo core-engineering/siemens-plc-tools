@@ -34,12 +34,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     struct from the simulated clock (`PLCRuntime.system_time`, `epoch` +
     `clock`), and `DTL_TO_LDT` converts it. Every other instruction (`GET_DIAG`,
     `DPRD_DAT`, `DPWR_DAT`, `Serialize`, `RH_CTRL`, and the value-only `LED`,
-    `DeviceStates`, `ModuleStates`, `RUNTIME`, `RH_GetPrimaryID`) is a stub with
-    no hardware behind it, returning 0 and appending to
-    `PLCRuntime.system_call_log` so a test can assert what the block asked of the
-    system. `INT_TO_BYTE`, `BYTE_TO_WORD` mapped.
-- **workspace (tests)** — `TestSuiteResult`, `TestCaseResult` and `TestingConfig`
-  no longer raise a `PytestCollectionWarning` in every file that imports them.
+    `DeviceStates`, `ModuleStates`, `RH_GetPrimaryID`) is a stub with no hardware
+    behind it: a struct or array output is handed back untouched, a scalar output
+    becomes 0, `RET_VAL` is `PLCRuntime.system_stub_status` (0, "no error", by
+    default so the nominal path runs; set `16#8080` to exercise the block's error
+    handling), and every call is appended to `PLCRuntime.system_call_log` (the
+    last 10 000) so a test can assert what the block asked of the system. Only the
+    instructions in `codegen.SYSTEM_INSTRUCTIONS` are stubbed; a user block called
+    without quotes, or a positional argument to a system instruction, stays a
+    located refusal. `RUNTIME(#mem)` measures simulated time between calls.
+    `INT_TO_BYTE`, `BYTE_TO_WORD` mapped.
+- **workspace (tests)** — `TestSuiteResult`, `TestCaseResult`, `TestingConfig`,
+  `TestReporter` and `TestResultsCache` no longer raise a
+  `PytestCollectionWarning` in every file that imports them.
 
 - **plc-code (parser, CLI)** — a token-driven SCL statement parser, and
   `plc code transpile --conformance` to report what it reads.

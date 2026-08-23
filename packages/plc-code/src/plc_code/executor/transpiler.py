@@ -155,6 +155,11 @@ class SCLTranspiler:
             for var in section.variables:
                 if self._type_is_udt(var.data_type):
                     return True
+                if (
+                    self._get_python_type_hint(var.data_type) == "Any"
+                    and system_fb_class_name(var.data_type) is None
+                ):
+                    return True  # a system struct type, emitted as _AutoStruct
         return False
 
     def _generate_imports(self, body_code: str = "") -> None:
@@ -321,6 +326,10 @@ class SCLTranspiler:
         timer_name = system_fb_class_name(var.data_type)
         if timer_name is not None:
             self._emit(f"{name}: {timer_name} = field(default_factory={timer_name})")
+        elif default == "{}" and type_hint == "Any":
+            # A system struct type the runtime has no model for (`DTL`, `HW_IO`):
+            # an attribute-addressable struct, since the code reads `#dtl.YEAR`.
+            self._emit(f"{name}: Any = field(default_factory=_AutoStruct)")
         elif default.startswith("[") or default.startswith("{"):
             # List or dict literal - use default_factory
             self._emit(f"{name}: {type_hint} = field(default_factory=lambda: {default})")

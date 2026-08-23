@@ -426,7 +426,11 @@ def _render_member(node: Member, ctx: _Context) -> str:
     UnsupportedExpression
         For a bit/byte slice (``.%X0``), which the harness cannot yet evaluate.
     """
-    if _is_global_db_ref(node.base, ctx.string_constants):
+    if node.is_absolute:
+        # A slice of a bare tag (`"StatusWord".%X0`) reads the tag, not a global DB:
+        # the DB substitution only applies when a real `.member` follows.
+        base_text = _render(node.base, ctx)
+    elif _is_global_db_ref(node.base, ctx.string_constants):
         assert isinstance(node.base, VariableRef)  # narrowed by _is_global_db_ref
         base_text = f'self._runtime.global_dbs["{node.base.name}"]'
     else:
