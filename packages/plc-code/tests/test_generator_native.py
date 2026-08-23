@@ -193,12 +193,12 @@ def test_an_indexed_callee_fb_call_renders_natively_with_correct_keyword_syntax(
 
 
 def test_a_member_callee_fb_call_renders_natively_and_gets_the_clock_argument() -> None:
-    """A `Member` callee (`"db".TON(...)`) is handled by the same branch, with a timer marker.
+    """A `Member` callee (`"db".TON(...)`) is handled by the same branch.
 
-    `_callee_timer_marker_name` checks the `Member`'s own `.name` ("TON") against
-    `_TIMER_INSTANCE_MARKERS`, so this instance gets the trailing
-    `clock=self._runtime.clock` keyword argument the plain-`VariableRef` case already
-    gets for a name like `#tmr`.
+    `_callee_is_timer` has no declaration in reach for a global DB member, so it
+    counts the member as a timer only when its name *is* an IEC timer type name
+    ("TON" here) -- then the trailing `clock=self._runtime.clock` keyword argument a
+    timer's `__call__` requires is added, as for a declared local timer.
     """
     source = '"MyDb".TON(IN := #a, PT := #t, Q => #q);'
     lines = generate_statements(_statements(source))

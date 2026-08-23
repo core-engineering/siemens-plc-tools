@@ -70,6 +70,7 @@ from plc_code.executor.arguments import (
 )
 from plc_code.executor.codegen import StatementTranslator
 from plc_code.executor.renderer import render
+from plc_code.executor.timers import timer_class_name
 from plc_code.parser.expression_parser import parse_expression
 from plc_code.parser.expressions import Expression, FunctionCall, Index, Member, VariableRef
 from plc_code.parser.lexer import Token
@@ -111,10 +112,12 @@ class _NamedArgument(Protocol):
 
 @dataclass(frozen=True)
 class _Context:
-    """What every generator site forwards unchanged: the two render-time lookups."""
+    """What every generator site forwards unchanged: the render-time lookups and the
+    caller's own timer instances."""
 
     string_constants: dict[str, int] | None
     signature_resolver: SignatureResolver | None
+    timer_instances: frozenset[str] = frozenset()
 
 
 def _generate_body(
@@ -553,40 +556,30 @@ def _render_case_label(expr: Expression | None, ctx: _Context, line: int) -> str
     return render(expr, ctx.string_constants, ctx.signature_resolver)
 
 
-#: An FB instance name substring that makes :func:`_generate_fb_instance_call` add a
-#: trailing ``clock=self._runtime.clock`` argument -- every SCL timer FB (``TON``,
-#: ``TOF``, ``TP``, and any instance named/typed with ``"timer"`` in it) needs the
-#: harness's own clock threaded through explicitly, since the generated Python has no
-#: implicit access to simulated time.
-_TIMER_INSTANCE_MARKERS = ("timer", "ton", "tof", "tp")
+def _callee_is_timer(callee_expr: VariableRef | Index | Member, ctx: _Context) -> bool:
+    """Whether an FB instance call needs the ``clock=self._runtime.clock`` argument.
 
+    A timer's ``__call__`` (``TON_TIME``/``TOF_TIME``/``TP_TIME``) takes the harness
+    clock explicitly; a generated FB's ``__call__(**kwargs)`` would instead store a
+    stray ``clock`` attribute without complaint. So the decision is made from what
+    the caller declares, not from the instance's name: a local ``VariableRef`` callee
+    is a timer when its name is in ``ctx.timer_instances`` (filled by the transpiler
+    from the block's own ``VAR`` sections, ``TON`` and ``TON_TIME`` alike). A
+    ``Member`` callee (``"db".TON(...)``) has no declaration in reach; it counts as a
+    timer only when its member name *is* an IEC timer type name, exactly -- the one
+    remaining guess, kept narrow. An ``Index`` callee (``#arms[#i](...)``) is never
+    one: the corpus holds no indexed timer, and a wrong ``clock=`` is a silent
+    attribute on the callee.
 
-def _callee_timer_marker_name(callee_expr: VariableRef | Index | Member) -> str | None:
-    """The name :func:`_generate_fb_instance_call` checks against :data:`_TIMER_INSTANCE_MARKERS`.
-
-    A plain ``VariableRef`` callee (``#tmr``) checks its own name. A ``Member`` callee's
-    own ``.name`` is the natural analogue of an instance's own name (probed against the
-    corpus: the one ``Member`` callee found is ``"...".TON``, and ``"ton"`` is exactly
-    one of the markers), so that is what is checked. An ``Index`` callee's own indices
-    carry no comparable name (``#arms[#i]``'s ``#i`` is a loop/selector variable, not an
-    instance name), and its ``base`` is not always a plain ``VariableRef`` either -- so
-    this returns ``None`` for an ``Index`` callee, and the caller adds no clock argument
-    rather than guess at one.
-
-    Parameters
-    ----------
-    callee_expr : VariableRef | Index | Member
-        The call's own callee, already known to be one of these three shapes.
-
-    Returns
-    -------
-    str | None
-        ``callee_expr.name`` for a ``VariableRef`` or ``Member`` callee; ``None`` for an
-        ``Index`` callee (no timer-marker check is made for it).
+    The old rule -- any callee name containing ``"timer"``, ``"ton"``, ``"tof"`` or
+    ``"tp"`` -- missed 13 timer instances in the corpus (``TypeError`` at the call)
+    and matched FB instances that merely contained ``"tp"``.
     """
-    if isinstance(callee_expr, Index):
-        return None
-    return callee_expr.name
+    if isinstance(callee_expr, VariableRef):
+        return callee_expr.name in ctx.timer_instances
+    if isinstance(callee_expr, Member):
+        return timer_class_name(callee_expr.name) is not None
+    return False
 
 
 def _generate_fb_instance_call(
@@ -598,10 +591,9 @@ def _generate_fb_instance_call(
     A positional (unnamed) argument raises (the instance's FB type is not known
     here, so there is no signature to bind it against), a ``:=`` argument
     becomes ``name=value`` in the call's keyword arguments, an ``=>`` argument becomes a
-    trailing ``target = {callee}.name`` line, and a callee whose own timer-marker name
-    contains ``"timer"``, ``"ton"``, ``"tof"`` or ``"tp"`` (case-insensitively) gets a
-    trailing ``clock=self._runtime.clock`` keyword argument -- see
-    :data:`_TIMER_INSTANCE_MARKERS` and :func:`_callee_timer_marker_name`. The callee
+    trailing ``target = {callee}.name`` line, and a callee that is a timer instance
+    gets a trailing ``clock=self._runtime.clock`` keyword argument -- see
+    :func:`_callee_is_timer`. The callee
     itself renders through :func:`render` the same way any other callee shape here does
     (``self.tmr`` / ``self.arms[self.i]`` / ``self._runtime.global_dbs["db"].TON``), not
     from a hardcoded ``self.{name}`` -- an ``Index`` or ``Member`` callee renders
@@ -651,10 +643,7 @@ def _generate_fb_instance_call(
         else:
             input_params.append(f"{argument.name}={value_text}")
     call_params = ", ".join(input_params)
-    timer_marker_name = _callee_timer_marker_name(callee_expr)
-    if timer_marker_name is not None and any(
-        marker in timer_marker_name.lower() for marker in _TIMER_INSTANCE_MARKERS
-    ):
+    if _callee_is_timer(callee_expr, ctx):
         call_params = (
             f"{call_params}, clock=self._runtime.clock" if call_params else "clock=self._runtime.clock"
         )
@@ -781,6 +770,7 @@ def generate_statements(
     translator: StatementTranslator | None = None,
     string_constants: dict[str, int] | None = None,
     signature_resolver: SignatureResolver | None = None,
+    timer_instances: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Generate Python lines for a list of statements, natively from the tree.
 
@@ -809,6 +799,10 @@ def generate_statements(
         positional call argument binds to a parameter. ``None`` (the default) makes
         any positional argument to a named block raise instead of being dropped; see
         :mod:`plc_code.executor.arguments`.
+    timer_instances : frozenset[str]
+        Names of the block's own variables declared with an IEC timer type. An FB
+        instance call whose callee is one of them gets the ``clock=`` argument a
+        timer's ``__call__`` requires; see :func:`_callee_is_timer`.
 
     Returns
     -------
@@ -827,7 +821,11 @@ def generate_statements(
         statements,
         indent,
         translator if translator is not None else StatementTranslator(),
-        _Context(string_constants=string_constants, signature_resolver=signature_resolver),
+        _Context(
+            string_constants=string_constants,
+            signature_resolver=signature_resolver,
+            timer_instances=timer_instances,
+        ),
     )
 
 

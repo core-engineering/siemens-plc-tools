@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from plc_code.executor.timers import timer_class_name
+
 
 class SCLType(Enum):
     """Enumeration of supported SCL data types."""
@@ -288,19 +290,13 @@ class TypeMapper:
             # Return a placeholder for unknown UDTs
             return TypeInfo(SCLType.UDT, dict, dict, type_name)
 
-        # Check for timer types
-        if type_str == "TON_TIME":
-            from plc_code.executor.timers import TON_TIME
+        # Check for timer types (``TON`` and ``TON_TIME`` alike)
+        timer_name = timer_class_name(type_str)
+        if timer_name is not None:
+            from plc_code.executor import timers
 
-            return TypeInfo(SCLType.TON_TIME, TON_TIME, TON_TIME, "TON_TIME")
-        if type_str == "TOF_TIME":
-            from plc_code.executor.timers import TOF_TIME
-
-            return TypeInfo(SCLType.TOF_TIME, TOF_TIME, TOF_TIME, "TOF_TIME")
-        if type_str == "TP_TIME":
-            from plc_code.executor.timers import TP_TIME
-
-            return TypeInfo(SCLType.TP_TIME, TP_TIME, TP_TIME, "TP_TIME")
+            timer_class = getattr(timers, timer_name)
+            return TypeInfo(SCLType(timer_name), timer_class, timer_class, timer_name)
 
         # Check standard type map
         if type_str in TYPE_MAP:

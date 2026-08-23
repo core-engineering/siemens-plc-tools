@@ -1,0 +1,25 @@
+FUNCTION_BLOCK "TimerByType"
+    VAR_INPUT
+        input : Bool;
+    END_VAR
+    VAR_OUTPUT
+        output : Bool;
+        pulse : Bool;
+    END_VAR
+    VAR
+        delay : TON;
+        setpointHold : TP_TIME;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        // A timer whose name says nothing about timers, declared with the bare IEC
+        // type; and one whose name merely contains "tp", declared with the _TIME type.
+        #delay(IN := #input,
+               PT := T#100ms,
+               Q => #output);
+        #setpointHold(IN := #input,
+                      PT := T#50ms,
+                      Q => #pulse);
+    END_NETWORK
+END_FUNCTION_BLOCK

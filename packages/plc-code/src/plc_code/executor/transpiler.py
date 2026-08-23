@@ -13,6 +13,7 @@ from plc_code.executor.codegen import CodeGenContext
 from plc_code.executor.generator import UnsupportedStatement, generate_statements
 from plc_code.executor.models import CompileResult, TranspileOptions, TranspileResult
 from plc_code.executor.renderer import UnsupportedExpression
+from plc_code.executor.timers import timer_class_name
 from plc_code.executor.types import ArrayTypeInfo, SCLType, TypeInfo, TypeMapper
 from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block, Network, Region, VariableDeclaration
@@ -210,8 +211,9 @@ class SCLTranspiler:
         timer_types = set()
         for section in self.block.variable_sections:
             for var in section.variables:
-                if var.data_type in ("TON_TIME", "TOF_TIME", "TP_TIME"):
-                    timer_types.add(var.data_type)
+                timer_name = timer_class_name(var.data_type)
+                if timer_name is not None:
+                    timer_types.add(timer_name)
 
         if timer_types:
             timer_imports = ", ".join(sorted(timer_types))
@@ -351,8 +353,9 @@ class SCLTranspiler:
         default = self._get_default_value(var)
 
         # For timers and complex types, use field(default_factory=...)
-        if var.data_type in ("TON_TIME", "TOF_TIME", "TP_TIME"):
-            self._emit(f"{name}: {type_hint} = field(default_factory={var.data_type})")
+        timer_name = timer_class_name(var.data_type)
+        if timer_name is not None:
+            self._emit(f"{name}: {timer_name} = field(default_factory={timer_name})")
         elif default.startswith("[") or default.startswith("{"):
             # List or dict literal - use default_factory
             self._emit(f"{name}: {type_hint} = field(default_factory=lambda: {default})")
@@ -698,6 +701,21 @@ class SCLTranspiler:
             result.statements,
             string_constants=self._string_constants,
             signature_resolver=self.signature_resolver,
+            timer_instances=self._timer_instances(),
+        )
+
+    def _timer_instances(self) -> frozenset[str]:
+        """Names of this block's variables declared with an IEC timer type.
+
+        What the generator uses to decide which ``#instance(...)`` calls get the
+        ``clock=`` argument a timer's ``__call__`` requires -- by declared type,
+        not by anything in the instance's name.
+        """
+        return frozenset(
+            var.name
+            for section in self.block.variable_sections
+            for var in section.variables
+            if timer_class_name(var.data_type) is not None
         )
 
 

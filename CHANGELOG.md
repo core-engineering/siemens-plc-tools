@@ -241,6 +241,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   numbers directly.
 
 ### Fixed
+- **plc-code (executor)** — an FB instance call gets its `clock=` argument by the
+  instance's declared type, and a bare IEC timer type (`TON`, `TOF`, `TP`) is a
+  timer.
+
+  A timer's `__call__` takes the harness clock explicitly; the generator decided
+  which `#instance(...)` calls to pass it to by substrings of the instance's *name*
+  (`"timer"`, `"ton"`, `"tof"`, `"tp"`). Across five production projects that rule
+  missed 13 timer instances — `#delay(IN := ...)` called without a clock is a
+  `TypeError` at the call — and matched FB instances that merely contained `"tp"`,
+  which then received a stray `clock` keyword that a generated FB's
+  `__call__(**kwargs)` stores as an attribute without complaint. The transpiler now
+  hands the generator the names of the block's own variables declared with a timer
+  type (`generate_statements(..., timer_instances=...)`), and the name heuristic is
+  gone. A global-DB member callee (`"db".TON(...)`), which has no declaration in
+  reach, counts as a timer only when its member name is exactly an IEC timer type
+  name; an indexed callee never does.
+
+  Separately, a variable declared as `TON` (12 such in the corpus, against 34
+  `TON_TIME`) was not a timer at all to the transpiler — only the `*_TIME` spellings
+  were — so it became an `_AutoStruct` that the generated call then could not call.
+  `executor.timers.TIMER_TYPE_NAMES` is now the single table of IEC timer spellings,
+  shared by the type mapper, the transpiler and the generator.
+- **workspace (tests)** — `uv run pytest packages/plc-code` (or any single package
+  run from its own directory) aborted collection with `import file mismatch` on
+  `test_models.py`: four test files share that basename across packages, and only
+  the workspace root's `pytest` options asked for `--import-mode=importlib`. Every
+  package's `addopts` now carries it too.
 - **plc-code (executor)** — a positional argument to a named-block call is bound to
   the callee's declared parameter, read from the project sources; it was silently
   dropped.

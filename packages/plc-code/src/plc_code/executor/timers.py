@@ -14,6 +14,25 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from plc_code.executor.runtime import MockClock
 
+#: Every SCL spelling of an IEC timer instance type, mapped to the class name here.
+#: A TIA export writes a multi-instance either as the IEC type (``TON``) or as its
+#: instance data type (``TON_TIME``); both are the same timer.
+TIMER_TYPE_NAMES: dict[str, str] = {
+    "TON": "TON_TIME",
+    "TON_TIME": "TON_TIME",
+    "TOF": "TOF_TIME",
+    "TOF_TIME": "TOF_TIME",
+    "TP": "TP_TIME",
+    "TP_TIME": "TP_TIME",
+}
+
+
+def timer_class_name(data_type: str | None) -> str | None:
+    """The timer class a declared type names (case-insensitively), or ``None``."""
+    if data_type is None:
+        return None
+    return TIMER_TYPE_NAMES.get(data_type.strip().upper())
+
 
 @dataclass
 class TON_TIME:
