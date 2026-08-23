@@ -1028,6 +1028,12 @@ def drawio_command(
                     analyzer_blocks.append(parse_scl_file(full))
                 except Exception as exc:
                     click.echo(f"warning: failed to parse {full}: {exc}", err=True)
+        # What the dependency tracers could not read is absent from every chain: say so.
+        from plc_code.analyzer.logic_dependency.access_index import access_index
+
+        for analyzer_block in analyzer_blocks:
+            for problem in access_index(analyzer_block).parse_errors:
+                click.echo(f"warning: {analyzer_block.name}: not traced, {problem}", err=True)
 
     if xml_tags_dir is not None:
         try:

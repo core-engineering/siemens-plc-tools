@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from plc_code.parser.models import Block
 
+from .access_index import Access, CallContext, access_index
 from .index_resolver import (
     TagIndexInfo,
     extract_indices_from_tag,
@@ -67,30 +68,6 @@ class ForwardTrace:
 
 # Pattern for function call parameters: name := field , or name => field
 # Note: Parser may add space between = and > (e.g., "= >")
-FUNC_PARAM_PATTERN = re.compile(r'(\w+)\s*(:=|=\s*>)\s*("[^"]+[^,)]+)', re.MULTILINE)
-
-# Pattern to extract output parameters (=> or = > means output)
-# Captures parameter name and the global field path
-OUTPUT_PARAM_PATTERN = re.compile(r'(\w+)\s*=\s*>\s*("[^"]+[^,)\n]+)', re.MULTILINE)
-
-
-def _get_block_content(block: Block) -> str:
-    """Get the full content from a block."""
-    parts = []
-    for network in block.networks:
-        if network.content:
-            parts.append(network.content)
-        if network.ladder_elements:
-            parts.append("\n".join(network.ladder_elements))
-        for region in network.regions:
-            if region.content:
-                parts.append(region.content)
-            for nested in region.nested_regions:
-                if nested.content:
-                    parts.append(nested.content)
-    return "\n".join(parts)
-
-
 def _normalize_field(field_path: str) -> str:
     """Normalize a field path for comparison."""
     normalized = re.sub(r"\s*\.\s*", ".", field_path)
@@ -99,159 +76,53 @@ def _normalize_field(field_path: str) -> str:
     return normalized
 
 
-def _get_line_number(content: str, match_start: int) -> int:
-    """Get the line number for a match position."""
-    return content[:match_start].count("\n") + 1
+def _resolve_output_field(field_path: str, indices: TagIndexInfo) -> str:
+    """A call output's global path with the tag's indices substituted in."""
+    resolved = normalize_and_resolve(field_path, None)
+    for var, val in indices.get_replacements().items():
+        resolved = re.sub(r"\[\s*#\s*" + re.escape(var) + r"\s*\]", f"[{val}]", resolved, flags=re.IGNORECASE)
+    return resolved.strip()
 
 
-def _extract_output_fields_from_expression(expression: str, indices: TagIndexInfo) -> list[str]:
-    """Extract output fields from a function call expression.
-
-    Looks for patterns like: output => "ProcessData".field, result => "ProcessData".other
-    """
-    output_fields = []
-    for match in OUTPUT_PARAM_PATTERN.finditer(expression):
-        field_path = match.group(2).strip()  # Strip whitespace
-        # Resolve indices in the output field
-        resolved = normalize_and_resolve(field_path, None)
-        # Apply index resolution
-        for var, val in indices.get_replacements().items():
-            resolved = re.sub(
-                r"\[\s*#\s*" + re.escape(var) + r"\s*\]", f"[{val}]", resolved, flags=re.IGNORECASE
-            )
-        output_fields.append(resolved.strip())  # Ensure no trailing whitespace
-    return output_fields
+def _output_fields(call: CallContext | None, indices: TagIndexInfo) -> list[str]:
+    """The global paths a call writes through its ``=>`` outputs, indices resolved."""
+    if call is None:
+        return []
+    return [_resolve_output_field(value, indices) for value in call.outputs.values() if value.startswith('"')]
 
 
-def _find_enclosing_call(content: str, pos: int) -> tuple[int, int] | None:
-    """Find the enclosing function call parentheses around a position.
-
-    Walks backward from pos counting parens to find the innermost
-    enclosing (...). Returns (start, end) of the enclosing parentheses
-    or None if pos is not inside any parentheses.
-
-    Parameters
-    ----------
-    content : str
-        The full block content.
-    pos : int
-        Position to check.
-
-    Returns
-    -------
-    tuple[int, int] | None
-        (start, end) of enclosing parens, or None.
-    """
-    p = pos - 1
-    depth = 0
-    while p >= 0:
-        if content[p] == ")":
-            depth += 1
-        elif content[p] == "(":
-            if depth == 0:
-                # Found unmatched ( - this encloses our position
-                # Now find the matching )
-                end = p + 1
-                count = 1
-                while end < len(content) and count > 0:
-                    if content[end] == "(":
-                        count += 1
-                    elif content[end] == ")":
-                        count -= 1
-                    end += 1
-                return (p, end)
-            else:
-                depth -= 1
-        p -= 1
-    return None
-
-
-def _extract_call_metadata(
-    content: str,
-    expr_start: int,
-    expr_end: int,
+def _call_metadata(
+    access: Access,
     field_path: str,
     block: Block,
     indices: TagIndexInfo,
 ) -> tuple[str | None, str | None, dict[str, str]]:
-    """Extract function call metadata from an expression.
+    """``(called_block_name, input_param_name, output_param_map)`` for a call binding.
 
-    Identifies the called block name, which input parameter our field
-    is assigned to, and maps output parameters to their global field paths.
-
-    Parameters
-    ----------
-    content : str
-        The full block content.
-    expr_start : int
-        Start position of the enclosing '('.
-    expr_end : int
-        End position (after the closing ')').
-    field_path : str
-        The field path being traced.
-    block : Block
-        The block containing the function call (for resolving instance types).
-    indices : TagIndexInfo
-        Index information for field matching.
-
-    Returns
-    -------
-    tuple[str | None, str | None, dict[str, str]]
-        (called_block_name, input_param_name, output_param_map)
+    The called block is the instance variable's declared type (``_.`` prefix
+    stripped) when the callee is an FB instance of this block; the input
+    parameter is the one whose value matches ``field_path``; the output map
+    goes from each ``=>`` output's resolved global path to its parameter name.
     """
-    # 1. Find function/instance name before '('
-    p = expr_start - 1
-    while p >= 0 and content[p] in " \t\n":
-        p -= 1
-    name_end = p + 1
-    # Check for # prefix
-    while p >= 0 and (content[p].isalnum() or content[p] == "_"):
-        p -= 1
-    if p >= 0 and content[p] == "#":
-        p -= 1
-    instance_name = content[p + 1 : name_end].strip().lstrip("#")
-
-    if not instance_name:
+    call = access.call
+    if call is None:
         return None, None, {}
-
-    # 2. Resolve instance name to block type via caller's static vars
     called_block = None
-    for var in block.static_vars:
-        if var.name == instance_name:
-            type_name = var.data_type
-            # Strip "_." prefix (TIA Portal library type convention)
-            if type_name.startswith("_."):
-                type_name = type_name[2:]
-            called_block = type_name
-            break
-
-    # 3. Find which input param our field is assigned to
-    expression = content[expr_start:expr_end]
-    input_param = None
-    for m in FUNC_PARAM_PATTERN.finditer(expression):
-        param_name = m.group(1)
-        operator = m.group(2).strip()
-        param_field = m.group(3).strip()
-        if ":=" in operator:  # input parameter
-            if _fields_match(field_path, param_field, indices):
-                input_param = param_name
+    if call.instance is not None:
+        for var in block.static_vars:
+            if var.name == call.instance:
+                called_block = var.data_type[2:] if var.data_type.startswith("_.") else var.data_type
                 break
-
-    # 4. Build output param map: resolved_field -> param_name
-    output_map: dict[str, str] = {}
-    for m in OUTPUT_PARAM_PATTERN.finditer(expression):
-        param_name = m.group(1)
-        output_field = m.group(2).strip()
-        resolved = normalize_and_resolve(output_field, None)
-        for var_name, val in indices.get_replacements().items():
-            resolved = re.sub(
-                r"\[\s*#\s*" + re.escape(var_name) + r"\s*\]",
-                f"[{val}]",
-                resolved,
-                flags=re.IGNORECASE,
-            )
-        output_map[resolved.strip()] = param_name
-
+    input_param = None
+    for name, value in call.inputs.items():
+        if value.startswith('"') and _fields_match(field_path, value, indices):
+            input_param = name
+            break
+    output_map = {
+        _resolve_output_field(value, indices): name
+        for name, value in call.outputs.items()
+        if value.startswith('"')
+    }
     return called_block, input_param, output_map
 
 
@@ -261,57 +132,32 @@ def _find_connection_line(
     input_var: str | None,
     output_var: str,
 ) -> int:
-    """Find the line where input_var influences output_var inside a block.
+    """The line inside the called block where ``input_var`` influences ``output_var``.
 
-    Searches the called block's content for a line where the output
-    local variable is assigned and the input local variable is referenced
-    nearby (in the same IF condition or expression).
-
-    Note: The parser may add spaces after '#' (e.g., '# slewingLeft'),
-    so we use regex patterns to match with optional whitespace.
-
-    Parameters
-    ----------
-    blocks : list[Block]
-        All parsed blocks.
-    block_name : str
-        Name of the called block to search in.
-    input_var : str
-        Input parameter name (without # prefix).
-    output_var : str
-        Output parameter name (without # prefix).
-
-    Returns
-    -------
-    int
-        Line number, or 0 if not found.
+    The first write of ``#output_var`` when ``#input_var`` is read anywhere in
+    the block; failing that, the first read of ``#input_var``; ``0`` otherwise.
     """
     if block_name is None or input_var is None:
         return 0
-    # Build patterns that handle parser-added spaces after #
-    input_pattern = re.compile(r"#\s*" + re.escape(input_var) + r"\b")
-    output_pattern = re.compile(r"#\s*" + re.escape(output_var) + r"\b")
-
     for block in blocks:
         if block.name != block_name:
             continue
-        content = _get_block_content(block)
-        lines = content.split("\n")
-
-        if not input_pattern.search(content):
+        index = access_index(block)
+        if not any(_local_root(a.path) == input_var for a in index.reads()):
             return 0
-
-        # First pass: find lines where output_var is assigned
-        for i, line_text in enumerate(lines, 1):
-            if output_pattern.search(line_text) and ":=" in line_text:
-                return i
-
-        # Second pass: find first reference to input_var
-        for i, line_text in enumerate(lines, 1):
-            if input_pattern.search(line_text):
-                return i
-
+        for access in index.writes():
+            if _local_root(access.path) == output_var:
+                return access.line
+        for access in index.reads():
+            if _local_root(access.path) == input_var:
+                return access.line
     return 0
+
+
+def _local_root(path: str) -> str | None:
+    if not path.startswith("#"):
+        return None
+    return path[1:].split(".")[0].split("[")[0]
 
 
 def _fields_match(target: str, candidate: str, indices: TagIndexInfo) -> bool:
@@ -343,7 +189,7 @@ def find_field_usages(
     indices: TagIndexInfo,
     exclude_writes: bool = True,
 ) -> Iterator[DataFlowNode]:
-    """Find all usages of a field in the codebase.
+    """Find all usages of a global field in the codebase.
 
     Parameters
     ----------
@@ -359,101 +205,40 @@ def find_field_usages(
     Yields
     ------
     DataFlowNode
-        Nodes representing field usages.
+        One node per statement that uses the field. ``access_type`` is ``write``
+        for an assignment target, ``function_output`` for a call's ``=>`` output,
+        ``read`` otherwise.
     """
-    # Pattern to find the field in content
-    # We search for the base DB name and then check the full path
-    field_norm = _normalize_field(field_path)
-
-    # Extract the DB name for initial filtering
-    db_match = re.match(r'"([^"]+)"', field_norm)
-    if not db_match:
+    if not field_path.strip().startswith('"'):
         return
-
-    db_name = db_match.group(1)
-
     for block in blocks:
-        content = _get_block_content(block)
-        if db_name not in content:
-            continue
-
-        # Search for all global field references
-        global_pattern = re.compile(
-            r'"([^"]+)"(?:\s*\.\s*[a-zA-Z_][a-zA-Z0-9_]*|\s*\[\s*[^\]]+\s*\])+',
-        )
-
-        for match in global_pattern.finditer(content):
-            candidate = match.group(0)
-            if not _fields_match(field_path, candidate, indices):
+        seen: set[tuple[int, str]] = set()
+        for access in access_index(block).accesses:
+            if not access.is_global or not _fields_match(field_path, access.path, indices):
                 continue
-
-            # Determine access type from context
-            line_start = content.rfind("\n", 0, match.start()) + 1
-            line_end = content.find("\n", match.end())
-            if line_end == -1:
-                line_end = len(content)
-            line = content[line_start:line_end]
-
-            # Check if it's a write (field := ...) or read
-            # Find position of field in line and check what follows
-            field_pos = match.start() - line_start
-            before_field = line[:field_pos].strip()
-            after_field = line[field_pos + len(candidate) :].strip()
-
-            # Skip if this is a write access and we want only reads
-            is_write = after_field.startswith(":=")
-            is_function_output = "=>" in before_field or "= >" in before_field
-            if exclude_writes and (is_write or is_function_output):
+            is_function_output = access.is_write and access.call is not None
+            if exclude_writes and access.is_write:
                 continue
-
-            # Determine access type
-            if is_write:
-                access_type = "write"
-            elif ":=" in before_field:
-                # Field is on RHS of assignment (being read)
-                access_type = "read"
-            elif is_function_output:
-                # Field is target of output parameter
+            key = (access.line, access.statement)
+            if key in seen:
+                continue
+            seen.add(key)
+            if is_function_output:
                 access_type = "function_output"
+            elif access.is_write:
+                access_type = "write"
             else:
                 access_type = "read"
-
-            # Get the full expression context (for function calls)
-            # Use proper parenthesis-aware enclosure detection
-            enclosing = _find_enclosing_call(content, match.start())
-            called_block_name = None
-            input_param_name = None
-            output_param_map: dict[str, str] = {}
-
-            if enclosing:
-                expr_start, expr_end = enclosing
-                expression = content[expr_start:expr_end]
-
-                # Extract function call metadata
-                called_block_name, input_param_name, output_param_map = _extract_call_metadata(
-                    content,
-                    expr_start,
-                    expr_end,
-                    field_path,
-                    block,
-                    indices,
-                )
-            else:
-                # Not inside a function call - just use the line
-                expression = line
-
-            # Extract output fields from function call
-            output_fields = _extract_output_fields_from_expression(expression, indices)
-
-            line_number = _get_line_number(content, match.start())
-
+            called_block_name, input_param_name, output_param_map = _call_metadata(
+                access, field_path, block, indices
+            )
             yield DataFlowNode(
-                field_path=normalize_and_resolve(candidate, None),
+                field_path=normalize_and_resolve(access.path, None),
                 block_name=block.name,
-                line_number=line_number,
+                line_number=access.line,
                 access_type=access_type,
-                expression=expression.strip(),
-                output_fields=output_fields,
+                expression=access.statement.rstrip(";"),
+                output_fields=_output_fields(access.call, indices),
                 called_block_name=called_block_name,
                 input_param_name=input_param_name,
                 output_param_map=output_param_map,

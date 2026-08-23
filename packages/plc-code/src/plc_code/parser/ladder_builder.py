@@ -107,6 +107,16 @@ def _split_params(args: str) -> list[tuple[str, str, str]]:
     return params
 
 
+def parse_ladder_element(elem: str) -> Contact | CompareContact | Coil | JumpCoil | Box | CallBox:
+    """Classify one element string into a typed AST node; ``ValueError`` when unknown.
+
+    The per-element entry point for a consumer that can tolerate an element the
+    rung builder cannot (a bare instance name, an unknown instruction) and wants
+    to keep the rest of the network rather than lose the block.
+    """
+    return _parse_element(elem)
+
+
 def _parse_element(elem: str) -> Contact | CompareContact | Coil | JumpCoil | Box | CallBox:
     """Classify one element string into a typed AST node."""
     name, args = _split_call(elem)

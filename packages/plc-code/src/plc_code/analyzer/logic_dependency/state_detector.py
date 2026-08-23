@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 from plc_code.parser.models import Block
 
+from .access_index import access_index
+
 
 def _normalize_field_path(field_path: str) -> str:
     """Normalize a field path for comparison.
@@ -25,25 +27,6 @@ def _normalize_field_path(field_path: str) -> str:
     # Remove # and surrounding spaces in array indices
     normalized = re.sub(r"\[\s*#\s*", "[#", normalized)
     return normalized
-
-
-def _get_block_content(block: Block) -> str:
-    """Get the full content from a block (combining networks, regions, and ladder elements)."""
-    parts = []
-    for network in block.networks:
-        if network.content:
-            parts.append(network.content)
-        # Include ladder elements for LAD blocks
-        if network.ladder_elements:
-            parts.append("\n".join(network.ladder_elements))
-        for region in network.regions:
-            if region.content:
-                parts.append(region.content)
-            # Handle nested regions
-            for nested in region.nested_regions:
-                if nested.content:
-                    parts.append(nested.content)
-    return "\n".join(parts)
 
 
 # Patterns for identifying state variables
@@ -180,6 +163,9 @@ def is_termination_point(name: str, io_tag_names: set[str] | None = None) -> boo
 def detect_state_variables_in_block(block: Block) -> list[StateVariable]:
     """Detect state variables used in a block.
 
+    A ``CASE`` selector is a state variable (a state machine's own variable);
+    so is any global field whose path matches :data:`STATE_FIELD_PATTERNS`.
+
     Parameters
     ----------
     block : Block
@@ -188,16 +174,15 @@ def detect_state_variables_in_block(block: Block) -> list[StateVariable]:
     Returns
     -------
     list[StateVariable]
-        List of detected state variables.
+        List of detected state variables, each once, in first-use order.
     """
     state_vars = []
-    content = _get_block_content(block)
     seen = set()
-
-    # Find variables used in CASE statements
-    case_pattern = re.compile(r'\bCASE\s+(#\s*[a-zA-Z_][a-zA-Z0-9_]*|"[^"]+"\S*)\s+OF\b', re.IGNORECASE)
-    for match in case_pattern.finditer(content):
-        var = match.group(1).strip()
+    index = access_index(block)
+    for access in index.accesses:
+        if access.element != "selector" or access.call is not None:
+            continue
+        var = _normalize_field_path(access.path)
         if var not in seen:
             seen.add(var)
             state_vars.append(
@@ -208,11 +193,10 @@ def detect_state_variables_in_block(block: Block) -> list[StateVariable]:
                     context="CASE statement variable",
                 )
             )
-
-    # Find global DB fields with state-like names in assignments
-    global_pattern = re.compile(r'"[^"]+"\.[a-zA-Z0-9_.\[\]]+')
-    for match in global_pattern.finditer(content):
-        field = match.group(0)
+    for access in index.accesses:
+        if not access.is_global or not access.path.startswith('"'):
+            continue
+        field = _normalize_field_path(access.path)
         if field not in seen and is_state_variable(field):
             seen.add(field)
             state_vars.append(
@@ -223,7 +207,6 @@ def detect_state_variables_in_block(block: Block) -> list[StateVariable]:
                     context="global field access",
                 )
             )
-
     return state_vars
 
 

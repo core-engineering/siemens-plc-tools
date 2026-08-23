@@ -4,20 +4,15 @@ This module builds complete dependency chains from physical I/O tags
 to their termination points (state variables or other I/O tags).
 """
 
-import re
 from dataclasses import dataclass, field
 
 from plc_code.parser.models import Block
 
+from .access_index import access_index
 from .field_tracer import (
-    FUNC_INPUT_PARAM_PATTERN,
-    FUNC_OUTPUT_PARAM_PATTERN,
-    LADDER_MOVE_PATTERN,
     FieldAccess,
     InOutBinding,
     _fields_match,
-    _get_block_content,
-    _get_line_number,
     _normalize_field_path,
     _split_field_suffix,
     find_field_readers,
@@ -531,8 +526,7 @@ class ChainBuilder:
         # Extract input parameters from the call as dependencies
         # Skip the parameter that matches our field (self-reference)
         normalized_target = _normalize_field_path(field_path)
-        for m in FUNC_INPUT_PARAM_PATTERN.finditer(binding.call_expr):
-            input_field = m.group(2).strip()
+        for input_field in binding.param_mapping.values():
             input_norm = _normalize_field_path(input_field)
 
             # Skip self-references (the setpoint param itself)
@@ -575,11 +569,11 @@ class ChainBuilder:
         normalized = _normalize_field_path(field_path)
 
         for block in self.blocks:
-            content = _get_block_content(block)
-
-            for match in LADDER_MOVE_PATTERN.finditer(content):
-                source = _normalize_field_path(match.group(1).strip())
-                target = _normalize_field_path(match.group(2).strip())
+            for access in access_index(block).writes():
+                if access.element != "box" or not access.statement.startswith("Move("):
+                    continue
+                source = _normalize_field_path(access.expression)
+                target = _normalize_field_path(access.path)
 
                 # Check if target is a parent prefix of our field path
                 if not target.startswith('"'):
@@ -593,7 +587,7 @@ class ChainBuilder:
 
                 # Map to source field: source + suffix
                 source_field = source + suffix
-                line_num = _get_line_number(content, match.start())
+                line_num = access.line
 
                 node.block_name = block.name
                 node.line_number = line_num
@@ -722,8 +716,7 @@ def _select_best_access(
 
 def _is_function_call_writer(access: FieldAccess) -> bool:
     """Check if a write access comes from a function call output parameter."""
-    expr = access.expression or ""
-    return "= >" in expr or "=>" in expr
+    return access.call is not None and access.call.direction == "=>"
 
 
 def _find_connection_line(
@@ -732,26 +725,29 @@ def _find_connection_line(
     input_var: str,
     output_var: str,
 ) -> int:
-    """Find the line where input_var influences output_var inside a block."""
-    from .forward_tracer import _get_block_content as _ft_get_content
+    """The line where ``input_var`` influences ``output_var`` inside a block.
 
-    input_pattern = re.compile(r"#\s*" + re.escape(input_var) + r"\b")
-    output_pattern = re.compile(r"#\s*" + re.escape(output_var) + r"\b")
-
+    The first write of ``#output_var`` (or a sub-field of it); failing that, the
+    first read of ``#input_var``; ``0`` when neither is found.
+    """
     for block in blocks:
         if block.name != block_name:
             continue
-        content = _ft_get_content(block)
-        lines = content.split("\n")
-        # First pass: find lines where output_var is assigned
-        for i, line in enumerate(lines):
-            if output_pattern.search(line) and ":=" in line:
-                return i + 1
-        # Second pass: find first reference to input_var
-        for i, line in enumerate(lines):
-            if input_pattern.search(line):
-                return i + 1
+        index = access_index(block)
+        for access in index.writes():
+            if _local_root(access.path) == output_var:
+                return access.line
+        for access in index.reads():
+            if _local_root(access.path) == input_var:
+                return access.line
     return 0
+
+
+def _local_root(path: str) -> str | None:
+    """``#name`` or ``#name.x[1]`` -> ``name``; ``None`` for a global path."""
+    if not path.startswith("#"):
+        return None
+    return path[1:].split(".")[0].split("[")[0]
 
 
 def _resolve_instance_to_block(
@@ -784,67 +780,21 @@ def _extract_backward_call_metadata(
     """Extract function call metadata for backward tracing.
 
     Returns list of (input_field, input_param, output_param, called_block, line)
-    tuples, or None if extraction fails.
+    tuples, or None when the access is not a call's ``=>`` output binding.
     """
-    expression = access.expression or ""
-
-    # Find the output parameter name that writes to our target field
-    target_norm = _normalize_field_path(access.field_path)
-    output_param = None
-    for m in FUNC_OUTPUT_PARAM_PATTERN.finditer(expression):
-        field = _normalize_field_path(m.group(2).strip())
-        # Wildcard match (replace all indices with *)
-        target_base = re.sub(r"\[[^\]]+\]", "[*]", target_norm)
-        field_base = re.sub(r"\[[^\]]+\]", "[*]", field)
-        if target_base == field_base:
-            output_param = m.group(1)
-            break
-
-    if not output_param:
+    call = access.call
+    if call is None or call.direction != "=>":
         return None
-
-    # Find the caller block object to resolve instance types
-    caller_block = None
-    for b in blocks:
-        if b.name == access.block_name:
-            caller_block = b
-            break
-
-    # Find the function instance name (text before the opening '(')
-    # expression starts with something like "# axis ( ..."
-    instance_match = re.match(r"\s*#?\s*(\w+)\s*\(", expression)
-    instance_name = instance_match.group(1) if instance_match else None
-
-    # Resolve instance to block type
-    called_block = None
-    if instance_name:
-        called_block = _resolve_instance_to_block(instance_name, caller_block)
-    called_block = called_block or instance_name or "unknown"
-
-    # Extract input parameters and build result tuples
+    output_param = call.parameter
+    caller_block = next((b for b in blocks if b.name == access.block_name), None)
+    instance_name = call.instance if call.instance is not None else call.callee.strip('"')
+    called_block = _resolve_instance_to_block(instance_name, caller_block) or instance_name or "unknown"
     result = []
-    for m in FUNC_INPUT_PARAM_PATTERN.finditer(expression):
-        input_param = m.group(1)
-        input_field = m.group(2).strip()
-
-        # Find connection line inside the called block
-        conn_line = _find_connection_line(
-            blocks,
-            called_block,
-            input_param,
-            output_param,
-        )
-
-        result.append(
-            (
-                input_field,
-                input_param,
-                output_param,
-                called_block,
-                conn_line,
-            )
-        )
-
+    for input_param, input_field in call.inputs.items():
+        if not input_field.startswith('"'):
+            continue  # a local or literal input is not a traceable global field
+        conn_line = _find_connection_line(blocks, called_block, input_param, output_param)
+        result.append((input_field, input_param, output_param, called_block, conn_line))
     return result if result else None
 
 

@@ -4,11 +4,11 @@ This module finds where I/O tags are assigned or read in the program,
 mapping physical tags to their corresponding data structure fields.
 """
 
-import re
 from dataclasses import dataclass
 
 from plc_code.parser.models import Block
 
+from .access_index import access_index
 from .tag_parser import TagCollection
 
 
@@ -35,69 +35,19 @@ class TagAssignment:
         return self.direction == "read"
 
 
-# Regex patterns for different assignment types
-# Note: Parser adds spaces around dots and brackets, e.g., "ProcessData" . station . input . field
-
-# Direct SCL assignment: "TAG_NAME" := expression  (output - PLC writes)
-PATTERN_OUTPUT_DIRECT = re.compile(r'"([A-Z][A-Z0-9_]*_[A-Z0-9_]+)"\s*:=\s*(.+?)\s*;', re.MULTILINE)
-
-# Direct SCL assignment: field := "TAG_NAME"  (input - PLC reads)
-# Handles spaces around dots: "ProcessData" . station . input . field := "TAG" ;
-PATTERN_INPUT_DIRECT = re.compile(r'("[^"]+".+?)\s*:=\s*"([A-Z][A-Z0-9_]*_[A-Z0-9_]+)"\s*;', re.MULTILINE)
-
-# Ladder Contact + Coil: Contact(field)\nCoil("TAG")  (output)
-# Note: In ladder_elements, these are separate strings joined by newlines
-PATTERN_LADDER_COIL = re.compile(
-    r'Contact\(\s*(.+?)\s*\)\s*[\n\r]+\s*Coil\(\s*"([A-Z][A-Z0-9_]*_[A-Z0-9_]+)"\s*\)',
-    re.MULTILINE | re.DOTALL,
-)
-
-# Ladder Contact from tag: Contact("TAG")  (input read)
-PATTERN_LADDER_CONTACT_TAG = re.compile(r'Contact\(\s*"([A-Z][A-Z0-9_]*_[A-Z0-9_]+)"\s*\)', re.MULTILINE)
-
-# Ladder Move: Move(in := "TAG", out1 => field)  (input)
-PATTERN_LADDER_MOVE_INPUT = re.compile(
-    r'Move\(\s*in\s*:=\s*"([A-Z][A-Z0-9_]*_[A-Z0-9_]+)"\s*,\s*out1\s*=>\s*(.+?)\s*\)', re.MULTILINE
-)
-
-# Ladder Move: Move(in := field, out1 => "TAG")  (output)
-PATTERN_LADDER_MOVE_OUTPUT = re.compile(
-    r'Move\(\s*in\s*:=\s*(.+?)\s*,\s*out1\s*=>\s*"([A-Z][A-Z0-9_]*_[A-Z0-9_]+)"\s*\)', re.MULTILINE
-)
-
-
-def _get_line_number(content: str, match_start: int) -> int:
-    """Get the line number for a match position."""
-    return content[:match_start].count("\n") + 1
-
-
 def _is_io_tag(name: str) -> bool:
     """Check if a name is an I/O tag."""
     prefixes = ("DO_", "SDO_", "DI_", "SDI_", "AI_", "SAI_")
     return any(name.startswith(p) for p in prefixes)
 
 
-def _get_block_content(block: Block) -> str:
-    """Get the full content from a block (combining networks, regions, and ladder elements)."""
-    parts = []
-    for network in block.networks:
-        if network.content:
-            parts.append(network.content)
-        # Include ladder elements for LAD blocks
-        if network.ladder_elements:
-            parts.append("\n".join(network.ladder_elements))
-        for region in network.regions:
-            if region.content:
-                parts.append(region.content)
-            # Handle nested regions
-            for nested in region.nested_regions:
-                if nested.content:
-                    parts.append(nested.content)
-    return "\n".join(parts)
-
-
 def find_assignments_in_block(block: Block, tag_names: set[str]) -> list[TagAssignment]:
-    """Find all tag assignments in a single block.
+    """Find all tag assignments in a block.
+
+    A tag is a bare quoted symbol (``"DO_PUMP_1"``) that is either in
+    ``tag_names`` or named like an I/O tag. Each access of one is reported with
+    the field it maps to: for a direct assignment the other side, for a ladder
+    coil its contacts, for a Move box the other operand.
 
     Parameters
     ----------
@@ -112,112 +62,57 @@ def find_assignments_in_block(block: Block, tag_names: set[str]) -> list[TagAssi
         List of found tag assignments.
     """
     assignments = []
-    content = _get_block_content(block)
-
-    # Direct output assignments: "DO_TAG" := field;
-    for match in PATTERN_OUTPUT_DIRECT.finditer(content):
-        tag_name = match.group(1)
-        if tag_name in tag_names or _is_io_tag(tag_name):
-            field = match.group(2).strip()
-            assignments.append(
-                TagAssignment(
-                    tag_name=tag_name,
-                    mapped_field=field,
-                    block_name=block.name,
-                    line_number=_get_line_number(content, match.start()),
-                    assignment_type="direct",
-                    direction="write",
-                    source_expression=match.group(0),
-                )
+    for access in access_index(block).accesses:
+        name = _bare_symbol(access.path)
+        if name is None or not (name in tag_names or _is_io_tag(name)):
+            continue
+        direction = "write" if access.is_write else "read"
+        if access.element == "assignment":
+            if access.is_write:
+                mapped = access.expression
+            elif (
+                access.dependencies
+                and access.dependencies[0].startswith('"')
+                and access.statement == f"{access.dependencies[0]} := {access.path};"
+            ):
+                mapped = access.dependencies[0]  # `"DB".field := "TAG";`, the tag copied whole
+            else:
+                continue  # a tag read inside a larger expression is not a mapping
+            assignment_type = "direct"
+        elif access.element == "coil":
+            mapped = access.dependencies[0] if access.dependencies else ""
+            assignment_type = "ladder_coil"
+        elif access.element == "contact":
+            mapped = "(ladder network)"
+            assignment_type = "ladder_contact"
+        elif access.element == "box" and access.statement.startswith("Move("):
+            mapped = (
+                access.expression
+                if access.is_write
+                else (access.dependencies[0] if access.dependencies else "")
             )
-
-    # Direct input assignments: field := "DI_TAG";
-    for match in PATTERN_INPUT_DIRECT.finditer(content):
-        tag_name = match.group(2)
-        if tag_name in tag_names or _is_io_tag(tag_name):
-            field = match.group(1).strip()
-            assignments.append(
-                TagAssignment(
-                    tag_name=tag_name,
-                    mapped_field=field,
-                    block_name=block.name,
-                    line_number=_get_line_number(content, match.start()),
-                    assignment_type="direct",
-                    direction="read",
-                    source_expression=match.group(0),
-                )
+            assignment_type = "ladder_move"
+        else:
+            continue
+        assignments.append(
+            TagAssignment(
+                tag_name=name,
+                mapped_field=mapped,
+                block_name=block.name,
+                line_number=access.line,
+                assignment_type=assignment_type,
+                direction=direction,
+                source_expression=access.statement,
             )
-
-    # Ladder Coil outputs: Contact(field) Coil("SDO_TAG")
-    for match in PATTERN_LADDER_COIL.finditer(content):
-        tag_name = match.group(2)
-        if tag_name in tag_names or _is_io_tag(tag_name):
-            field = match.group(1).strip()
-            assignments.append(
-                TagAssignment(
-                    tag_name=tag_name,
-                    mapped_field=field,
-                    block_name=block.name,
-                    line_number=_get_line_number(content, match.start()),
-                    assignment_type="ladder_coil",
-                    direction="write",
-                    source_expression=match.group(0),
-                )
-            )
-
-    # Ladder Contact inputs: Contact("SDI_TAG")
-    for match in PATTERN_LADDER_CONTACT_TAG.finditer(content):
-        tag_name = match.group(1)
-        if tag_name in tag_names or _is_io_tag(tag_name):
-            # For Contact, the "field" is typically the next Coil target
-            # We'll mark it as reading into the ladder network
-            assignments.append(
-                TagAssignment(
-                    tag_name=tag_name,
-                    mapped_field="(ladder network)",
-                    block_name=block.name,
-                    line_number=_get_line_number(content, match.start()),
-                    assignment_type="ladder_contact",
-                    direction="read",
-                    source_expression=match.group(0),
-                )
-            )
-
-    # Ladder Move inputs: Move(in := "SAI_TAG", out1 => field)
-    for match in PATTERN_LADDER_MOVE_INPUT.finditer(content):
-        tag_name = match.group(1)
-        if tag_name in tag_names or _is_io_tag(tag_name):
-            field = match.group(2).strip()
-            assignments.append(
-                TagAssignment(
-                    tag_name=tag_name,
-                    mapped_field=field,
-                    block_name=block.name,
-                    line_number=_get_line_number(content, match.start()),
-                    assignment_type="ladder_move",
-                    direction="read",
-                    source_expression=match.group(0),
-                )
-            )
-
-    # Ladder Move outputs: Move(in := field, out1 => "TAG")
-    for match in PATTERN_LADDER_MOVE_OUTPUT.finditer(content):
-        tag_name = match.group(2)
-        if tag_name in tag_names or _is_io_tag(tag_name):
-            field = match.group(1).strip()
-            assignments.append(
-                TagAssignment(
-                    tag_name=tag_name,
-                    mapped_field=field,
-                    block_name=block.name,
-                    line_number=_get_line_number(content, match.start()),
-                    assignment_type="ladder_move",
-                    direction="write",
-                    source_expression=match.group(0),
-                )
-            )
-
+        )
     return assignments
+
+
+def _bare_symbol(path: str) -> str | None:
+    """``"NAME"`` -> ``NAME``; ``None`` for a path with members, a local or an address."""
+    if path.startswith('"') and path.endswith('"') and path.count('"') == 2:
+        return path[1:-1]
+    return None
 
 
 def find_all_tag_assignments(

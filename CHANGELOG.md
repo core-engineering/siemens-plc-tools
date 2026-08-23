@@ -732,6 +732,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   handle that form; it is a separate, pre-existing gap and is left alone here.
 
 ### Changed
+- **plc-code (analyzer)** — the cross-block tracers (`field_tracer`,
+  `forward_tracer`, `chain_builder`, `state_detector`, `tag_assignment`) read the
+  shared SCL and ladder ASTs through one access index; their regexes over the
+  block's re-spaced text are gone.
+
+  Every one of them asked the same question of a block — where is this path
+  read, where written, by what, inside which call — and answered it with its own
+  patterns over `Region.content`, the rendering in which `<=` is `< =` and a global
+  path may be `"DB" . a . b`. The new `logic_dependency.access_index` answers it
+  once per block: one `Access` record per read or write of a path, with the line,
+  the statement as written (`parser.scl_text`, a printer for the expression AST
+  that round-trips 23 303 of the 23 305 corpus expressions exactly and the other
+  two up to a literal `-1` vs `- 1`), what a write reads, and for a parameter
+  binding the whole call (`CallContext`: callee, instance, parameter, direction,
+  every input and output). SCL comes from `parse_statements`; LAD from
+  `build_ladder_program`, falling back to one element at a time when the rung
+  builder refuses a network (a bare instance name in a rung), with the refusal
+  recorded. What cannot be read lands in `BlockAccessIndex.parse_errors`, which
+  `plc code drawio` prints.
+
+  Measured against the old tracers on four production projects with tag tables
+  (487 I/O tags): every dependency chain is identical, node for node. Building
+  them took 547 s on the largest project and takes 27 s. Where the tag and
+  state-variable maps differ, the old walk was wrong: it read assignments out of
+  commented code (`// "DB".x := "AI_..."`, 19 tags on one project), missed every
+  global field spelled with spaces (its pattern allowed none, so `"DB" . status .
+  x` was never a state field), and matched `CASE` selectors only when spelled
+  `#name`. The public functions keep their signatures; `FieldAccess` gains `call`
+  and `element`.
+
 - **plc-code (analyzer)** — `analyzer.logic_dependency` reads the shared statement
   and expression AST; its private regex lexer and recursive-descent expression
   parser (597 lines) are deleted, and the extractor's own regex walk over
