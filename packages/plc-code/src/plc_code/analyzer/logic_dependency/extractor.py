@@ -8,6 +8,8 @@ parsed Block objects. It:
 - Folds expression trees into LogicExpression trees
 """
 
+from collections.abc import Iterator
+
 from plc_code.parser.expressions import Expression, Index, Literal, Member, TypedLiteral, VariableRef
 from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block, Network, Region
@@ -140,18 +142,27 @@ class AssignmentExtractor:
             assignments.extend(self._extract_from_region(region))
         return assignments
 
-    def _extract_from_region(self, region: Region, parent_region: str = "") -> list[Assignment]:
-        # ``region.tokens`` already carries the nested regions' tokens flattened
-        # in (the SCL parser's doing), so the nesting only names the context.
-        region_name = region.name if not parent_region else f"{parent_region}/{region.name}"
-        if region.tokens:
-            return self._extract_from_tokens(region.tokens, region_name=region_name)
-        return []
+    def _extract_from_region(self, region: Region) -> list[Assignment]:
+        # ``region.tokens`` already carries the nested regions' tokens flattened in
+        # (the SCL parser's doing), so the statements are parsed once from the
+        # outermost region; the nesting only names the context, by line range.
+        if not region.tokens:
+            return []
+        found = self._extract_from_tokens(region.tokens, region_name=region.name)
+        ranges = list(_nested_region_ranges(region, region.name))
+        for assignment in found:
+            line = assignment.source_location.line_number
+            for name, first, last in ranges:  # innermost last: the deepest match wins
+                if first <= line <= last:
+                    assignment.source_location.region_name = name
+        return found
 
     def _extract_from_tokens(self, tokens: list[Token], region_name: str) -> list[Assignment]:
         result = parse_statements(tokens)
         for error in result.errors:
             self.parse_errors.append(error.message)
+        for expression_error in result.expression_errors:
+            self.parse_errors.append(expression_error.message)
         for problem in verify_no_silent_loss(tokens, result):
             self.parse_errors.append(problem)
         return self._walk(result.statements, region_name, condition=None, case_context=None)
@@ -177,26 +188,37 @@ class AssignmentExtractor:
                 found.extend(self._call_outputs(statement, region_name, condition, case_context))
             elif isinstance(statement, If):
                 for branch in statement.branches:
-                    branch_condition = self._condition(branch.condition_expr, statement.line) or condition
-                    found.extend(self._walk(branch.body, region_name, branch_condition, case_context))
+                    line = branch.condition[0].line if branch.condition else statement.line
+                    branch_condition = self._condition(branch.condition_expr, line, "IF condition")
+                    # A condition the parser could not read is recorded, and the
+                    # body keeps the outer condition: the guard is then incomplete,
+                    # not invented.
+                    inner = branch_condition if branch_condition is not None else condition
+                    found.extend(self._walk(branch.body, region_name, inner, case_context))
                 found.extend(self._walk(statement.else_body, region_name, condition, case_context))
             elif isinstance(statement, Case):
+                # Every arm depends on the selector: it is the arm's condition.
+                selector = self._condition(statement.selector_expr, statement.line, "CASE selector")
+                inner = _both(condition, selector)
                 for arm in statement.branches:
                     label = ", ".join(_label_text(value) for value in arm.values_expr)
-                    found.extend(self._walk(arm.body, region_name, condition, label or case_context))
-                found.extend(self._walk(statement.default, region_name, condition, case_context))
+                    found.extend(self._walk(arm.body, region_name, inner, label or case_context))
+                found.extend(self._walk(statement.default, region_name, inner, case_context))
             elif isinstance(statement, For):
                 loop_variable = self._for_variable(statement, region_name, condition, case_context)
                 if loop_variable is not None:
                     found.append(loop_variable)
                 found.extend(self._walk(statement.body, region_name, condition, case_context))
             elif isinstance(statement, While):
-                found.extend(self._walk(statement.body, region_name, condition, case_context))
+                guard = self._condition(statement.condition_expr, statement.line, "WHILE condition")
+                found.extend(self._walk(statement.body, region_name, _both(condition, guard), case_context))
             # Return / Exit: nothing assigned.
         return found
 
-    def _condition(self, expression: Expression | None, line: int) -> LogicExpression | None:
+    def _condition(self, expression: Expression | None, line: int, what: str) -> LogicExpression | None:
+        """``expression`` folded, or ``None`` with the reason recorded."""
         if expression is None:
+            self.parse_errors.append(f"line {line}: {what} has no parsed expression tree")
             return None
         try:
             return self._parser(line).convert(expression)
@@ -238,16 +260,28 @@ class AssignmentExtractor:
     ) -> list[Assignment]:
         """One assignment per ``=>`` output of a call: it depends on the callee and inputs."""
         outputs = [argument for argument in statement.arguments if argument.is_output]
-        if not outputs or statement.callee_expr is None:
+        if not outputs:
+            return []
+        if statement.callee_expr is None:
+            callee_text = " ".join(token.value for token in statement.callee)
+            self.parse_errors.append(
+                f"line {statement.line}: call of {callee_text!r} has no parsed callee; "
+                f"its {len(outputs)} output binding(s) are not traced"
+            )
             return []
         parser = self._parser(statement.line)
         try:
             callee = parser.convert(statement.callee_expr)
-            inputs = [
-                parser.convert(argument.value_expr)
-                for argument in statement.arguments
-                if not argument.is_output and argument.value_expr is not None
-            ]
+            inputs = []
+            for argument in statement.arguments:
+                if argument.is_output:
+                    continue
+                if argument.value_expr is None:
+                    self.parse_errors.append(
+                        f"line {statement.line}: input {argument.name!r} has no parsed expression tree"
+                    )
+                    continue
+                inputs.append(parser.convert(argument.value_expr))
         except ParseError as error:
             self._record(error, statement.line)
             return []
@@ -284,7 +318,12 @@ class AssignmentExtractor:
         """The loop variable as an assignment from the loop's bounds (and step)."""
         bounds = [expr for expr in (statement.start_expr, statement.end_expr, statement.step_expr) if expr]
         variable = _for_variable_text(statement.variable)
-        if not bounds or variable is None:
+        if variable is None:
+            text = " ".join(token.value for token in statement.variable)
+            self.parse_errors.append(f"line {statement.line}: FOR variable {text!r} is not a plain #name")
+            return None
+        if not bounds:
+            self.parse_errors.append(f"line {statement.line}: FOR bounds have no parsed expression tree")
             return None
         parser = self._parser(statement.line)
         try:
@@ -325,6 +364,24 @@ class AssignmentExtractor:
     def _record(self, error: ParseError, line_number: int) -> None:
         """Keep an expression the parser refused, with its line, for the caller."""
         self.parse_errors.append(f"line {line_number}: {error}")
+
+
+def _both(outer: LogicExpression | None, inner: LogicExpression | None) -> LogicExpression | None:
+    """Both conditions, as one: ``AND`` when both exist, the one that does otherwise."""
+    if outer is None:
+        return inner
+    if inner is None:
+        return outer
+    return LogicExpression(operator=OperatorType.AND, operands=[outer, inner])
+
+
+def _nested_region_ranges(region: Region, prefix: str) -> Iterator[tuple[str, int, int]]:
+    """``(name, first_line, last_line)`` for every nested region, outer before inner."""
+    for nested in region.nested_regions:
+        name = f"{prefix}/{nested.name}"
+        if nested.tokens:
+            yield name, nested.tokens[0].line, nested.tokens[-1].line
+        yield from _nested_region_ranges(nested, name)
 
 
 def _for_variable_text(tokens: list[Token]) -> str | None:

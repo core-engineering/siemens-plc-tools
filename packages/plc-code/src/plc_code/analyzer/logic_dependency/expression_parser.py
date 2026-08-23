@@ -113,7 +113,7 @@ class ExpressionParser:
         if isinstance(node, ast.Literal):
             return self._constant(node.value, _literal_data_type(node.value))
         if isinstance(node, ast.TypedLiteral):
-            return self._constant(f"{node.prefix}#{node.value}", node.prefix.upper())
+            return self._constant(f"{node.prefix}#{node.value}", "Number")
         if isinstance(node, ast.VariableRef | ast.Member | ast.Index):
             return self._reference(node)
         if isinstance(node, ast.UnaryOp):
@@ -131,9 +131,9 @@ class ExpressionParser:
     def _reference(self, node: ast.VariableRef | ast.Member | ast.Index) -> LogicExpression:
         """A variable, a member path, or an indexed access, as a leaf (plus index deps).
 
-        The leaf names the whole path (``arr[#i].x``, which the tracers normalize to
-        ``arr[*].x`` themselves); every index expression anywhere along the path is
-        a dependency of its own, so ``#arr[#i].x`` depends on ``i`` as well.
+        The leaf names the whole path with computed indices as ``*`` (``arr[*].x``);
+        every index expression anywhere along the path is a dependency of its own,
+        so ``#arr[#i].x`` depends on ``i`` as well.
         """
         indices: list[ast.Expression] = []
         path: ast.Expression = node
@@ -151,6 +151,10 @@ class ExpressionParser:
         root = node
         while isinstance(root, ast.Member | ast.Index):
             root = root.base
+        if not isinstance(root, ast.VariableRef):
+            # `"Get"(#a).field`: a member of a call's result. Not a variable; refused
+            # rather than named after a spelling that hides the call's arguments.
+            raise ParseError(f"a member of a {type(root).__name__} result is not a traceable reference")
         reference = reference_text(node)
         if isinstance(root, ast.VariableRef) and root.is_local:
             # Typed by the full path when the lookup knows it, else by its root
@@ -160,15 +164,10 @@ class ExpressionParser:
                 root.name, NodeType.UNKNOWN
             )
             return self._identity(name, node_type, reference, located=True)
-        if isinstance(root, ast.VariableRef) and root.is_absolute:
-            return self._identity(reference, NodeType.GLOBAL_DB, reference, located=True)
-        if isinstance(root, ast.VariableRef) and isinstance(node, ast.Member | ast.Index):
-            # `"DB".field.path`: a global data block member.
-            return self._identity(reference, NodeType.GLOBAL_DB, reference, located=True)
-        # A bare quoted name (`"Block"`): a block-level symbol, typed by the lookup
-        # when it knows it, a constant otherwise -- what a plain identifier was.
-        node_type = self.variable_lookup.get(reference.strip('"'), NodeType.CONSTANT)
-        return self._identity(reference.strip('"'), node_type, reference, located=False)
+        # `%I0.0`, `"DB".field.path` and a bare quoted symbol (`"Clock_1Hz"`, a
+        # PLC tag or a global DB) are all global: named with their quotes, so
+        # they never collide with a block variable of the same name.
+        return self._identity(reference, NodeType.GLOBAL_DB, reference, located=True)
 
     def _call(self, node: ast.FunctionCall) -> LogicExpression:
         arguments = [self.convert(argument.value) for argument in node.arguments if not argument.is_output]
@@ -214,7 +213,7 @@ def _literal_data_type(value: str) -> str:
 
 
 def reference_text(node: ast.Expression) -> str:
-    """The SCL spelling of a reference path: ``#a.b[i]``, ``"DB".x``, ``%I0.0``."""
+    """The spelling of a reference path: ``#a.b[*]``, ``"DB".x``, ``%I0.0``."""
     if isinstance(node, ast.VariableRef):
         if node.is_local:
             return f"#{node.name}"
@@ -222,7 +221,11 @@ def reference_text(node: ast.Expression) -> str:
             return f"%{node.name}"
         return f'"{node.name}"'
     if isinstance(node, ast.Member):
+        # A member's own `#` (`#a.#b`) is scoping, not part of the name: `#a.b` is
+        # the same variable. Its `%` is kept: `%DB1.%DBX0.0` is not `%DB1.DBX0.0`.
         name = f'"{node.name}"' if node.is_quoted else node.name
+        if node.is_absolute:
+            name = f"%{name}"
         return f"{reference_text(node.base)}.{name}"
     if isinstance(node, ast.Index):
         inner = ", ".join(_index_text(index) for index in node.indices)
@@ -231,11 +234,13 @@ def reference_text(node: ast.Expression) -> str:
 
 
 def _index_text(node: ast.Expression) -> str:
-    """An index expression's spelling, enough to tell two slots apart."""
+    """An index's spelling: a literal as written, anything computed as ``*``.
+
+    ``arr[1]`` and ``arr[2]`` are two slots; ``arr[#i]`` and ``arr[#i + 1]`` are
+    the same unknown slot, so a read and a write of it join on one name.
+    """
     if isinstance(node, ast.Literal):
         return node.value
-    if isinstance(node, ast.VariableRef | ast.Member | ast.Index):
-        return reference_text(node)
     return "*"
 
 

@@ -102,6 +102,10 @@ class BlockDependencies(BaseModel):
     block_name: str
     source_file: str
     outputs: dict[str, OutputDependency] = Field(default_factory=dict)
+    parse_errors: list[str] = Field(
+        default_factory=list,
+        description="Expressions the extractor could not read; their assignments are absent.",
+    )
 
 
 class DiagramResponse(BaseModel):

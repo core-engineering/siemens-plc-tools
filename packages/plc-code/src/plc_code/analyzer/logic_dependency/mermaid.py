@@ -53,6 +53,14 @@ class MermaidGenerator:
         OperatorType.COMPARE_GE: ">=",
         OperatorType.IF_THEN: "IF",
         OperatorType.CASE_WHEN: "CASE",
+        OperatorType.ADD: "+",
+        OperatorType.SUBTRACT: "-",
+        OperatorType.MULTIPLY: "*",
+        OperatorType.DIVIDE: "/",
+        OperatorType.MODULO: "MOD",
+        OperatorType.POWER: "**",
+        OperatorType.NEGATE: "-",
+        OperatorType.INDEX: "INDEX",
     }
 
     def __init__(self, include_click_links: bool = True, base_path: str = "") -> None:
@@ -68,7 +76,8 @@ class MermaidGenerator:
         self.include_click_links = include_click_links
         self.base_path = base_path
         self.node_counter = 0
-        self.node_ids: dict[int, str] = {}  # object id -> mermaid node id
+        self.node_ids: dict[tuple[str, NodeType], str] = {}  # (name, type) -> mermaid node id
+        self.expression_ids: dict[int, str] = {}  # id(expression) -> mermaid node id
         self.lines: list[str] = []
         self.click_links: list[str] = []
 
@@ -89,6 +98,7 @@ class MermaidGenerator:
         """
         self.node_counter = 0
         self.node_ids = {}
+        self.expression_ids = {}
         self.lines = []
         self.click_links = []
 
@@ -152,8 +162,13 @@ class MermaidGenerator:
             else:
                 return self._generate_expression(operand)
 
+        # A subtree the graph builder shares between references is drawn once.
+        if id(expr) in self.expression_ids:
+            return self.expression_ids[id(expr)]
+
         # Generate gate node
         gate_id = self._new_node_id("op")
+        self.expression_ids[id(expr)] = gate_id
         gate_label = self.GATE_LABELS.get(expr.operator, expr.operator.value)
 
         # Add case value annotation
@@ -195,8 +210,8 @@ class MermaidGenerator:
         """
         # Check if we already generated this node
         node_key = (node.name, node.node_type)
-        if id(node_key) in self.node_ids:
-            return self.node_ids[id(node_key)]
+        if node_key in self.node_ids:
+            return self.node_ids[node_key]
 
         # Generate new node
         prefix = self._get_node_prefix(node.node_type)
@@ -215,7 +230,7 @@ class MermaidGenerator:
             self._add_click_link(node_id, node.source_location)
 
         # Cache for reuse
-        self.node_ids[id(node_key)] = node_id
+        self.node_ids[node_key] = node_id
 
         return node_id
 

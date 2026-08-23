@@ -757,13 +757,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   these); a `FOR` loop's variable is assigned from its bounds; an index expression
   is a dependency of the indexed access (`OperatorType.INDEX`), and arithmetic
   keeps every operand (`OperatorType.ADD`, `SUBTRACT`, `MULTIPLY`, `DIVIDE`,
-  `MODULO`, `POWER`, `NEGATE` — the Mermaid generator labels them by their own
-  value). A member path is typed by its root variable when the path itself is not
-  declared, so a member of an input struct is an input rather than `UNKNOWN`.
-  Source lines are the file's own, not a region-relative count. What the parser
-  refuses is recorded in the new `BlockDependencies.parse_errors` and printed by
-  `plc code trace`. The `ExpressionParser(text)` / `parse_expression(text)` API is
-  kept and gains `ExpressionParser.convert(tree)` and `reference_text(tree)`.
+  `MODULO`, `POWER`, `NEGATE`, all with Mermaid gate labels); a `CASE` arm depends
+  on the selector and a `WHILE` body on its condition. A member path is typed by
+  its root variable when the path itself is not declared, so a member of an input
+  struct is an input rather than `UNKNOWN`; a bare quoted symbol (`"Clock_1Hz"`) is
+  a global, named with its quotes, rather than a constant that could collide with
+  a block variable; a computed index is `*` on both the read and the write side,
+  so `#arr[#i]` and `#arr[#i + 1]` join on one name. Source lines are the file's
+  own, not a region-relative count. What the parser refuses is recorded in the
+  new `BlockDependencies.parse_errors`, printed by `plc code trace` and returned by
+  the web API (zero on the corpus). The `ExpressionParser(text)` /
+  `parse_expression(text)` API is kept and gains `ExpressionParser.convert(tree)`
+  and `reference_text(tree)`.
+
+  Keeping every operand exposed a pre-existing cost: `graph_builder` re-expanded a
+  shared state variable once per path through the tree, and the Mermaid generator
+  keyed its node cache on `id()` of a fresh tuple so it never hit. One production
+  output went from a 442-byte diagram to 1.9 MB before the fix; a state variable's
+  expansion is now computed once and shared, and a shared subtree is drawn once.
+  The largest diagram on the corpus is 20 kB.
 
 - **plc-code (executor)** — `TranspileResult` carries its failures as
   `problems: list[TranspileProblem]` (message plus SCL `source_line`), replacing the

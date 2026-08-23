@@ -88,6 +88,13 @@ class DependencyGraphBuilder:
         self.assignments_by_target: dict[str, list[Assignment]] = defaultdict(list)
         for assignment in deps.assignments:
             self.assignments_by_target[assignment.target].append(assignment)
+        # A state variable's expansion does not depend on where it is referenced
+        # from (only cycle detection does), so it is computed once and the same
+        # subtree is shared by every reference. Without this the walk re-expanded
+        # a shared variable once per path -- exponential on real blocks once
+        # arithmetic operands were kept (one output: 22 167 leaves, now one
+        # subtree per distinct variable).
+        self._expansion_cache: dict[str, LogicExpression] = {}
 
     def build_output_tree(self, output_name: str) -> OutputDependencyTree | None:
         """Build complete dependency tree for an output variable.
@@ -252,15 +259,21 @@ class DependencyGraphBuilder:
             if node and node.node_type == NodeType.STATE:
                 # Check if we have assignments for this state variable
                 if node.name not in visited and node.name in self.assignments_by_target:
+                    if node.name not in intermediate_vars:
+                        intermediate_vars.append(node.name)
+                    cached = self._expansion_cache.get(node.name)
+                    if cached is not None:
+                        return cached
                     visited.add(node.name)
-                    intermediate_vars.append(node.name)
 
                     # Get assignments and combine
                     state_assignments = self.assignments_by_target[node.name]
                     combined = self._combine_assignments(state_assignments)
 
-                    # Recursively expand
-                    return self._expand_dependencies(combined, visited, intermediate_vars)
+                    # Recursively expand, once: every later reference shares this subtree
+                    expanded = self._expand_dependencies(combined, visited, intermediate_vars)
+                    self._expansion_cache[node.name] = expanded
+                    return expanded
 
             # No expansion needed
             return expr

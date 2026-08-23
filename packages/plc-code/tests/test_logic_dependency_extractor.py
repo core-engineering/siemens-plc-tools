@@ -115,7 +115,23 @@ class TestWhatTheOldTextWalkLost:
     def test_the_loop_variable_depends_on_the_bounds(self) -> None:
         by_target = _by_target(_deps("FOR #i := 0 TO #sel DO\n    #arr[#i] := #a;\nEND_FOR;"))
         assert _leaf_names(by_target["i"][0]) == {"sel"}
-        assert _leaf_names(by_target["arr[#i]"][0]) == {"a"}
+        # A computed index is `*` on the write side too, so a read joins the write.
+        assert _leaf_names(by_target["arr[*]"][0]) == {"a"}
+
+    def test_a_bare_quoted_symbol_is_a_global_and_keeps_its_quotes(self) -> None:
+        (assignment,) = _deps('#flag := "Clock_1Hz";').assignments
+        (leaf,) = collect_leaf_nodes(assignment.expression)
+        assert (leaf.name, leaf.node_type) == ('"Clock_1Hz"', NodeType.GLOBAL_DB)
+
+    def test_an_absolute_member_keeps_its_percent(self) -> None:
+        (assignment,) = _deps("#flag := %DB150.%DBX31.1;").assignments
+        (leaf,) = collect_leaf_nodes(assignment.expression)
+        assert leaf.name == "%DB150.%DBX31.1"
+
+    def test_a_member_of_a_call_result_is_refused_and_recorded(self) -> None:
+        deps = _deps('#out := "Get"(x := #a).field;')
+        assert deps.assignments == []
+        assert deps.parse_errors and "not a traceable reference" in deps.parse_errors[0]
 
 
 class TestContext:
@@ -148,6 +164,31 @@ class TestContext:
         assert second.case_context == "3"
         assert third.case_context is None
 
+    def test_elsif_condition_is_located_on_its_own_line(self) -> None:
+        body = "IF #a > 0.0 THEN\n    #out := 1.0;\nELSIF #b > 0.0 THEN\n    #out := 2.0;\nEND_IF;"
+        first, second = _deps(body).assignments
+        assert second.enclosing_condition is not None
+        (leaf,) = [n for n in collect_leaf_nodes(second.enclosing_condition) if n.name == "b"]
+        assert leaf.source_location.line_number == first.source_location.line_number + 1
+
+    def test_a_case_arm_depends_on_the_selector(self) -> None:
+        body = "CASE #sel OF\n    1:\n        #out := #a;\nEND_CASE;"
+        (assignment,) = _deps(body).assignments
+        assert assignment.enclosing_condition is not None
+        assert {n.name for n in collect_leaf_nodes(assignment.enclosing_condition)} == {"sel"}
+
+    def test_a_while_body_carries_the_loop_condition(self) -> None:
+        body = "WHILE #i < 3 DO\n    #out := #a;\nEND_WHILE;"
+        (assignment,) = _deps(body).assignments
+        assert assignment.enclosing_condition is not None
+        assert "i" in {n.name for n in collect_leaf_nodes(assignment.enclosing_condition)}
+
+    def test_a_nested_region_names_the_innermost_region(self) -> None:
+        body = "REGION Inner\n    #out := #a;\nEND_REGION\n#flag := TRUE;"
+        inner, outer = _deps(body).assignments
+        assert inner.source_location.region_name == "Logic/Inner"
+        assert outer.source_location.region_name == "Logic"
+
     def test_source_location_carries_the_absolute_line_and_region(self) -> None:
         (assignment,) = _deps("#out := #a;").assignments
         assert assignment.source_location.region_name == "Logic"
@@ -159,11 +200,35 @@ class TestNothingIsDroppedSilently:
         deps = _deps("#out := #a;\nGOTO somewhere;\n#flag := TRUE;")
         assert deps.parse_errors, "the rejected construct must be reported, not skipped"
 
+    def test_a_call_whose_callee_cannot_be_read_is_recorded(self) -> None:
+        deps = _deps("Move(in := #a, out1 => #mem);")
+        assert deps.assignments == []
+        assert any("output binding" in problem for problem in deps.parse_errors)
+
+    def test_a_for_variable_that_is_not_a_plain_name_is_recorded(self) -> None:
+        deps = _deps("FOR #status.inner := 0 TO 3 DO\n    #out := #a;\nEND_FOR;")
+        assert [assignment.target for assignment in deps.assignments] == ["out"]
+        assert any("FOR variable" in problem for problem in deps.parse_errors)
+
     def test_the_text_api_still_parses_and_still_raises(self) -> None:
         expression = parse_expression("#a AND NOT #b", {"a": NodeType.INPUT, "b": NodeType.INPUT})
         assert expression.operator is OperatorType.AND
         with pytest.raises(ParseError):
             ExpressionParser().parse("#a +")
+
+
+class TestTheGraphStaysLinear:
+    def test_a_shared_state_variable_is_expanded_once(self) -> None:
+        # `mem` feeds `out` through two operands; its own definition is one subtree,
+        # shared, not re-expanded per path (that was exponential on real blocks).
+        from plc_code.analyzer.logic_dependency.graph_builder import build_all_output_trees
+        from plc_code.analyzer.logic_dependency.mermaid import generate_dependency_diagram
+
+        body = "#mem := #a + #b;\n#out := #mem * #mem + #mem;"
+        trees = build_all_output_trees(_deps(body))
+        diagram = generate_dependency_diagram(trees["out"])
+        assert diagram.count('"Input: a"') == 1 and diagram.count('"Input: b"') == 1
+        assert diagram.count('{"+"}') == 2  # the shared `#a + #b` gate once, the outer `+` once
 
 
 class TestConsumersAcceptTheNewOperators:

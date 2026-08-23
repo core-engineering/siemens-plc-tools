@@ -265,6 +265,7 @@ class AnalysisService:
             block_name=block.name,
             source_file=block.source_file,
             outputs=outputs,
+            parse_errors=list(deps.parse_errors),
         )
 
     def get_output_dependency(self, block_name: str, output_name: str) -> OutputDependency | None:
