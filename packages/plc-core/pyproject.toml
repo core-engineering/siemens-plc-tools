@@ -67,7 +67,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--cov=src/plc_core --cov-report=term-missing"
+addopts = "--import-mode=importlib --cov=src/plc_core --cov-report=term-missing"
 
 [tool.mypy]
 python_version = "3.12"

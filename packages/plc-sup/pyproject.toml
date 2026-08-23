@@ -51,7 +51,7 @@ packages = ["src/plc_sup"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=src/plc_sup --cov-report=term-missing"
+addopts = "--import-mode=importlib --cov=src/plc_sup --cov-report=term-missing"
 
 [tool.black]
 line-length = 110
