@@ -16,6 +16,7 @@ from plc_code.executor.models import (
     TranspileOptions,
     TranspileProblem,
     TranspileResult,
+    identifier_collisions,
     python_class_name,
     python_identifier,
 )
@@ -70,6 +71,24 @@ class SCLTranspiler:
         self._fb_members = []
 
         try:
+            # Two SCL names that compile to one Python attribute would share it silently.
+            declared = [var.name for section in self.block.variable_sections for var in section.variables]
+            for first, second, identifier in identifier_collisions(declared):
+                self._problems.append(
+                    TranspileProblem(
+                        f"variables {first!r} and {second!r} both compile to the attribute "
+                        f"{identifier!r}; rename one"
+                    )
+                )
+            if self._problems:
+                return TranspileResult(
+                    success=False,
+                    python_code="",
+                    class_name=python_class_name(self.block.name),
+                    problems=self._problems,
+                    warnings=self._warnings,
+                )
+
             # Generate class body first so imports can inspect translated code
             self._generate_class()
             body_lines = self._lines
@@ -483,6 +502,15 @@ class SCLTranspiler:
         in_outs = [python_identifier(var.name) for var in self.block.in_outs]
         self._emit(f"_in_outs: tuple[str, ...] = field(default={tuple(in_outs)!r}, repr=False)")
 
+        # Python attribute -> SCL name, for every variable whose name changed
+        scl_names = {
+            python_identifier(var.name): var.name
+            for section in self.block.variable_sections
+            for var in section.variables
+            if python_identifier(var.name) != var.name
+        }
+        self._emit(f"_scl_names: dict[str, str] = field(default_factory=lambda: {scl_names!r}, repr=False)")
+
         self._emit("")
 
     def _generate_execute_method(self) -> None:
@@ -826,6 +854,22 @@ def compile_block(
             transpile_result=transpile_result,
         )
 
+    except SyntaxError as e:
+        # Generated Python that does not parse is a transpiler defect; report it
+        # with the offending generated line so `--check` and a caller see which.
+        generated = (e.text or "").strip()
+        transpile_result.problems.append(
+            TranspileProblem(
+                f"generated Python does not parse: {e.msg} at generated line {e.lineno}: {generated}"
+            )
+        )
+        transpile_result.success = False
+        return CompileResult(
+            success=False,
+            fb_class=None,
+            transpile_result=transpile_result,
+            compile_error=str(e),
+        )
     except Exception as e:
         return CompileResult(
             success=False,

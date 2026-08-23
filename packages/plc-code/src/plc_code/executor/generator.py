@@ -69,6 +69,7 @@ from plc_code.executor.arguments import (
     positional_parameter_names,
 )
 from plc_code.executor.codegen import StatementTranslator
+from plc_code.executor.models import python_identifier
 from plc_code.executor.renderer import render
 from plc_code.executor.timers import timer_class_name
 from plc_code.parser.expression_parser import parse_expression
@@ -271,7 +272,7 @@ def _is_write_back_candidate(value_expr: Expression, string_constants: dict[str,
             return True
         if value_expr.is_absolute or value_expr.name.upper() == _IMPLICIT_BARE_NAME:
             return False
-        return False  # a bare tag / global DB: a runtime lookup, not a writable attribute
+        return True  # a bare tag: `self._runtime.tags["X"]` is an lvalue, written back
     if isinstance(value_expr, Member):
         base = value_expr.base
         return (
@@ -624,10 +625,13 @@ def _generate_fb_instance_call(
                 line=statement.line,
             )
         value_text = render(argument.value_expr, ctx.string_constants, ctx.signature_resolver)
+        # The statement parser keeps a quoted parameter name's quotes; the
+        # instance's attribute is the parameter's Python identifier.
+        parameter = python_identifier(argument.name.strip('"'))
         if argument.is_output:
-            output_assignments.append(f"{value_text} = {callee_text}.{argument.name}")
+            output_assignments.append(f"{value_text} = {callee_text}.{parameter}")
         else:
-            input_params.append(f"{argument.name}={value_text}")
+            input_params.append(f"{parameter}={value_text}")
     call_params = ", ".join(input_params)
     if _callee_is_timer(callee_expr, ctx):
         call_params = (

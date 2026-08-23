@@ -4,6 +4,8 @@ This module defines the data structures used by the executor module
 for transpiling SCL code to Python and executing it.
 """
 
+import keyword
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -142,15 +144,34 @@ def python_identifier(name: str) -> str:
     spelling. The TIA name stays as is everywhere else -- only the generated
     Python (class, attributes, ``_inputs``/``_outputs`` tuples) uses this.
     """
-    if name.isidentifier():
-        return name
-    cleaned = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in name)
-    while "__" in cleaned:
-        cleaned = cleaned.replace("__", "_")
-    cleaned = cleaned.strip("_") or "Block"
-    if cleaned[0].isdigit():
-        cleaned = f"_{cleaned}"
+    cleaned = name
+    if not name.isidentifier():
+        cleaned = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in name)
+        while "__" in cleaned:
+            cleaned = cleaned.replace("__", "_")
+        cleaned = cleaned.strip("_") or "Block"
+        if cleaned[0].isdigit():
+            cleaned = f"_{cleaned}"
+    if keyword.iskeyword(cleaned) or not cleaned.isidentifier():
+        cleaned = f"_{cleaned}"  # `class`, or a name only `isidentifier` rejects
     return cleaned
+
+
+def identifier_collisions(names: Iterable[str]) -> list[tuple[str, str, str]]:
+    """``(first, second, identifier)`` for every pair of names compiling to one identifier.
+
+    :func:`python_identifier` is not injective (``a-b`` and ``a_b`` both give
+    ``a_b``); a block declaring both would compile to one attribute, silently.
+    The transpiler refuses such a block with a located problem.
+    """
+    seen: dict[str, str] = {}
+    collisions: list[tuple[str, str, str]] = []
+    for name in names:
+        identifier = python_identifier(name)
+        if identifier in seen and seen[identifier] != name:
+            collisions.append((seen[identifier], name, identifier))
+        seen.setdefault(identifier, name)
+    return collisions
 
 
 def python_class_name(block_name: str) -> str:

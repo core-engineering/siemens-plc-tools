@@ -774,6 +774,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   handle that form; it is a separate, pre-existing gap and is left alone here.
 
 ### Changed
+- **plc-code (executor)** — three things a harness user may have leaned on, gone
+  with the sweep fixes above: a quoted enum-like name no longer becomes an
+  integer class constant (`instance.MODE_ONE` raises `AttributeError`; the value
+  is `runtime.tags["MODE_ONE"]`, an `UnsetTag` until set — so a `CASE` whose
+  selector holds a real integer no longer matches a symbolic label unless the tag
+  is set to that integer); `TranspileResult.class_name` is the Python class name,
+  not the block name; `FBTestHarness.get_outputs()` and `call_named_block`'s
+  result are keyed by the SCL name as declared (`"Out Value"`), which only differs
+  from before for names that are not identifiers. A block declaring two names that
+  compile to one attribute (`a-b` and `a_b`) is refused with a located problem.
+
 - **plc-code (analyzer)** — the cross-block tracers (`field_tracer`,
   `forward_tracer`, `chain_builder`, `state_detector`, `tag_assignment`) read the
   shared SCL and ladder ASTs through one access index; their regexes over the

@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from plc_code.executor.models import python_identifier
 from plc_code.parser.models import BlockType
 
 # Matches a scalar constant declaration inside a DATA_BLOCK VAR section:
@@ -113,10 +114,14 @@ class _GlobalDBs(dict):
 class UnsetTag:
     """What a PLC tag reads as before anything set it.
 
-    False in a condition and ``0`` in arithmetic, as an unforced input is; but
-    equal to itself by name, so two tag-table *constants* (``"MODE_ONE"``,
-    ``"MODE_TWO"``) compared or used as ``CASE`` labels stay distinct without a
-    tag table being loaded.
+    False in a condition and ``0`` in arithmetic and ordering (``<``, ``<=``,
+    ``>``, ``>=`` behave as ``0`` would), as an unforced input is; but ``=``
+    holds only between the same tag by name, never against ``0``/``FALSE``, so two
+    tag-table *constants* (``"MODE_ONE"``, ``"MODE_TWO"``) compared or used as
+    ``CASE`` labels stay distinct without a tag table being loaded. That one
+    deliberate disagreement (``tag <= 0`` and ``tag >= 0`` but not ``tag = 0``)
+    is the price of the labels; set the tag and it disappears. Division by an
+    unset tag raises, as on the PLC.
     """
 
     __slots__ = ("name",)
@@ -184,20 +189,66 @@ class UnsetTag:
         return self._as_number(other) / other
 
     def __rtruediv__(self, other: Any) -> Any:
-        return other / 0  # the PLC's own division by an unset tag: an error, loudly
+        raise ZeroDivisionError(f"division by the unset tag {self.name!r}")
+
+    def __floordiv__(self, other: Any) -> Any:
+        return self._as_number(other) // other
+
+    def __rfloordiv__(self, other: Any) -> Any:
+        raise ZeroDivisionError(f"division by the unset tag {self.name!r}")
+
+    def __mod__(self, other: Any) -> Any:
+        return self._as_number(other) % other
+
+    def __rmod__(self, other: Any) -> Any:
+        raise ZeroDivisionError(f"modulo by the unset tag {self.name!r}")
+
+    def __pow__(self, other: Any) -> Any:
+        return 0**other
+
+    def __rpow__(self, other: Any) -> Any:
+        return other**0
 
     def __neg__(self) -> int:
         return 0
 
+    __pos__ = __neg__
+    __abs__ = __neg__
+
+    def __invert__(self) -> int:
+        return ~0
+
+    def __round__(self, ndigits: int | None = None) -> int:
+        return 0
+
+    def __format__(self, spec: str) -> str:
+        return format(0, spec)
+
     def __and__(self, other: Any) -> Any:
-        return False
+        return other & 0
 
     __rand__ = __and__
 
     def __or__(self, other: Any) -> Any:
-        return other
+        return other | 0
 
     __ror__ = __or__
+
+    def __xor__(self, other: Any) -> Any:
+        return other ^ 0
+
+    __rxor__ = __xor__
+
+    def __lshift__(self, other: Any) -> int:
+        return 0
+
+    __rshift__ = __lshift__
+
+    def __rlshift__(self, other: Any) -> Any:
+        return other << 0
+
+    def __rrshift__(self, other: Any) -> Any:
+        return other >> 0
 
 
 class _Tags(dict):
@@ -216,8 +267,19 @@ class _Tags(dict):
     def __missing__(self, key: str) -> Any:
         try:
             return self._runtime.global_dbs[key]
-        except KeyError:
-            return UnsetTag(key)
+        except (KeyError, OSError, UnicodeDecodeError):
+            unset = UnsetTag(key)
+            self[key] = unset  # remembered: one search-path walk per name, not per read
+            return unset
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key in self._runtime.global_dbs:
+            raise KeyError(f"{key!r} is a global data block; write its members, not the name")
+        super().__setitem__(key, value)
+
+    def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
+        """``tags.get(name)`` resolves like ``tags[name]``; ``default`` is never needed."""
+        return self[key]
 
 
 class _AutoStruct:
@@ -808,32 +870,37 @@ class PLCRuntime:
         fb_class = self._compile_named_fb_class(block_name)
         instance = fb_class(_runtime=self)
 
-        # Set inputs (VAR_INPUT parameters)
+        # Bind by the parameter's Python identifier (`"Set Point"` is `Set_Point`);
+        # results are keyed by the SCL name the caller used.
         for param_name, value in inputs.items():
-            if hasattr(instance, param_name):
-                setattr(instance, param_name, value)
+            attribute = python_identifier(param_name)
+            if hasattr(instance, attribute):
+                setattr(instance, attribute, value)
 
         # Set in-out parameters (VAR_IN_OUT parameters - passed by value-in/value-out)
         for param_name, value in in_outs.items():
-            if hasattr(instance, param_name):
-                setattr(instance, param_name, value)
+            attribute = python_identifier(param_name)
+            if hasattr(instance, attribute):
+                setattr(instance, attribute, value)
 
         instance.execute()
 
-        # Collect all outputs and updated in-out values
+        # Collect all outputs and updated in-out values, under their SCL names
         result_dict: dict[str, Any] = {}
+        scl_names = getattr(instance, "_scl_names", {})
         for name in instance._outputs:
-            result_dict[name] = getattr(instance, name)
+            result_dict[scl_names.get(name, name)] = getattr(instance, name)
         for name in instance._in_outs:
-            result_dict[name] = getattr(instance, name)
+            result_dict[scl_names.get(name, name)] = getattr(instance, name)
 
         # Capture the FUNCTION return value.  A ``FUNCTION "Name" : <type>`` block
         # returns its value through ``#Name := ...`` inside the body, which the
         # transpiler emits as ``self.Name``.  That attribute is not part of
         # _outputs/_in_outs, so expose it under the block name so an
         # expression-position caller (e.g. ``IF "Name"(...) THEN``) can read it.
-        if block_name not in result_dict and hasattr(instance, block_name):
-            result_dict[block_name] = getattr(instance, block_name)
+        return_attribute = python_identifier(block_name)
+        if block_name not in result_dict and hasattr(instance, return_attribute):
+            result_dict[block_name] = getattr(instance, return_attribute)
 
         return result_dict
 
@@ -854,6 +921,7 @@ class PLCRuntime:
         registered data blocks, function block instances, and named block cache.
         """
         self.clock.reset()
+        self.tags.clear()
         self.cycle_count = 0
         self.global_dbs.clear()
         self.fb_instances.clear()

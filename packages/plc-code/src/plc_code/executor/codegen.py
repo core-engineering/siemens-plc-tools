@@ -15,6 +15,8 @@ differentials proved the tree-driven renderer and generator equivalent to it fir
 
 from dataclasses import dataclass
 
+from plc_code.executor.models import python_identifier
+
 #: SCL to Python operator mappings. Module-level (not a class field) so a caller who
 #: needs the table itself -- rather than a full :class:`ExpressionTranslator` -- can
 #: import it directly instead of instantiating the class just to read an attribute
@@ -63,7 +65,7 @@ BUILTIN_MAP: dict[str, str] = {
     "BYTE_TO_SINT": "lambda x: x - 0x100 if x & 0x80 else x",
     "BYTE_TO_INT": "int",
     "SWAP_WORD": "lambda x: ((x & 0xFF) << 8) | ((x >> 8) & 0xFF)",
-    "BCD16_TO_INT": "lambda x: int(format(x, 'x'))",
+    "BCD16_TO_INT": "lambda x: sum(((int(x) >> (4 * i)) & 0xF) * 10**i for i in range(4))",
     # Interrupt control: nothing to disable in the harness; the status is 0 (ok).
     "DIS_AIRT": "lambda: 0",
     "EN_AIRT": "lambda: 0",
@@ -218,7 +220,7 @@ class StatementTranslator:
 
         # Build Python statements
         # 1. Call the sub-block and capture its result dict
-        result_var = f"_sub_{block_name.replace(' ', '_')}_result"
+        result_var = f"_sub_{python_identifier(block_name)}_result"
         inputs_dict = "{" + ", ".join(f'"{k}": {v}' for k, (v, _) in input_params.items()) + "}"
         call_line = f"{result_var} = self._runtime.call_named_block(" f'"{block_name}", {inputs_dict}, {{}})'
         result_lines = [call_line]

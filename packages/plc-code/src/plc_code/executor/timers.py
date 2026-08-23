@@ -311,7 +311,8 @@ class TONR_TIME:
     """Retentive on-delay timer (TONR).
 
     ET accumulates the time IN has been True across several activations and is
-    held while IN is False; Q turns on once ET reaches PT and stays on until R
+    held while IN is False; it keeps accumulating past PT. Q turns on once ET
+    reaches PT (on the first call with IN when PT is 0) and stays on until R
     resets the timer (ET back to 0, Q off).
 
     Attributes
@@ -346,10 +347,10 @@ class TONR_TIME:
             self.Q = False
             self._last_time = now
             return
-        if IN and self._last_time is not None and not self.Q:
-            self.ET = min(PT, self.ET + (now - self._last_time))
+        if IN and self._last_time is not None:
+            self.ET += now - self._last_time  # keeps accumulating past PT, until R
         self._last_time = now
-        if self.ET >= PT and PT > 0:
+        if self.ET >= PT:
             self.Q = True
 
 

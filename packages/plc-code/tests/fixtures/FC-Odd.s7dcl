@@ -1,0 +1,9 @@
+FUNCTION "FC-Odd" : Int
+    VAR_INPUT
+        "Set Point" : Int;
+    END_VAR
+    { S7_Language := "SCL" }
+    NETWORK
+        #"FC-Odd" := #"Set Point" + 1;
+    END_NETWORK
+END_FUNCTION

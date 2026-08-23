@@ -281,11 +281,19 @@ class FBTestHarness:
         Returns
         -------
         dict[str, Any]
-            Dictionary of output name-value pairs (VAR_OUTPUT and VAR_IN_OUT).
+            Dictionary of output name-value pairs (VAR_OUTPUT and VAR_IN_OUT),
+            keyed by the SCL name as declared (``"Out Value"``, not the attribute).
         """
-        result = {name: _auto_struct_to_dict(getattr(self.instance, name)) for name in self.instance._outputs}
+        scl_names = getattr(self.instance, "_scl_names", {})
+        result = {
+            scl_names.get(name, name): _auto_struct_to_dict(getattr(self.instance, name))
+            for name in self.instance._outputs
+        }
         result.update(
-            {name: _auto_struct_to_dict(getattr(self.instance, name)) for name in self.instance._in_outs}
+            {
+                scl_names.get(name, name): _auto_struct_to_dict(getattr(self.instance, name))
+                for name in self.instance._in_outs
+            }
         )
         return result
 
