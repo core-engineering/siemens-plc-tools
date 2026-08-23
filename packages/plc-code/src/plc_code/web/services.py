@@ -32,6 +32,7 @@ from plc_code.analyzer.logic_dependency import (
     parse_tag_directory,
     trace_input_forward,
 )
+from plc_code.analyzer.logic_dependency.access_index import clear_access_index_cache
 from plc_code.parser import parse_scl_file
 from plc_code.parser.models import Block
 from plc_code.project.discovery import discover_blocks
@@ -78,6 +79,7 @@ class AnalysisService:
         self._block_files.clear()
         self._tags_cache = None
         self._all_blocks_cache = None
+        clear_access_index_cache()
         self._crossref_cache = None
         self._all_deps_cache = None
         self._audit_cache = None

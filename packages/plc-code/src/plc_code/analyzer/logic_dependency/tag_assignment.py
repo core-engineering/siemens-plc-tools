@@ -80,7 +80,8 @@ def find_assignments_in_block(block: Block, tag_names: set[str]) -> list[TagAssi
                 continue  # a tag read inside a larger expression is not a mapping
             assignment_type = "direct"
         elif access.element == "coil":
-            mapped = access.dependencies[0] if access.dependencies else ""
+            # The contact nearest the coil (the last on the rail) is its mapping.
+            mapped = access.dependencies[-1] if access.dependencies else ""
             assignment_type = "ladder_coil"
         elif access.element == "contact":
             mapped = "(ladder network)"
@@ -137,13 +138,21 @@ def find_all_tag_assignments(
     result: dict[str, TagAssignment] = {}
 
     for block in blocks:
-        assignments = find_assignments_in_block(block, tag_names)
-        for assignment in assignments:
-            # Keep the first assignment found (typically the primary mapping)
-            if assignment.tag_name not in result:
+        for assignment in find_assignments_in_block(block, tag_names):
+            # Keep the primary mapping: a write over a read, a direct assignment
+            # or Move over a coil, a coil over a contact; source order breaks ties.
+            current = result.get(assignment.tag_name)
+            if current is None or _rank(assignment) < _rank(current):
                 result[assignment.tag_name] = assignment
 
     return result
+
+
+_TYPE_RANK = {"direct": 0, "ladder_move": 1, "ladder_coil": 2, "ladder_contact": 3}
+
+
+def _rank(assignment: TagAssignment) -> tuple[int, int]:
+    return (0 if assignment.direction == "write" else 1, _TYPE_RANK.get(assignment.assignment_type, 9))
 
 
 def get_tag_to_field_mapping(blocks: list[Block], tags: TagCollection | None = None) -> dict[str, str]:

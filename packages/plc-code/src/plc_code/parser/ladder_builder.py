@@ -37,7 +37,7 @@ from plc_code.parser.ladder_ast import (
     LadderProgram,
     Rung,
 )
-from plc_code.parser.models import Block
+from plc_code.parser.models import Block, Network
 
 # Element name classification.
 _COMPARE_OPS = {"GT", "LT", "GE", "LE", "EQ", "NE"}
@@ -265,5 +265,14 @@ def build_ladder_program(block: Block) -> LadderProgram:
     """
     rungs: list[Rung | LabelRung] = []
     for network in block.networks:
-        rungs.extend(_build_network_rungs(network.rungs_raw))
+        rungs.extend(build_network_rungs(network))
     return LadderProgram(rungs=tuple(rungs))
+
+
+def build_network_rungs(network: Network) -> list[Rung | LabelRung]:
+    """The typed rungs of one network, parallel-OR branches resolved.
+
+    ``ValueError`` on an element the builder does not know; a caller that wants
+    the other networks of the block catches it per network.
+    """
+    return _build_network_rungs(network.rungs_raw)

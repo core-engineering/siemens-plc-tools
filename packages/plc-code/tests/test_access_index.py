@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from plc_code.analyzer.logic_dependency.access_index import build_access_index
+from plc_code.analyzer.logic_dependency.access_index import READ, build_access_index
 from plc_code.analyzer.logic_dependency.field_tracer import (
     find_field_readers,
     find_field_writers,
@@ -117,6 +117,47 @@ class TestCalls:
         assert any(w.path == "#drive" for w in index.writes())
 
 
+class TestReviewedShapes:
+    def test_a_call_output_inside_an_expression_is_a_write_not_a_read(self) -> None:
+        index = _index('#arr[0] := "Scale"(in := #a, out => "DB".y);')
+        assert [w.path for w in index.writes()] == ["#arr[0]", '"DB".y']
+        assert '"DB".y' not in {r.path for r in index.reads()}
+        y = next(w for w in index.writes() if w.path == '"DB".y')
+        assert y.call is not None and y.call.parameter == "out" and y.dependencies == ["#a"]
+
+    def test_a_call_output_targets_index_is_read(self) -> None:
+        index = _index('#tmr(IN := #a, PT := T#1s, Q => "DB".q[#i]);')
+        assert ("#i", READ) in {(r.path, r.kind) for r in index.reads()}
+
+    def test_the_for_variable_is_written_from_its_bounds(self) -> None:
+        index = _index('FOR #i := 0 TO "DB".n DO #arr[#i] := 1.0; END_FOR;')
+        i = next(w for w in index.writes() if w.path == "#i")
+        assert i.dependencies == ['"DB".n'] and i.element == "bounds"
+
+    def test_a_case_selectors_index_is_not_a_selector(self) -> None:
+        body = 'CASE "DB".arms[#i].mode OF 1: #arr[0] := 1.0; END_CASE;'
+        by_element = {(r.path, r.element) for r in _index(body).reads()}
+        assert ('"DB".arms[#i].mode', "selector") in by_element
+        assert ("#i", "selector_index") in by_element
+        assert [v.name for v in detect_state_variables_in_block(_block(body))] == ['"DB".arms[#i].mode']
+
+    def test_a_global_instance_db_call_writes_the_instance(self) -> None:
+        index = _index('"TON_DB"(IN := #a, PT := T#1s);')
+        assert any(w.path == '"TON_DB"' for w in index.writes())
+
+    def test_the_cache_never_serves_a_dropped_blocks_index(self) -> None:
+        import gc
+
+        from plc_code.analyzer.logic_dependency.access_index import access_index
+
+        for n in range(40):
+            block = _block(f'"DB".v{n} := #a;')
+            (write,) = list(access_index(block).writes())
+            assert write.path == f'"DB".v{n}'
+            del block
+            gc.collect()
+
+
 class TestControlFlow:
     def test_conditions_selectors_and_bounds_are_reads(self) -> None:
         body = (
@@ -135,16 +176,24 @@ class TestControlFlow:
 
 
 class TestLadder:
-    def test_a_coil_depends_on_its_rung_contacts(self) -> None:
+    def test_a_coil_depends_on_its_rung_contacts_and_literals_are_not_paths(self) -> None:
+        for ladder in (FIXTURES / "ladder").glob("*.s7dcl"):
+            index = build_access_index(parse_scl_file(ladder))
+            assert index.parse_errors == [], ladder.name
+            for access in index.accesses:
+                assert not access.path.lstrip("-").isdigit(), (ladder.name, access.path)
+                assert all(not d.lstrip("-")[:1].isdigit() for d in access.dependencies), (
+                    ladder.name,
+                    access,
+                )
+            assert all(a.line >= 1 for a in index.accesses), "ladder accesses carry their network's ordinal"
+
+    def test_ladder_is_indexed_from_the_networks_not_the_language_pragma(self) -> None:
         ladder = next(p for p in (FIXTURES / "ladder").glob("*.s7dcl"))
-        index = build_access_index(parse_scl_file(ladder))
-        assert index.parse_errors == []
-        coils = [w for w in index.writes() if w.element == "coil"]
-        assert coils, "the fixture has coils"
-        assert all(
-            all(d.startswith("#") or d[0].isalpha() or d.startswith('"') for d in c.dependencies)
-            for c in coils
-        )
+        block = parse_scl_file(ladder)
+        block.attributes.preferred_language = "FBD"
+        assert not block.is_ladder
+        assert build_access_index(block).accesses
 
 
 class TestTheTracersOnTopOfIt:
@@ -182,3 +231,10 @@ class TestTheTracersOnTopOfIt:
         assert [v.name for v in detect_state_variables_in_block(block)][0] == '"DB".status.mode'
         found = {(t.tag_name, t.direction, t.mapped_field) for t in find_assignments_in_block(block, set())}
         assert found == {("DO_PUMP", "write", "#a > 0.0"), ("DI_START", "read", '"DB".in.x')}
+
+    def test_the_primary_tag_mapping_is_a_write_before_a_read(self) -> None:
+        from plc_code.analyzer.logic_dependency.tag_assignment import find_all_tag_assignments
+
+        block = _block('#arr[0] := "DO_PUMP";\n"DO_PUMP" := #a > 0.0;')
+        (mapping,) = find_all_tag_assignments([block]).values()
+        assert (mapping.direction, mapping.mapped_field) == ("write", "#a > 0.0")

@@ -16,15 +16,16 @@ the way it always did; matching with ``[*]`` wildcards stays the consumer's job.
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from plc_code.parser import expressions as ast
-from plc_code.parser.ladder_ast import Box, CallBox, Coil, CompareContact, Contact, LadderProgram, Rung
-from plc_code.parser.ladder_builder import build_ladder_program, parse_ladder_element
+from plc_code.parser.ladder_ast import Box, CallBox, Coil, CompareContact, Contact, Rung
+from plc_code.parser.ladder_builder import build_network_rungs, parse_ladder_element
 from plc_code.parser.lexer import Token
-from plc_code.parser.models import Block
-from plc_code.parser.scl_text import argument_text, expression_text
+from plc_code.parser.models import Block, Network
+from plc_code.parser.scl_text import expression_text
 from plc_code.parser.statement_parser import parse_statements, verify_no_silent_loss
 from plc_code.parser.statements import Assignment, Call, Case, For, If, Statement, While
 
@@ -136,14 +137,10 @@ def build_access_index(block: Block) -> BlockAccessIndex:
     """Index every access in ``block`` from its SCL statements and ladder rungs."""
     index = BlockAccessIndex(block_name=block.name)
     builder = _Builder(block, index)
-    if block.is_ladder:
-        try:
-            builder.ladder(build_ladder_program(block))
-        except ValueError as error:
-            # The rung builder is all-or-nothing per block; keep every element it
-            # does know, without the rail structure, and say what was skipped.
-            index.parse_errors.append(f"ladder rungs not built: {error}; elements indexed one by one")
-            builder.ladder_elements(block)
+    # Gate on the networks' own content, not the block's preferred-language pragma:
+    # an FBD-flagged block still carries its rungs as ladder elements.
+    if any(network.ladder_elements or network.rungs_raw for network in block.networks):
+        builder.ladder(block)
     for network in block.networks:
         if network.tokens:
             builder.tokens(network.tokens)
@@ -153,17 +150,32 @@ def build_access_index(block: Block) -> BlockAccessIndex:
     return index
 
 
-_CACHE: dict[int, BlockAccessIndex] = {}
+_CACHE: dict[int, tuple[weakref.ref[Block], BlockAccessIndex]] = {}
 
 
 def access_index(block: Block) -> BlockAccessIndex:
-    """:func:`build_access_index`, cached per block object for a tracing session."""
+    """:func:`build_access_index`, cached per block object for a tracing session.
+
+    The entry is keyed by the object's id but only honoured while a weak
+    reference still points at that same object: a block that was dropped and
+    re-parsed at a reused address gets a fresh index, never the old file's.
+    """
     key = id(block)
-    cached = _CACHE.get(key)
-    if cached is None or cached.block_name != block.name:
-        cached = build_access_index(block)
-        _CACHE[key] = cached
-    return cached
+    entry = _CACHE.get(key)
+    if entry is not None and entry[0]() is block:
+        return entry[1]
+    index = build_access_index(block)
+
+    def evict(_ref: weakref.ref[Block], key: int = key) -> None:
+        _CACHE.pop(key, None)
+
+    _CACHE[key] = (weakref.ref(block, evict), index)
+    return index
+
+
+def clear_access_index_cache() -> None:
+    """Drop every cached index (a service reloading its source tree calls this)."""
+    _CACHE.clear()
 
 
 # -- building ----------------------------------------------------------------------
@@ -174,6 +186,7 @@ class _Builder:
         self.block = block
         self.index = index
         self.instance_types = {var.name: var.data_type for var in block.static_vars}
+        self._network = 0
 
     # SCL
 
@@ -199,15 +212,38 @@ class _Builder:
                     self.statements(branch.body)
                 self.statements(statement.else_body)
             elif isinstance(statement, Case):
-                self.reads_of(statement.selector_expr, statement.line, "selector", [])
+                # Only the selector's own path is the state variable; an index
+                # inside it (`CASE #arms[#i].mode OF`) is an ordinary read.
+                selector = statement.selector_expr
+                if isinstance(selector, ast.VariableRef | ast.Member | ast.Index):
+                    self.reads_of(selector, statement.line, "selector", [], outermost_only=True)
+                    for index_expr in _index_expressions(selector):
+                        self.reads_of(index_expr, statement.line, "selector_index", [])
+                else:
+                    self.reads_of(selector, statement.line, "selector_expression", [])
                 for arm in statement.branches:
                     for value in arm.values_expr:
                         self.reads_of(value, statement.line, "label", [])
                     self.statements(arm.body)
                 self.statements(statement.default)
             elif isinstance(statement, For):
-                for bound in (statement.start_expr, statement.end_expr, statement.step_expr):
-                    self.reads_of(bound, statement.line, "bounds", [])
+                variable = "".join(token.value for token in statement.variable)
+                bounds = [b for b in (statement.start_expr, statement.end_expr, statement.step_expr) if b]
+                text = f"FOR {variable} := {' TO '.join(expression_text(b) for b in bounds[:2])} DO"
+                self.index.accesses.append(
+                    Access(
+                        path=variable,
+                        kind=WRITE,
+                        block_name=self.block.name,
+                        line=statement.line,
+                        statement=text,
+                        expression=text,
+                        dependencies=[n for b in bounds for n in _dependency_names(b)],
+                        element="bounds",
+                    )
+                )
+                for bound in bounds:
+                    self.reads_of(bound, statement.line, "bounds", [variable], text)
                 self.statements(statement.body)
             elif isinstance(statement, While):
                 self.reads_of(statement.condition_expr, statement.line, "condition", [])
@@ -236,6 +272,7 @@ class _Builder:
         for index_expr in _index_expressions(statement.target_expr):
             self.reads_of(index_expr, statement.line, "assignment", [target], text)
         self.reads_of(statement.value_expr, statement.line, "assignment", [target], text)
+        self.nested_outputs(statement.value_expr, statement.line, text)
 
     def call(self, statement: Call) -> None:
         if statement.callee_expr is None:
@@ -259,7 +296,10 @@ class _Builder:
             (outputs if argument.is_output else inputs)[argument.name] = spelled
             parts.append(f"{argument.name} {'=>' if argument.is_output else ':='} {spelled}")
         text = f"{callee}({', '.join(parts)});"
-        input_paths = [path for value in inputs.values() for path in _dependency_names_of_text(value)]
+        input_paths: list[str] = []
+        for argument in statement.arguments:
+            if not argument.is_output and argument.value_expr is not None:
+                input_paths.extend(n for n in _dependency_names(argument.value_expr) if n not in input_paths)
 
         def context(parameter: str, direction: str) -> CallContext:
             return CallContext(callee, instance, parameter, direction, dict(inputs), dict(outputs), text)
@@ -268,9 +308,10 @@ class _Builder:
             if argument.value_expr is None:
                 continue
             if argument.is_output:
+                target = expression_text(argument.value_expr)
                 self.index.accesses.append(
                     Access(
-                        path=expression_text(argument.value_expr),
+                        path=target,
                         kind=WRITE,
                         block_name=self.block.name,
                         line=statement.line,
@@ -281,6 +322,8 @@ class _Builder:
                         element="call",
                     )
                 )
+                for index_expr in _index_expressions(argument.value_expr):
+                    self.reads_of(index_expr, statement.line, "call", [target], text)
             else:
                 self.reads_of(
                     argument.value_expr,
@@ -290,8 +333,11 @@ class _Builder:
                     text,
                     call=context(argument.name, ":="),
                 )
-        if instance is not None:
-            # Calling an instance reads and updates its own state.
+        root = _root(statement.callee_expr)
+        if instance is not None or (isinstance(root, ast.VariableRef) and not root.is_absolute):
+            # Calling an instance (`#tmr`, or a global instance DB `"TON_DB"`)
+            # reads and updates its own state. A FUNCTION called by its quoted
+            # name gets the same record; nothing reads a FUNCTION's name as a path.
             self.index.accesses.append(
                 Access(
                     path=callee,
@@ -313,12 +359,18 @@ class _Builder:
         targets: list[str],
         text: str | None = None,
         call: CallContext | None = None,
+        outermost_only: bool = False,
     ) -> None:
-        """One READ access per reference in ``expression`` (calls' inputs included)."""
+        """One READ access per reference in ``expression`` (calls' inputs included).
+
+        A call's ``=>`` output inside the expression is not a read; see
+        :meth:`nested_outputs`.
+        """
         if expression is None:
             return
         statement = text if text is not None else f"{expression_text(expression)}"
-        for reference in _references(expression):
+        references = [expression] if outermost_only else list(_references(expression))
+        for reference in references:
             self.index.accesses.append(
                 Access(
                     path=expression_text(reference),
@@ -333,40 +385,88 @@ class _Builder:
                 )
             )
 
+    def nested_outputs(self, expression: ast.Expression | None, line: int, text: str) -> None:
+        """A WRITE for every ``=>`` output of a call nested in ``expression``."""
+        if expression is None:
+            return
+        for call_node, argument in _nested_outputs(expression):
+            inputs = {a.name: expression_text(a.value) for a in call_node.arguments if not a.is_output}
+            outputs = {a.name: expression_text(a.value) for a in call_node.arguments if a.is_output}
+            callee = f'"{call_node.name}"' if call_node.is_quoted else call_node.name
+            context = CallContext(
+                callee, None, argument.name, "=>", inputs, outputs, expression_text(call_node)
+            )
+            target = expression_text(argument.value)
+            dependencies: list[str] = []
+            for a in call_node.arguments:
+                if not a.is_output:
+                    dependencies.extend(n for n in _dependency_names(a.value) if n not in dependencies)
+            self.index.accesses.append(
+                Access(
+                    path=target,
+                    kind=WRITE,
+                    block_name=self.block.name,
+                    line=line,
+                    statement=text,
+                    expression=context.text,
+                    dependencies=dependencies,
+                    call=context,
+                    element="call",
+                )
+            )
+            for index_expr in _index_expressions(argument.value):
+                self.reads_of(index_expr, line, "call", [target], text)
+
     # Ladder
 
-    def ladder(self, program: LadderProgram) -> None:
-        for rung in program.rungs:
-            if isinstance(rung, Rung):
-                self.rung(rung)
+    def ladder(self, block: Block) -> None:
+        """Every network's rungs; a network the rung builder refuses is indexed
+        element by element instead, with the refusal recorded."""
+        for ordinal, network in enumerate(block.networks, 1):
+            # A rung carries no source line; the network's ordinal (1-based)
+            # stands in, so accesses of two networks never collapse into one.
+            self._network = ordinal
+            try:
+                rungs = build_network_rungs(network)
+            except ValueError as error:
+                self.index.parse_errors.append(
+                    f"network {ordinal}: rungs not built ({error}); elements indexed one by one"
+                )
+                self.ladder_elements(network)
+                continue
+            for rung in rungs:
+                if isinstance(rung, Rung):
+                    self.rung(rung)
 
-    def ladder_elements(self, block: Block) -> None:
-        """Fallback: every element on its own; a coil depends on its network's contacts."""
-        for network in block.networks:
-            contacts: list[str] = []
-            for element in network.ladder_elements:
-                try:
-                    node = parse_ladder_element(element)
-                except ValueError as error:
-                    self.index.parse_errors.append(str(error))
-                    continue
-                if isinstance(node, Contact):
-                    contacts.append(node.operand)
-                    self._ladder_access(node.operand, READ, "contact", element, [])
-                elif isinstance(node, CompareContact):
-                    for operand in (node.in1, node.in2):
-                        contacts.append(operand)
-                        self._ladder_access(operand, READ, "contact", element, [])
-                elif isinstance(node, Coil):
-                    self._ladder_access(node.operand, WRITE, "coil", element, list(contacts))
-                elif isinstance(node, Box):
-                    text = _box_text(node)
-                    for operand in node.inputs.values():
-                        self._ladder_access(operand, READ, "box", text, list(node.outputs.values()))
-                    for operand in node.outputs.values():
-                        self._ladder_access(operand, WRITE, "box", text, [*contacts, *node.inputs.values()])
-                elif isinstance(node, CallBox):
-                    self.callbox(node, contacts)
+    def ladder_elements(self, network: Network) -> None:
+        """Fallback for one network: every element on its own; a coil depends on
+        the contacts seen before it in the network."""
+        contacts: list[str] = []
+        for element in network.ladder_elements:
+            if element.startswith("wire#") or element.startswith("Label("):
+                continue  # rung plumbing, not an instruction
+            try:
+                node = parse_ladder_element(element)
+            except ValueError as error:
+                self.index.parse_errors.append(str(error))
+                continue
+            if isinstance(node, Contact):
+                contacts.append(node.operand)
+                self._ladder_access(node.operand, READ, "contact", element, [])
+            elif isinstance(node, CompareContact):
+                for operand in (node.in1, node.in2):
+                    contacts.append(operand)
+                    self._ladder_access(operand, READ, "contact", element, [])
+            elif isinstance(node, Coil):
+                self._ladder_access(node.operand, WRITE, "coil", element, list(contacts))
+            elif isinstance(node, Box):
+                text = _box_text(node)
+                for operand in node.inputs.values():
+                    self._ladder_access(operand, READ, "box", text, list(node.outputs.values()))
+                for operand in node.outputs.values():
+                    self._ladder_access(operand, WRITE, "box", text, [*contacts, *node.inputs.values()])
+            elif isinstance(node, CallBox):
+                self.callbox(node, contacts)
 
     def rung(self, rung: Rung) -> None:
         contacts: list[str] = []
@@ -415,17 +515,17 @@ class _Builder:
         dependencies: list[str],
         call: CallContext | None = None,
     ) -> None:
-        if not operand or operand.upper() in ("TRUE", "FALSE") or operand[0].isdigit():
+        if _is_ladder_literal(operand):
             return
         self.index.accesses.append(
             Access(
                 path=operand,
                 kind=kind,
                 block_name=self.block.name,
-                line=0,
+                line=self._network,
                 statement=text,
                 expression=_ladder_expression(kind, element, text, dependencies),
-                dependencies=[_ladder_dependency(d) for d in dependencies],
+                dependencies=[d for d in dependencies if not _is_ladder_literal(d)],
                 call=call,
                 element=element,
             )
@@ -451,7 +551,32 @@ def _references(expression: ast.Expression) -> Iterator[ast.VariableRef | ast.Me
         yield from _references(expression.right)
     elif isinstance(expression, ast.FunctionCall):
         for argument in expression.arguments:
+            if argument.is_output:
+                # A `=>` target is written, not read; its own indices are read.
+                for index_expr in _index_expressions(argument.value):
+                    yield from _references(index_expr)
+                continue
             yield from _references(argument.value)
+
+
+def _nested_outputs(expression: ast.Expression) -> Iterator[tuple[ast.FunctionCall, ast.CallArgument]]:
+    """Every ``=>`` argument of every call nested anywhere in ``expression``."""
+    if isinstance(expression, ast.FunctionCall):
+        for argument in expression.arguments:
+            if argument.is_output:
+                yield expression, argument
+            else:
+                yield from _nested_outputs(argument.value)
+    elif isinstance(expression, ast.Grouping):
+        yield from _nested_outputs(expression.inner)
+    elif isinstance(expression, ast.UnaryOp):
+        yield from _nested_outputs(expression.operand)
+    elif isinstance(expression, ast.BinaryOp):
+        yield from _nested_outputs(expression.left)
+        yield from _nested_outputs(expression.right)
+    elif isinstance(expression, ast.Index):
+        for index_expr in expression.indices:
+            yield from _nested_outputs(index_expr)
 
 
 def _index_expressions(reference: ast.Expression) -> Iterator[ast.Expression]:
@@ -492,21 +617,13 @@ def _dependency_names(expression: ast.Expression) -> list[str]:
     return names
 
 
-def _dependency_names_of_text(spelled: str) -> list[str]:
-    """Dependency names for an already-spelled value (a call input)."""
-    from plc_code.parser.expression_parser import parse_expression
-    from plc_code.parser.lexer import TokenType, tokenize
-
-    result = parse_expression([t for t in tokenize(spelled) if t.type is not TokenType.EOF])
-    return _dependency_names(result.expression) if result.expression is not None else []
-
-
-def _ladder_dependency(operand: str) -> str:
-    if operand.startswith('"') and operand.endswith('"') and operand.count('"') == 2:
-        return operand.strip('"')
-    if operand.startswith("#"):
-        return "#" + operand[1:].split(".")[0].split("[")[0]
-    return operand
+def _is_ladder_literal(operand: str) -> bool:
+    """``TRUE``, ``-9000``, ``T#5s``, ``16#FF``: a constant operand, not a path."""
+    text = operand.strip()
+    if not text or text.upper() in ("TRUE", "FALSE"):
+        return True
+    head = text[1:] if text[0] in "+-" else text
+    return bool(head) and (head[0].isdigit() or (len(head) > 1 and head[1] == "#" and head[0].isalpha()))
 
 
 def _instance_name(callee: ast.Expression) -> str | None:
@@ -537,5 +654,5 @@ __all__ = [
     "CallContext",
     "access_index",
     "build_access_index",
-    "argument_text",
+    "clear_access_index_cache",
 ]
