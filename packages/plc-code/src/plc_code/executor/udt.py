@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from plc_code.executor.models import python_class_name
 from plc_code.executor.types import TypeMapper
 from plc_code.parser.models import Block, StructField, UserDataType
 
@@ -247,7 +248,7 @@ class UDTGenerator:
             return UDTGenerationResult(
                 success=False,
                 python_code="",
-                class_name=block.name,
+                class_name=python_class_name(block.name),
                 errors=[f"Block '{block.name}' is not a TYPE block"],
             )
 
@@ -255,7 +256,7 @@ class UDTGenerator:
             return UDTGenerationResult(
                 success=False,
                 python_code="",
-                class_name=block.name,
+                class_name=python_class_name(block.name),
                 errors=[f"Block '{block.name}' has no user_data_type"],
             )
 
@@ -285,7 +286,7 @@ class UDTGenerator:
 
         # Class definition
         lines.append("@dataclass")
-        lines.append(f"class {udt.name}:")
+        lines.append(f"class {python_class_name(udt.name)}:")
 
         # Docstring
         lines.append(f'    """Generated UDT: {udt.name}."""')
@@ -308,7 +309,7 @@ class UDTGenerator:
         return UDTGenerationResult(
             success=len(errors) == 0,
             python_code=python_code,
-            class_name=udt.name,
+            class_name=python_class_name(udt.name),
             dependencies=list(set(dependencies)),
             errors=errors,
         )

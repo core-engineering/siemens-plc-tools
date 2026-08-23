@@ -1,0 +1,22 @@
+FUNCTION_BLOCK "Tags And Odd Names"
+    VAR_INPUT
+        "1X02-01" : Bool;
+        gain : Real;
+    END_VAR
+    VAR_OUTPUT
+        "Out Value" : Real;
+        started : Bool;
+    END_VAR
+    { S7_Language := "SCL" }
+    NETWORK
+        REGION Logic
+            IF "DI_START" AND #"1X02-01" THEN
+                #started := TRUE;
+            ELSE
+                #started := FALSE;
+            END_IF;
+            #"Out Value" := "AI_LEVEL" * #gain;
+            "DO_PUMP" := #started;
+        END_REGION
+    END_NETWORK
+END_FUNCTION_BLOCK

@@ -110,6 +110,116 @@ class _GlobalDBs(dict):
         raise KeyError(key)
 
 
+class UnsetTag:
+    """What a PLC tag reads as before anything set it.
+
+    False in a condition and ``0`` in arithmetic, as an unforced input is; but
+    equal to itself by name, so two tag-table *constants* (``"MODE_ONE"``,
+    ``"MODE_TWO"``) compared or used as ``CASE`` labels stay distinct without a
+    tag table being loaded.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"UnsetTag({self.name!r})"
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __eq__(self, other: object) -> bool:
+        # Equal to the same tag only: a CASE label that is an unset constant must
+        # not match a selector holding 0 or another unset constant.
+        return isinstance(other, UnsetTag) and self.name == other.name
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    def __hash__(self) -> int:
+        return hash(("UnsetTag", self.name))
+
+    def __int__(self) -> int:
+        return 0
+
+    __index__ = __int__
+
+    def __float__(self) -> float:
+        return 0.0
+
+    def _as_number(self, other: Any) -> Any:
+        return 0.0 if isinstance(other, float) else 0
+
+    def __lt__(self, other: Any) -> bool:
+        return bool(self._as_number(other) < other)
+
+    def __le__(self, other: Any) -> bool:
+        return bool(self._as_number(other) <= other)
+
+    def __gt__(self, other: Any) -> bool:
+        return bool(self._as_number(other) > other)
+
+    def __ge__(self, other: Any) -> bool:
+        return bool(self._as_number(other) >= other)
+
+    def __add__(self, other: Any) -> Any:
+        return self._as_number(other) + other
+
+    __radd__ = __add__
+
+    def __sub__(self, other: Any) -> Any:
+        return self._as_number(other) - other
+
+    def __rsub__(self, other: Any) -> Any:
+        return other - self._as_number(other)
+
+    def __mul__(self, other: Any) -> Any:
+        return self._as_number(other) * other
+
+    __rmul__ = __mul__
+
+    def __truediv__(self, other: Any) -> Any:
+        return self._as_number(other) / other
+
+    def __rtruediv__(self, other: Any) -> Any:
+        return other / 0  # the PLC's own division by an unset tag: an error, loudly
+
+    def __neg__(self) -> int:
+        return 0
+
+    def __and__(self, other: Any) -> Any:
+        return False
+
+    __rand__ = __and__
+
+    def __or__(self, other: Any) -> Any:
+        return other
+
+    __ror__ = __or__
+
+
+class _Tags(dict):
+    """The PLC tag table: ``"DI_START"``, ``"DO_PUMP"`` read and written by name.
+
+    A tag never set reads as an :class:`UnsetTag` (false, ``0``, equal to itself
+    by name). A bare quoted name that is a registered or loadable global data
+    block (``"MyDB"`` passed whole to a block) resolves to that block instead, so
+    the one rendering ``self._runtime.tags["name"]`` serves both.
+    """
+
+    def __init__(self, runtime: "PLCRuntime") -> None:
+        super().__init__()
+        self._runtime = runtime
+
+    def __missing__(self, key: str) -> Any:
+        try:
+            return self._runtime.global_dbs[key]
+        except KeyError:
+            return UnsetTag(key)
+
+
 class _AutoStruct:
     """Auto-vivifying struct for UDT (User Defined Type) simulation.
 
@@ -355,6 +465,9 @@ class PLCRuntime:
         Duration of one PLC cycle in seconds.
     cycle_count : int
         Number of cycles executed.
+    tags : dict[str, Any]
+        The PLC tag table, by tag name without quotes; an unset tag reads as
+        ``False``. Generated code reaches a bare quoted name through it.
     global_dbs : dict[str, Any]
         Registry of global data blocks.
     fb_instances : dict[str, Any]
@@ -365,6 +478,7 @@ class PLCRuntime:
     cycle_time: float = 0.010  # 10ms default
     cycle_count: int = 0
     global_dbs: dict[str, Any] = field(default_factory=dict)
+    tags: dict[str, Any] = field(default_factory=dict)
     fb_instances: dict[str, Any] = field(default_factory=dict)
     block_search_paths: list[Path] = field(default_factory=list)
     _named_block_cache: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -379,6 +493,10 @@ class PLCRuntime:
             wrapped = _GlobalDBs(self)
             wrapped.update(self.global_dbs)
             self.global_dbs = wrapped
+        if not isinstance(self.tags, _Tags):
+            tag_table = _Tags(self)
+            tag_table.update(self.tags)
+            self.tags = tag_table
 
     def register_db(self, name: str, data: Any) -> None:
         """Register a global data block.

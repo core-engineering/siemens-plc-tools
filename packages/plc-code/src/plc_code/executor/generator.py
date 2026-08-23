@@ -271,7 +271,7 @@ def _is_write_back_candidate(value_expr: Expression, string_constants: dict[str,
             return True
         if value_expr.is_absolute or value_expr.name.upper() == _IMPLICIT_BARE_NAME:
             return False
-        return string_constants is not None and f'"{value_expr.name}"' in string_constants
+        return False  # a bare tag / global DB: a runtime lookup, not a writable attribute
     if isinstance(value_expr, Member):
         base = value_expr.base
         return (
@@ -279,7 +279,6 @@ def _is_write_back_candidate(value_expr: Expression, string_constants: dict[str,
             and not base.is_local
             and not base.is_absolute
             and base.name.upper() != _IMPLICIT_BARE_NAME
-            and not (string_constants and f'"{base.name}"' in string_constants)
             and base.name != ""
             and all(character.isalnum() or character == "_" for character in base.name)
         )
@@ -360,7 +359,7 @@ def _generate_named_call_assignment(
         if not argument.name:
             name_text = next(names_for_positional)
         else:
-            name_text = f'"{argument.name}"' if argument.is_quoted_name else argument.name
+            name_text = argument.name  # quoted or not, the parameter's own name
         write_back = not argument.is_output and _is_write_back_candidate(argument.value, ctx.string_constants)
         bound_arguments.append((name_text, value_text, argument.is_output, write_back))
     target_text = render(statement.target_expr, ctx.string_constants, ctx.signature_resolver)
@@ -506,22 +505,13 @@ def _render_for_variable(tokens: list[Token], ctx: _Context) -> str:
 
 
 def _render_case_label(expr: Expression | None, ctx: _Context, line: int) -> str:
-    """One `Case` label: a mapped symbolic constant renders as its bare integer, everything else natively.
+    """One `Case` label, rendered natively.
 
-    A label is a different mapping from an ordinary expression position. A label whose
-    tree is a non-local, non-absolute `VariableRef` (`"MODE_ONE"`, never `#name` or
-    `%name`) with quoted spelling (`f'"{name}"'`) present in `ctx` emits
-    that mapping's bare integer, the same value a matching `Assignment` right-hand side
-    would resolve to at runtime. This is deliberately NOT the same substitution
-    `render`'s own `_render_variable_ref` performs for that identical tree shape
-    everywhere else (`self.NAME`): applying that substitution here would turn
-    `if self.s == 1:` into `if self.s == self.MODE_ONE:`. Note that `self.MODE_ONE` is
-    NOT an unassigned attribute that would fail at run time -- `transpiler.py` emits
-    `MODE_ONE: int = 1` as a class attribute for every mapped string constant, so
-    `self.s == self.MODE_ONE` would evaluate identically to `self.s == 1` and no
-    executable test could tell the two apart. The reason for this ruling is textual
-    byte-identity with the old path's own bare-integer output for a CASE label, not
-    anything an executable test would catch.
+    A quoted symbolic label (`"MODE_ONE"`) renders as the tag-table lookup every
+    bare quoted name renders as; an unset tag compares equal to itself by name, so
+    the label matches a selector assigned from the same name and nothing else. (A
+    mapping of such names to integers used to live here; it is gone with the
+    string-constant scan that fed it.)
 
     Parameters
     ----------
@@ -549,10 +539,6 @@ def _render_case_label(expr: Expression | None, ctx: _Context, line: int) -> str
     """
     if expr is None:
         raise UnsupportedStatement("Case label has no parsed expression tree", line=line)
-    if isinstance(expr, VariableRef) and not expr.is_local and not expr.is_absolute:
-        quoted = f'"{expr.name}"'
-        if ctx.string_constants and quoted in ctx.string_constants:
-            return str(ctx.string_constants[quoted])
     return render(expr, ctx.string_constants, ctx.signature_resolver)
 
 
@@ -691,7 +677,8 @@ def _generate_named_call_statement(
     names_for_positional = _positional_names(block_name, statement.arguments, ctx, statement.line)
     bound_arguments: list[tuple[str, str, bool, bool]] = []
     for argument in statement.arguments:
-        name = argument.name or next(names_for_positional)
+        # The statement parser keeps a quoted parameter name's quotes (`"mode" := x`).
+        name = argument.name.strip('"') if argument.name else next(names_for_positional)
         if argument.value_expr is None:
             raise UnsupportedStatement(
                 f"Call at line {statement.line} argument {name!r} has no parsed expression tree",

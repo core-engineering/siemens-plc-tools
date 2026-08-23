@@ -114,23 +114,21 @@ def test_a_case_without_an_else_arm() -> None:
     assert lines == ["if self.s == 1:", "    self.b = 1"]
 
 
-def test_a_symbolic_case_label_maps_to_its_bare_integer_not_self_dot_name() -> None:
-    """The ruling the task brief calls out explicitly.
+def test_a_symbolic_case_label_is_the_same_tag_lookup_as_elsewhere() -> None:
+    """`"MODE_ONE"` as a CASE label and as a value render the same tag-table lookup.
 
-    `render`'s ordinary `VariableRef` substitution (a mapped string constant becomes
-    `self.NAME`) must NOT apply to a CASE label position -- that would turn
-    `if self.s == 1:` into `if self.s == self.MODE_ONE:`. A label whose tree is a
-    non-local, non-absolute `VariableRef` matching a `string_constants` key emits the
-    bare integer instead; the same symbol used elsewhere in the block (the ELSE arm's
-    assignment) still gets the ordinary `self.NAME` substitution.
+    The string-constant scan that mapped such names to integers (label -> `1`,
+    elsewhere -> `self.MODE_ONE`) is gone: an unset tag compares equal to itself
+    by name, so the label matches a selector assigned from the same name and
+    nothing else, with no table loaded. `string_constants` is accepted and ignored.
     """
     source = 'CASE #s OF "MODE_ONE" : #b := 1 ; ELSE #c := "MODE_ONE" ; END_CASE ;'
     lines = generate_statements(_statements(source), string_constants={'"MODE_ONE"': 1})
     assert lines == [
-        "if self.s == 1:",
+        'if self.s == self._runtime.tags["MODE_ONE"]:',
         "    self.b = 1",
         "else:",
-        "    self.c = self.MODE_ONE",
+        '    self.c = self._runtime.tags["MODE_ONE"]',
     ]
 
 

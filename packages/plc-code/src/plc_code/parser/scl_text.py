@@ -35,7 +35,9 @@ def expression_text(node: Expression) -> str:
         return f"{node.prefix}#{node.value}"
     if isinstance(node, VariableRef):
         if node.is_local:
-            return f"#{node.name}"
+            # A block variable whose name is not an identifier is written quoted.
+            return f"#{node.name}" if node.name.isidentifier() else f'#"{node.name}"'
+
         if node.is_absolute:
             return f"%{node.name}"
         return f'"{node.name}"'

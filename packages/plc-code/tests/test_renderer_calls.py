@@ -16,6 +16,7 @@ import pytest
 
 from plc_code.executor.renderer import UnsupportedExpression, render
 from plc_code.parser.expressions import CallArgument, FunctionCall, Literal, VariableRef
+from plc_code.parser.lexer import TokenType, tokenize
 
 
 def _local(name: str) -> VariableRef:
@@ -106,9 +107,11 @@ def test_a_quoted_call_with_a_positional_argument_and_no_resolver_raises() -> No
         render(call)
 
 
-def test_a_quoted_parameter_name_reproduces_the_old_text_translators_double_quote_bug() -> None:
-    """Pinned because it comes from calling `_build_named_call`, not from reasoning
-    about what it should do -- see `renderer._render_named_call`'s docstring."""
+def test_a_quoted_parameter_name_is_the_parameter() -> None:
+    """`"x" := #a`: the quotes are SCL spelling of the parameter name `x`. The old
+    text translator kept them and `_build_named_call` added its own, giving
+    `{""x"": ...}` -- not valid Python (3 production blocks); the first native
+    renderer reproduced it bug for bug."""
     call = FunctionCall(
         line=1,
         column=1,
@@ -116,7 +119,7 @@ def test_a_quoted_parameter_name_reproduces_the_old_text_translators_double_quot
         is_quoted=True,
         arguments=[CallArgument(value=_local("a"), name="x", is_quoted_name=True)],
     )
-    assert render(call) == 'self._runtime.call_named_block("Block", {""x"": self.a}, {})["Block"]'
+    assert render(call) == 'self._runtime.call_named_block("Block", {"x": self.a}, {})["Block"]'
 
 
 def test_a_bare_builtin_call_with_an_output_argument_raises() -> None:
@@ -167,3 +170,14 @@ def test_an_output_bound_argument_is_dropped_from_the_inputs_dict() -> None:
         arguments=[CallArgument(value=_local("out"), name="y", is_output=True)],
     )
     assert render(call) == 'self._runtime.call_named_block("Block", {}, {})["Block"]'
+
+
+def test_a_quoted_parameter_name_in_a_call_statement_is_the_parameter_too() -> None:
+    from plc_code.executor.generator import generate_statements
+    from plc_code.parser.statement_parser import parse_statements
+
+    tokens = [t for t in tokenize('"Blk"("mode" := #a, er := #b);') if t.type is not TokenType.EOF]
+    line, *_rest = generate_statements(parse_statements(tokens).statements)
+    assert (
+        line == '_sub_Blk_result = self._runtime.call_named_block("Blk", {"mode": self.a, "er": self.b}, {})'
+    )

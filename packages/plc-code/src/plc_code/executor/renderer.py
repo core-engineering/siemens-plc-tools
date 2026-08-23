@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 from plc_code.executor.arguments import PositionalBindingError, SignatureResolver, positional_parameter_names
 from plc_code.executor.codegen import BUILTIN_MAP, OPERATOR_MAP, ExpressionTranslator
+from plc_code.executor.models import python_identifier
 from plc_code.executor.types import parse_time_literal
 from plc_code.parser.expressions import (
     BinaryOp,
@@ -183,16 +184,9 @@ def render(
     expression : Expression
         A node from :mod:`plc_code.parser.expressions`.
     string_constants : dict[str, int] | None, optional
-        Mapping from a quoted string-constant literal (e.g. ``'"USER_FREEWHEEL"'``,
-        quotes included) to the integer value assigned to it, as collected by
-        ``SCLTranspiler._collect_string_constants``. A non-local, non-absolute
-        :class:`~plc_code.parser.expressions.VariableRef` whose quoted spelling is a
-        key of this table renders as ``self.NAME`` instead of the quoted literal it
-        would otherwise render as -- see :func:`_render_variable_ref`. A CASE label
-        is not affected by this parameter; that substitution (a matching literal
-        becomes its bare integer) is a different mapping, applied by the generator
-        directly, not by this function. ``None`` (the default) renders every
-        non-local global as a quoted literal, unconditionally.
+        Accepted for compatibility and ignored. The integer-coding of quoted
+        enum-like names it used to drive is gone: a bare quoted name renders as
+        a tag-table lookup, and an unset tag compares equal to itself by name.
     signature_resolver : SignatureResolver | None, optional
         Resolves a quoted block name to its declared input parameter names in order,
         so a positional argument in a call to that block can be bound to the right
@@ -256,6 +250,8 @@ def _render_literal(node: Literal) -> str:
         return "True"
     if upper == "FALSE":
         return "False"
+    if node.value.isdigit() and len(node.value) > 1 and node.value[0] == "0":
+        return str(int(node.value))  # `01` is a valid SCL integer, not valid Python
     return node.value
 
 
@@ -335,15 +331,19 @@ def _render_variable_ref(node: VariableRef, ctx: _Context) -> str:
         handles that case, not this function).
     """
     if node.is_local:
-        return f"self.{node.name}"
+        return f"self.{python_identifier(node.name)}"
     if node.is_absolute:
         return f"%{node.name}"
     if node.name.upper() == _IMPLICIT_BARE_NAME:
         return node.name
-    quoted = f'"{node.name}"'
-    if ctx.string_constants and quoted in ctx.string_constants:
-        return f"self.{node.name}"
-    return quoted
+    # A bare quoted name is a PLC tag (`"DI_START"`), a tag-table constant
+    # (`"MODE_ONE"`), or a global DB passed whole; the runtime's tag table serves
+    # all three (an unset one reads as `UnsetTag`, equal to itself by name, so
+    # `#state := "MODE_TWO"` and `CASE #state OF "MODE_TWO":` agree without a
+    # table). It used to render as the Python string literal `"DI_START"` --
+    # always true in a condition, silently -- or, when the old text scan had
+    # guessed it was an enum, as an integer class constant.
+    return f'self._runtime.tags["{node.name}"]'
 
 
 def _is_global_db_ref(node: Expression, string_constants: dict[str, int] | None = None) -> bool:
@@ -354,28 +354,29 @@ def _is_global_db_ref(node: Expression, string_constants: dict[str, int] | None 
     node : Expression
         A ``Member``'s ``base``.
     string_constants : dict[str, int] | None, optional
-        See :func:`render`. A ``VariableRef`` whose quoted spelling is a key of
-        this table is a mapped string constant, not a global DB, and returns
-        False here -- the substitution in :func:`_render_variable_ref` takes
-        priority.
+        Accepted for compatibility and ignored.
 
     Returns
     -------
     bool
         True for a ``VariableRef`` that is neither local (``#name``) nor absolute
-        (``%name``) nor the bare ``ENO`` nor a mapped string constant -- i.e. one
-        that renders quoted, as a bare quoted global followed by ``.member`` requires.
+        (``%name``) nor the bare ``ENO`` -- a global DB followed by ``.member``.
     """
-    if not (
+    return (
         isinstance(node, VariableRef)
         and not node.is_local
         and not node.is_absolute
         and node.name.upper() != _IMPLICIT_BARE_NAME
-    ):
-        return False
-    if string_constants and f'"{node.name}"' in string_constants:
-        return False
-    return True
+    )
+
+
+def _member_path(name: str) -> str:
+    """``a.b[0]`` from a quoted member name, each segment a Python identifier."""
+    out: list[str] = []
+    for segment in name.split("."):
+        head, bracket, rest = segment.partition("[")
+        out.append(python_identifier(head) + (bracket + rest if bracket else ""))
+    return ".".join(out)
 
 
 def _render_member(node: Member, ctx: _Context) -> str:
@@ -399,9 +400,13 @@ def _render_member(node: Member, ctx: _Context) -> str:
     Returns
     -------
     str
-        ``{base}.{name}`` for a plain member; ``{base}.self.{name}`` when the member
-        was written ``.#name``; ``{base}.%{name}`` when written ``.%name``;
-        ``{base}."{name}"`` when written ``."name"``.
+        ``{base}.{name}`` for a plain member and for one written ``.#name``;
+        ``{base}.a.b[0]`` for one written ``."a.b[0]"`` (a quoted path).
+
+    Raises
+    ------
+    UnsupportedExpression
+        For a bit/byte slice (``.%X0``), which the harness cannot yet evaluate.
     """
     if _is_global_db_ref(node.base, ctx.string_constants):
         assert isinstance(node.base, VariableRef)  # narrowed by _is_global_db_ref
@@ -409,13 +414,17 @@ def _render_member(node: Member, ctx: _Context) -> str:
     else:
         base_text = _render(node.base, ctx)
 
-    if node.is_local:
-        return f"{base_text}.self.{node.name}"
     if node.is_absolute:
-        return f"{base_text}.%{node.name}"
+        # `.%X0` reads a bit (byte, word) of the base value. The harness has no
+        # slice semantics yet; refusing here gives a located TRANSPILE diagnostic
+        # instead of Python that does not parse.
+        raise UnsupportedExpression(node, f"bit/byte slice access '.%{node.name}' is not supported")
     if node.is_quoted:
-        return f'{base_text}."{node.name}"'
-    return f"{base_text}.{node.name}"
+        # A quoted member is a path TIA exports as one name when the member is a
+        # nested struct: `"DataLog"."armStatus.isActive"` is `.armStatus.isActive`.
+        return f"{base_text}.{_member_path(node.name)}"
+    # `.#name` is `.name`: the `#` only marks the member as a block variable.
+    return f"{base_text}.{python_identifier(node.name)}"
 
 
 def _render_index(node: Index, ctx: _Context) -> str:
@@ -638,6 +647,8 @@ def _render_builtin_call(node: FunctionCall, ctx: _Context) -> str:
         dim_text = _render(node.arguments[1].value, ctx)
         return f"({py_func})({arr_text}, {dim_text})"
     py_func = _BUILTIN_MAP.get(upper_name, node.name)
+    if py_func.startswith("lambda"):
+        py_func = f"({py_func})"  # a lambda is an expression, not a callable name
     args_text = ", ".join(_render(argument.value, ctx) for argument in node.arguments)
     return f"{py_func}({args_text})"
 
@@ -699,7 +710,9 @@ def _render_named_call(node: FunctionCall, ctx: _Context) -> str:
         if argument.is_output:
             continue
         if argument.name:
-            name_text = f'"{argument.name}"' if argument.is_quoted_name else argument.name
+            # A parameter name written quoted (`"x" := #a`) is the parameter `x`:
+            # the quotes are SCL spelling, and `_build_named_call` adds its own.
+            name_text = argument.name
         else:
             name_text = next(names_for_positional)
         value_text = _render(argument.value, ctx)

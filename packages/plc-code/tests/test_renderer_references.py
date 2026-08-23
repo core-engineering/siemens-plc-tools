@@ -100,10 +100,11 @@ def test_a_node_with_no_visitor_raises() -> None:
         render(object())  # type: ignore[arg-type]
 
 
-def test_a_quoted_global_alone_keeps_its_quotes() -> None:
-    """Structural: `GLOBAL_DB_PATTERN` requires a `.` right after the quoted name --
-    a bare global reference was left untouched by the old text translator."""
-    assert render(VariableRef(line=1, column=1, name="Db", is_local=False)) == '"Db"'
+def test_a_quoted_global_alone_is_a_tag_table_lookup() -> None:
+    """`"Db"` on its own is a PLC tag or a global DB passed whole; the runtime's tag
+    table serves both. It used to render as the Python string literal `"Db"` --
+    always true in a condition, silently."""
+    assert render(VariableRef(line=1, column=1, name="Db", is_local=False)) == 'self._runtime.tags["Db"]'
 
 
 def test_eno_is_the_one_bare_global() -> None:
@@ -115,9 +116,10 @@ def test_an_absolute_address_is_unchanged() -> None:
     assert render(VariableRef(line=1, column=1, name="I0", is_absolute=True, is_local=False)) == "%I0"
 
 
-def test_a_local_member_carries_its_own_hash() -> None:
-    """`.#name` -- the old text translator's `INSTANCE_VAR_PATTERN` still matched the
-    `#name` inside a member chain, so the member itself also became `self.name`."""
+def test_a_local_member_is_just_a_member() -> None:
+    """`.#name`: the `#` marks the member as a block variable and is not part of the
+    name. The old text translator rendered `self.a.self.b` (a `NameError` at run
+    time); the first native renderer reproduced it bug for bug."""
     node = Member(
         line=1,
         column=1,
@@ -125,38 +127,49 @@ def test_a_local_member_carries_its_own_hash() -> None:
         name="b",
         is_local=True,
     )
-    assert render(node) == "self.a.self.b"
+    assert render(node) == "self.a.b"
 
 
-def test_an_absolute_member_keeps_its_percent() -> None:
+def test_an_absolute_member_is_refused_with_its_line() -> None:
+    """`.%DBX0` reads a bit of the base; the harness has no slice semantics, so the
+    renderer refuses (a located TRANSPILE diagnostic) rather than emit `self.a.%DBX0`."""
     node = Member(
-        line=1,
+        line=7,
         column=1,
-        base=VariableRef(line=1, column=1, name="a", is_local=True),
+        base=VariableRef(line=7, column=1, name="a", is_local=True),
         name="DBX0",
         is_absolute=True,
     )
-    assert render(node) == "self.a.%DBX0"
+    with pytest.raises(UnsupportedExpression, match="slice") as excinfo:
+        render(node)
+    assert excinfo.value.line == 7
 
 
-def test_a_quoted_member_keeps_its_quotes() -> None:
+def test_a_quoted_member_is_a_path() -> None:
+    """`"Db"."armStatus.isActive"`: TIA exports a nested struct member as one quoted
+    path; it renders as the attribute chain it names."""
     node = Member(
         line=1,
         column=1,
         base=VariableRef(line=1, column=1, name="Db", is_local=False),
-        name="type",
+        name="armStatus.isActive[0]",
         is_quoted=True,
     )
-    assert render(node) == 'self._runtime.global_dbs["Db"]."type"'
+    assert render(node) == 'self._runtime.global_dbs["Db"].armStatus.isActive[0]'
 
 
-def test_an_index_base_keeps_a_global_quoted_rather_than_a_runtime_lookup() -> None:
-    """Only `Member` substitutes the runtime lookup; `Index` does not -- matching
-    `GLOBAL_DB_PATTERN`, which needs a literal `.` after the quoted name."""
+def test_a_name_that_is_not_an_identifier_is_made_one() -> None:
+    """`#"1X02-01"` (a terminal strip's naming): the attribute is `_1X02_01`."""
+    assert render(VariableRef(line=1, column=1, name="1X02-01", is_local=True)) == "self._1X02_01"
+
+
+def test_an_indexed_global_goes_through_the_tag_table() -> None:
+    """`"Arr"[#i]`: the bare quoted base resolves through the tag table, which hands
+    back a global DB by that name when one is loaded."""
     node = Index(
         line=1,
         column=1,
         base=VariableRef(line=1, column=1, name="Db", is_local=False),
         indices=[VariableRef(line=1, column=1, name="i", is_local=True)],
     )
-    assert render(node) == '"Db"[self.i]'
+    assert render(node) == 'self._runtime.tags["Db"][self.i]'

@@ -24,7 +24,18 @@ TIMER_TYPE_NAMES: dict[str, str] = {
     "TOF_TIME": "TOF_TIME",
     "TP": "TP_TIME",
     "TP_TIME": "TP_TIME",
+    "TONR": "TONR_TIME",
+    "TONR_TIME": "TONR_TIME",
 }
+
+#: System FB instance types that take no clock: the edge detectors.
+EDGE_TYPE_NAMES: dict[str, str] = {
+    "R_TRIG": "R_TRIG",
+    "F_TRIG": "F_TRIG",
+}
+
+#: Every system FB instance type this module implements, by its SCL spelling.
+SYSTEM_FB_NAMES: dict[str, str] = {**TIMER_TYPE_NAMES, **EDGE_TYPE_NAMES}
 
 
 def timer_class_name(data_type: str | None) -> str | None:
@@ -32,6 +43,13 @@ def timer_class_name(data_type: str | None) -> str | None:
     if data_type is None:
         return None
     return TIMER_TYPE_NAMES.get(data_type.strip().upper())
+
+
+def system_fb_class_name(data_type: str | None) -> str | None:
+    """The class (timer or edge detector) a declared type names, or ``None``."""
+    if data_type is None:
+        return None
+    return SYSTEM_FB_NAMES.get(data_type.strip().upper())
 
 
 @dataclass
@@ -286,3 +304,78 @@ class TP_TIME:
         self.ET = 0.0
         self._pulse_start = None
         self._was_in = False
+
+
+@dataclass
+class TONR_TIME:
+    """Retentive on-delay timer (TONR).
+
+    ET accumulates the time IN has been True across several activations and is
+    held while IN is False; Q turns on once ET reaches PT and stays on until R
+    resets the timer (ET back to 0, Q off).
+
+    Attributes
+    ----------
+    IN : bool
+        Timer input (enable).
+    R : bool
+        Reset.
+    PT : float
+        Preset time in seconds.
+    Q : bool
+        Timer output.
+    ET : float
+        Accumulated time in seconds.
+    """
+
+    IN: bool = False
+    R: bool = False
+    PT: float = 0.0
+    Q: bool = False
+    ET: float = 0.0
+    _last_time: float | None = field(default=None, repr=False)
+
+    def __call__(self, IN: bool, PT: float, clock: "MockClock", R: bool = False) -> None:
+        """Execute the timer logic for one cycle."""
+        self.IN = IN
+        self.PT = PT
+        self.R = R
+        now = clock.get_time()
+        if R:
+            self.ET = 0.0
+            self.Q = False
+            self._last_time = now
+            return
+        if IN and self._last_time is not None and not self.Q:
+            self.ET = min(PT, self.ET + (now - self._last_time))
+        self._last_time = now
+        if self.ET >= PT and PT > 0:
+            self.Q = True
+
+
+@dataclass
+class R_TRIG:
+    """Rising-edge detector: Q is True for the one cycle in which CLK went True."""
+
+    CLK: bool = False
+    Q: bool = False
+    _previous: bool = field(default=False, repr=False)
+
+    def __call__(self, CLK: bool) -> None:
+        self.Q = bool(CLK) and not self._previous
+        self._previous = bool(CLK)
+        self.CLK = bool(CLK)
+
+
+@dataclass
+class F_TRIG:
+    """Falling-edge detector: Q is True for the one cycle in which CLK went False."""
+
+    CLK: bool = False
+    Q: bool = False
+    _previous: bool = field(default=False, repr=False)
+
+    def __call__(self, CLK: bool) -> None:
+        self.Q = (not CLK) and self._previous
+        self._previous = bool(CLK)
+        self.CLK = bool(CLK)

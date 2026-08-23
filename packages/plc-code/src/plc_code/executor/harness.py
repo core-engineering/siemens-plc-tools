@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from plc_code.executor.models import python_identifier
 from plc_code.executor.runtime import PLCRuntime, _auto_struct_to_dict, _AutoStruct, _dict_to_auto_struct
 from plc_code.executor.transpiler import compile_block
 from plc_code.parser import parse_scl_file
@@ -215,7 +216,8 @@ class FBTestHarness:
         **inputs : Any
             Input name-value pairs.
         """
-        for name, value in inputs.items():
+        for scl_name, value in inputs.items():
+            name = python_identifier(scl_name)  # `1X02-01` is the attribute `_1X02_01`
             if hasattr(self.instance, name):
                 # Convert plain dicts to _AutoStruct for UDT variables
                 current = getattr(self.instance, name)
@@ -252,7 +254,7 @@ class FBTestHarness:
         value : Any
             Value to set.
         """
-        setattr(self.instance, name, value)
+        setattr(self.instance, python_identifier(name), value)
 
     def get_output(self, name: str) -> Any:
         """Get an output value from the function block.
@@ -267,7 +269,7 @@ class FBTestHarness:
         Any
             The output value.
         """
-        return getattr(self.instance, name)
+        return getattr(self.instance, python_identifier(name))
 
     def get_outputs(self) -> dict[str, Any]:
         """Get all output values, including VAR_IN_OUT values.
@@ -300,7 +302,7 @@ class FBTestHarness:
         Any
             The variable value.
         """
-        return getattr(self.instance, name)
+        return getattr(self.instance, python_identifier(name))
 
     def execute(self) -> None:
         """Execute one cycle of the function block."""

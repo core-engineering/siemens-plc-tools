@@ -241,6 +241,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   numbers directly.
 
 ### Fixed
+- **plc-code (executor)** — the production `--check` sweep, worked through: 349
+  blocks with code on five projects, 264 loaded before, 335 load now. The 14 left
+  are the six bare system builtins binding an `=>` output in expression position
+  (refused on purpose), five bit/byte slice accesses (`#v.%X0`, now a located
+  refusal instead of Python that does not parse), `RD_SYS_T`/`DTL` and one
+  `DTL_TO_LDT` (system types without a runtime model).
+
+  - A block whose TIA name is not a Python identifier — `"Main Loop"`, `"Cyclic
+    interrupt"`, 35 OBs in the corpus — generated `class Main Loop:`. The class
+    name (`TranspileResult.class_name`) is now `python_identifier(name)`;
+    so is every variable's attribute, and a variable named `1X02-01` (a terminal
+    strip's own naming, 157 references) is accepted by the expression parser as
+    `#"1X02-01"` and compiles to `_1X02_01`. `FBTestHarness.set_inputs` /
+    `get_output` take the SCL name.
+  - A bare quoted name — a PLC tag `"DI_START"`, a tag-table constant
+    `"MODE_ONE"`, a global DB passed whole — rendered as the Python string
+    literal `"DI_START"`: always true in a condition, silently, and `"DO_PUMP"
+    := x` did not parse. It now reads and writes `PLCRuntime.tags["DI_START"]`,
+    a table a test sets directly; an unset tag reads as `UnsetTag` (false, `0`
+    in arithmetic, equal to itself by name, so `#state := "MODE_TWO"` and `CASE
+    #state OF "MODE_TWO":` agree with no table loaded). The scan of
+    `Region.content` that guessed such names were enums and emitted them as
+    integer class constants is deleted; `string_constants` is accepted and
+    ignored by `render`/`generate_statements`.
+  - `.#member` rendered `.self.member` and `."a.b[0]"` (a nested struct member
+    TIA exports as one quoted path) rendered with its quotes — both reproduced
+    bug-for-bug by the first native renderer, both Python that does not parse;
+    they render as the attribute chain they name. A parameter name written
+    quoted (`"x" := #a`, in expressions and call statements) no longer doubles
+    its quotes. `01` (a valid SCL integer) renders as `1`.
+  - Builtins the corpus uses and no map knew: `SQR`, `TRUNC`, `TIME_TO_DINT`,
+    `DINT_TO_TIME`, `DINT_TO_WORD`, `INT_TO_WORD`, `WORD_TO_INT`, `BYTE_TO_SINT`,
+    `BYTE_TO_INT`, `SWAP_WORD`, `BCD16_TO_INT`, `DIS_AIRT`/`EN_AIRT`. A builtin
+    mapped to a `lambda` rendered without its own parentheses —
+    `lambda x: x & 0xFF(self.a)`, valid Python that returns a lambda and never
+    calls it — so `INT_TO_USINT`/`INT_TO_UINT` had been silently wrong; every
+    lambda-valued builtin is parenthesized.
+  - `R_TRIG`, `F_TRIG` (edge detectors) and `TONR` (retentive timer) are runtime
+    classes beside the timers (`executor.timers`); a variable declared with a
+    system type the runtime has no model for (`HW_IO`, `DTL`, `Program_Alarm`,
+    `ACK_GL`) is hinted `Any` instead of a name that raises at class creation.
+
 - **plc-code (executor)** — an FB instance call gets its `clock=` argument by the
   instance's declared type, and a bare IEC timer type (`TON`, `TOF`, `TP`) is a
   timer.

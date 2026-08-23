@@ -130,3 +130,29 @@ class PLCValue:
 
     value: Any
     scl_type: str
+
+
+def python_identifier(name: str) -> str:
+    """The Python identifier a TIA name compiles to.
+
+    A TIA block or variable name may hold spaces or other characters Python
+    identifiers cannot (``"Main Loop"``, ``1X02-01``): each run of them becomes
+    one ``_``, and a leading digit is prefixed with ``_``. A name that already is
+    an identifier is returned unchanged, so every existing attribute keeps its
+    spelling. The TIA name stays as is everywhere else -- only the generated
+    Python (class, attributes, ``_inputs``/``_outputs`` tuples) uses this.
+    """
+    if name.isidentifier():
+        return name
+    cleaned = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in name)
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    cleaned = cleaned.strip("_") or "Block"
+    if cleaned[0].isdigit():
+        cleaned = f"_{cleaned}"
+    return cleaned
+
+
+def python_class_name(block_name: str) -> str:
+    """The Python class a block compiles to; see :func:`python_identifier`."""
+    return python_identifier(block_name)

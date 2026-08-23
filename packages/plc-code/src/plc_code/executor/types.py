@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from plc_code.executor.timers import timer_class_name
+from plc_code.executor.timers import system_fb_class_name
 
 
 class SCLType(Enum):
@@ -291,12 +291,13 @@ class TypeMapper:
             return TypeInfo(SCLType.UDT, dict, dict, type_name)
 
         # Check for timer types (``TON`` and ``TON_TIME`` alike)
-        timer_name = timer_class_name(type_str)
+        timer_name = system_fb_class_name(type_str)
         if timer_name is not None:
             from plc_code.executor import timers
 
             timer_class = getattr(timers, timer_name)
-            return TypeInfo(SCLType(timer_name), timer_class, timer_class, timer_name)
+            scl_type = SCLType(timer_name) if timer_name in SCLType._value2member_map_ else SCLType.UDT
+            return TypeInfo(scl_type, timer_class, timer_class, timer_name)
 
         # Check standard type map
         if type_str in TYPE_MAP:
@@ -463,6 +464,12 @@ class TypeMapper:
             inner_hint = self.get_python_type_hint(inner_type_str)
             return f"list[{inner_hint}]"
 
+        if type_info.scl_type == SCLType.UDT:
+            # A system type (``HW_IO``, ``DTL``, ``R_TRIG``, ``Program_Alarm``) or an
+            # unregistered UDT: its own name is not a Python name in the generated
+            # module, and a hint that raises NameError at class creation takes the
+            # whole block down. ``Any`` is.
+            return "Any"
         return type_info.type_hint
 
 

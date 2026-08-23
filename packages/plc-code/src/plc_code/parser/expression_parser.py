@@ -686,13 +686,15 @@ class _ExpressionParser:
         """
         hash_token = self._stream.advance()  # HASH
         name_token = self._stream.peek()
-        if name_token.type not in _NAME_TOKEN_TYPES:
+        # A block variable whose name is not an identifier is written quoted:
+        # `#"1X02-01"` (a terminal strip's own naming, 157 references in the corpus).
+        is_quoted = name_token.type is TokenType.STRING and name_token.value.startswith('"')
+        if name_token.type not in _NAME_TOKEN_TYPES and not is_quoted:
             self._error(name_token, "an identifier after '#'")
             return None
         self._stream.advance()
-        return VariableRef(
-            line=hash_token.line, column=hash_token.column, name=name_token.value, is_local=True
-        )
+        name = name_token.value[1:-1] if is_quoted else name_token.value
+        return VariableRef(line=hash_token.line, column=hash_token.column, name=name, is_local=True)
 
     def _parse_function_call(self) -> Expression | None:
         """Parse `name(args)`, the cursor already on the name.

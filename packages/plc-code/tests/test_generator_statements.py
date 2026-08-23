@@ -97,26 +97,21 @@ def test_a_case_without_an_else_arm() -> None:
     assert generate_statements(_statements(source)) == ["if self.s == 1:", "    self.b = 1"]
 
 
-def test_a_case_label_renders_bare_while_the_same_symbol_elsewhere_stays_self_prefixed() -> None:
-    """``string_constants`` maps a CASE label to a bare int, elsewhere to ``self.NAME``.
+def test_a_symbolic_case_label_is_the_same_tag_lookup_as_elsewhere() -> None:
+    """`"MODE_ONE"` as a CASE label and as a value render the same tag-table lookup.
 
-    No test before this one ever passed a non-``None`` ``string_constants`` to
-    ``generate_statements`` at all -- moving this substitution here from the
-    deleted text path (which did it as a separate regex rewrite, then repaired
-    the damage with more regexes) was never exercised by the deleted
-    differential either, since that harness always ran with
-    ``string_constants=None``. This is the position ``generator.py``'s own
-    ``_map_string_constants`` docstring calls out as handled specially: "A CASE
-    label is not routed through this helper: a label position maps a matching
-    literal to its bare integer value instead."
+    The string-constant scan that mapped such names to integers (label -> `1`,
+    elsewhere -> `self.MODE_ONE`) is gone: an unset tag compares equal to itself
+    by name, so the label matches a selector assigned from the same name and
+    nothing else, with no table loaded. `string_constants` is accepted and ignored.
     """
     source = 'CASE #s OF "MODE_ONE" : #b := 1 ; ELSE #c := "MODE_ONE" ; END_CASE ;'
     lines = generate_statements(_statements(source), string_constants={'"MODE_ONE"': 1})
     assert lines == [
-        "if self.s == 1:",
+        'if self.s == self._runtime.tags["MODE_ONE"]:',
         "    self.b = 1",
         "else:",
-        "    self.c = self.MODE_ONE",
+        '    self.c = self._runtime.tags["MODE_ONE"]',
     ]
 
 

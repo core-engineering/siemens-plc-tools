@@ -291,26 +291,27 @@ def test_a_multi_value_case_label_with_an_inline_if_body() -> None:
     """
     lines = generate_statements(_statements(source))
     assert lines == [
-        'if self.state == "S0":',
-        '    self.out = "V0"',
-        'elif self.state == "S1":',
-        '    self.out = "V1"',
-        'elif self.state in ("S2", "S3"):',
-        '    if self.cond == "C1":',
-        '        self.out = "V2"',
-        '    elif self.cond == "C2":',
-        '        self.out = "V3"',
+        'if self.state == self._runtime.tags["S0"]:',
+        '    self.out = self._runtime.tags["V0"]',
+        'elif self.state == self._runtime.tags["S1"]:',
+        '    self.out = self._runtime.tags["V1"]',
+        'elif self.state in (self._runtime.tags["S2"], self._runtime.tags["S3"]):',
+        '    if self.cond == self._runtime.tags["C1"]:',
+        '        self.out = self._runtime.tags["V2"]',
+        '    elif self.cond == self._runtime.tags["C2"]:',
+        '        self.out = self._runtime.tags["V3"]',
         "    else:",
-        '        self.out = "V4"',
-        'elif self.state == "S4":',
-        '    self.out = "V5"',
+        '        self.out = self._runtime.tags["V4"]',
+        'elif self.state == self._runtime.tags["S4"]:',
+        '    self.out = self._runtime.tags["V5"]',
         "else:",
-        '    self.out = "DEFAULT"',
+        '    self.out = self._runtime.tags["DEFAULT"]',
     ]
     # The specific things the old path leaked as raw, untranslated keyword text
     # instead of real control flow: none of these bare keywords may appear as their
     # own token in the output, and the multi-value branch must be a proper nested
     # `if` under its own `elif self.state in (...)`, not text glued onto "S1"'s body.
     assert not any(line.strip() in ("IF", "ELSIF", "ELSE", "END_IF") for line in lines)
-    assert 'elif self.state in ("S2", "S3"):' in lines
-    assert lines[lines.index('elif self.state in ("S2", "S3"):') + 1] == '    if self.cond == "C1":'
+    multi = 'elif self.state in (self._runtime.tags["S2"], self._runtime.tags["S3"]):'
+    assert multi in lines
+    assert lines[lines.index(multi) + 1] == '    if self.cond == self._runtime.tags["C1"]:'

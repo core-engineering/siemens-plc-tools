@@ -274,7 +274,11 @@ class TestSymbolicLabels:
         result = compile_block(block)
         assert result.success, result.compile_error
         generated = result.transpile_result.python_code
-        assert "if self.state == self.MODE_ONE or self.state == self.MODE_TWO:" in generated
+        expected_condition = (
+            'if self.state == self._runtime.tags["MODE_ONE"] '
+            'or self.state == self._runtime.tags["MODE_TWO"]:'
+        )
+        assert expected_condition in generated
 
         # a=1 and a=2 land on the two CASE-labelled branches (b=10 / b=20) and then
         # the OR condition must recognise the just-assigned symbol and add 1; a=3

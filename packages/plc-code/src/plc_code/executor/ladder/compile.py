@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from plc_code.executor.models import CompileResult, TranspileOptions, TranspileResult
+from plc_code.executor.models import CompileResult, TranspileOptions, TranspileResult, python_class_name
 from plc_code.executor.transpiler import SCLTranspiler
 from plc_code.executor.types import TypeMapper
 from plc_code.parser.ladder_builder import build_ladder_program
@@ -63,7 +63,7 @@ def compile_ladder_block(block: Block, **_: Any) -> CompileResult:
 
     lines = [
         "@dataclass",
-        f"class {block.name}:",
+        f"class {python_class_name(block.name)}:",
         "    _runtime: PLCRuntime = field(repr=False)",
         "",
     ]
@@ -95,7 +95,7 @@ def compile_ladder_block(block: Block, **_: Any) -> CompileResult:
     transpile_result = TranspileResult(
         success=True,
         python_code=source,
-        class_name=block.name,
+        class_name=python_class_name(block.name),
     )
 
     try:

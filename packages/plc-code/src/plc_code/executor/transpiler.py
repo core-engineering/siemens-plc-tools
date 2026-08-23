@@ -11,9 +11,16 @@ from typing import Any
 from plc_code.executor.arguments import SignatureResolver
 from plc_code.executor.codegen import CodeGenContext
 from plc_code.executor.generator import UnsupportedStatement, generate_statements
-from plc_code.executor.models import CompileResult, TranspileOptions, TranspileProblem, TranspileResult
+from plc_code.executor.models import (
+    CompileResult,
+    TranspileOptions,
+    TranspileProblem,
+    TranspileResult,
+    python_class_name,
+    python_identifier,
+)
 from plc_code.executor.renderer import UnsupportedExpression
-from plc_code.executor.timers import timer_class_name
+from plc_code.executor.timers import system_fb_class_name, timer_class_name
 from plc_code.executor.types import ArrayTypeInfo, SCLType, TypeInfo, TypeMapper
 from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block, Network, Region, VariableDeclaration
@@ -46,7 +53,6 @@ class SCLTranspiler:
     _ctx: CodeGenContext = field(default_factory=CodeGenContext, repr=False)
     _problems: list[TranspileProblem] = field(default_factory=list, repr=False)
     _warnings: list[str] = field(default_factory=list, repr=False)
-    _string_constants: dict[str, int] = field(default_factory=dict, repr=False)
     _fb_members: list[tuple[str, str]] = field(default_factory=list, repr=False)
 
     def transpile(self) -> TranspileResult:
@@ -61,13 +67,9 @@ class SCLTranspiler:
         self._problems = []
         self._warnings = []
         self._ctx = CodeGenContext()
-        self._string_constants = {}
         self._fb_members = []
 
         try:
-            # Pre-scan for string constants in CASE statements
-            self._collect_string_constants()
-
             # Generate class body first so imports can inspect translated code
             self._generate_class()
             body_lines = self._lines
@@ -82,7 +84,7 @@ class SCLTranspiler:
             return TranspileResult(
                 success=not self._problems,
                 python_code=python_code,
-                class_name=self.block.name,
+                class_name=python_class_name(self.block.name),
                 problems=self._problems,
                 warnings=self._warnings,
             )
@@ -96,7 +98,7 @@ class SCLTranspiler:
             return TranspileResult(
                 success=False,
                 python_code="",
-                class_name=self.block.name,
+                class_name=python_class_name(self.block.name),
                 problems=self._problems,
                 warnings=self._warnings,
             )
@@ -107,46 +109,6 @@ class SCLTranspiler:
             self._lines.append(f"{self._ctx.indent()}{line}")
         else:
             self._lines.append("")
-
-    def _collect_string_constants(self) -> None:
-        """Scan code for string constants used in CASE labels and assignments.
-
-        This method finds quoted string constants like "USER_FREEWHEEL" used in
-        CASE statements and creates a mapping to integer values. This allows
-        the transpiler to replace string references with numeric constants.
-        """
-        import re
-
-        all_code = ""
-        for network in self.block.networks:
-            for region in network.regions:
-                if region.content:
-                    all_code += region.content + "\n"
-
-        # Find string constants in CASE labels: "CONSTANT_NAME":
-        case_labels = re.findall(r'"([A-Z_][A-Z0-9_]*)":', all_code, re.IGNORECASE)
-
-        # Assign sequential integer values, starting with labels in order found
-        seen = set()
-        value = 0
-        for label in case_labels:
-            upper_label = label.upper()
-            if upper_label not in seen:
-                self._string_constants[f'"{label}"'] = value
-                seen.add(upper_label)
-                value += 1
-
-        # Also find string constants used in comparisons and assignments
-        # Pattern: = "CONSTANT_NAME" or ="CONSTANT_NAME"
-        # The negative lookahead excludes quoted names that are actually global DB
-        # references (`"Db".member`) or sub-block calls (`"Block"(...)`) — those are
-        # not enum-string comparisons and must not be mapped to integers.
-        other_refs = re.findall(r'[=<>]\s*"([A-Z_][A-Z0-9_]*)"(?!\s*[.(])', all_code, re.IGNORECASE)
-        for ref in other_refs:
-            key = f'"{ref}"'
-            if key not in self._string_constants:
-                self._string_constants[key] = value
-                value += 1
 
     def _type_is_udt(self, data_type: str) -> bool:
         """Return True if ``data_type`` is a scalar UDT or a UDT-element array.
@@ -204,7 +166,7 @@ class SCLTranspiler:
         timer_types = set()
         for section in self.block.variable_sections:
             for var in section.variables:
-                timer_name = timer_class_name(var.data_type)
+                timer_name = system_fb_class_name(var.data_type)
                 if timer_name is not None:
                     timer_types.add(timer_name)
 
@@ -221,7 +183,7 @@ class SCLTranspiler:
     def _generate_class(self) -> None:
         """Generate the main class definition."""
         self._emit("@dataclass")
-        self._emit(f"class {self.block.name}:")
+        self._emit(f"class {python_class_name(self.block.name)}:")
 
         self._ctx = self._ctx.push()
         class_body_ctx = self._ctx
@@ -234,15 +196,6 @@ class SCLTranspiler:
         # Runtime reference
         self._emit("_runtime: PLCRuntime = field(repr=False)")
         self._emit("")
-
-        # Generate string constants as class attributes (if any)
-        if self._string_constants:
-            self._emit("# String constants (converted to integers)")
-            for const_str, const_val in self._string_constants.items():
-                # Extract name from quoted string: "USER_FREEWHEEL" -> USER_FREEWHEEL
-                const_name = const_str.strip('"')
-                self._emit(f"{const_name}: int = {const_val}")
-            self._emit("")
 
         # Generate variable sections
         self._generate_variables()
@@ -322,7 +275,7 @@ class SCLTranspiler:
         is_constant : bool
             Whether this is a constant.
         """
-        name = var.name
+        name = python_identifier(var.name)
 
         # UDT types (_.TypeName) are initialised as _AutoStruct() so that
         # attribute and index access works without needing to resolve the actual
@@ -346,7 +299,7 @@ class SCLTranspiler:
         default = self._get_default_value(var)
 
         # For timers and complex types, use field(default_factory=...)
-        timer_name = timer_class_name(var.data_type)
+        timer_name = system_fb_class_name(var.data_type)
         if timer_name is not None:
             self._emit(f"{name}: {timer_name} = field(default_factory={timer_name})")
         elif default.startswith("[") or default.startswith("{"):
@@ -519,15 +472,15 @@ class SCLTranspiler:
     def _generate_metadata(self) -> None:
         """Generate metadata attributes for the class."""
         # Input names
-        inputs = [var.name for var in self.block.inputs]
+        inputs = [python_identifier(var.name) for var in self.block.inputs]
         self._emit(f"_inputs: tuple[str, ...] = field(default={tuple(inputs)!r}, repr=False)")
 
         # Output names
-        outputs = [var.name for var in self.block.outputs]
+        outputs = [python_identifier(var.name) for var in self.block.outputs]
         self._emit(f"_outputs: tuple[str, ...] = field(default={tuple(outputs)!r}, repr=False)")
 
         # In-out names
-        in_outs = [var.name for var in self.block.in_outs]
+        in_outs = [python_identifier(var.name) for var in self.block.in_outs]
         self._emit(f"_in_outs: tuple[str, ...] = field(default={tuple(in_outs)!r}, repr=False)")
 
         self._emit("")
@@ -690,7 +643,6 @@ class SCLTranspiler:
             return []
         return generate_statements(
             result.statements,
-            string_constants=self._string_constants,
             signature_resolver=self.signature_resolver,
             timer_instances=self._timer_instances(),
         )
@@ -740,10 +692,9 @@ def build_runtime_globals() -> dict[str, Any]:
     # Timers are optional: a build without them still compiles blocks that
     # never reference a timer type.
     try:
-        timers = __import__("plc_code.executor.timers", fromlist=["TON_TIME", "TOF_TIME", "TP_TIME"])
-        globals_["TON_TIME"] = timers.TON_TIME
-        globals_["TOF_TIME"] = timers.TOF_TIME
-        globals_["TP_TIME"] = timers.TP_TIME
+        timers = __import__("plc_code.executor.timers", fromlist=["TON_TIME"])
+        for class_name in set(timers.SYSTEM_FB_NAMES.values()):
+            globals_[class_name] = getattr(timers, class_name)
     except ImportError:
         pass
 

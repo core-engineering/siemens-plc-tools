@@ -326,9 +326,11 @@ class TestTypeMapperTypeHints:
         assert mapper.get_python_type_hint("Array[1..10] of Real") == "list[float]"
 
     def test_udt_type_hint(self) -> None:
-        """Test UDT type hint."""
+        """A UDT or system type is hinted `Any`: its own name is not a Python name in
+        the generated module, and a NameError in a hint takes the whole class down."""
         mapper = TypeMapper()
-        assert mapper.get_python_type_hint("_.typeUnitData") == "typeUnitData"
+        assert mapper.get_python_type_hint("_.typeUnitData") == "Any"
+        assert mapper.get_python_type_hint("HW_IO") == "Any"
 
 
 class TestArray2D:

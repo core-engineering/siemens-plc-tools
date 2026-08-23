@@ -1,0 +1,38 @@
+FUNCTION_BLOCK "SystemFbs"
+    VAR_INPUT
+        input : Bool;
+        raw : Int;
+        duration : Time;
+    END_VAR
+    VAR_OUTPUT
+        rose : Bool;
+        fell : Bool;
+        held : Bool;
+        squared : Int;
+        ms : DInt;
+        truncated : Int;
+        swapped : Word;
+        bcd : Int;
+    END_VAR
+    VAR
+        rising : R_TRIG;
+        falling : F_TRIG;
+        retentive : TONR;
+        diag : HW_IO;
+    END_VAR
+
+    { S7_Language := "SCL" }
+    NETWORK
+        #rising(CLK := #input);
+        #rose := #rising.Q;
+        #falling(CLK := #input);
+        #fell := #falling.Q;
+        #retentive(IN := #input, PT := T#100ms, R := FALSE);
+        #held := #retentive.Q;
+        #squared := SQR(#raw);
+        #ms := TIME_TO_DINT(#duration);
+        #truncated := TRUNC(2.7);
+        #swapped := SWAP_WORD(16#1234);
+        #bcd := BCD16_TO_INT(16#0042);
+    END_NETWORK
+END_FUNCTION_BLOCK
