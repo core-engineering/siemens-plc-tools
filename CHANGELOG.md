@@ -732,6 +732,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   handle that form; it is a separate, pre-existing gap and is left alone here.
 
 ### Changed
+- **plc-code (analyzer)** — `analyzer.logic_dependency` reads the shared statement
+  and expression AST; its private regex lexer and recursive-descent expression
+  parser (597 lines) are deleted, and the extractor's own regex walk over
+  `Region.content` with it.
+
+  The private parser knew neither arithmetic nor indexing and tolerated unread
+  trailing tokens, so `#a + #b` was read as `#a` and `#b` vanished from the graph.
+  The text walk it sat on read a re-spaced rendering of the source in which `<=`
+  had become `< =` and `T#0s` `T # 0 s`, captured several statements as one
+  "expression" and parsed its first token, took the last `#name` before `:=` as
+  the target (so `#status.#inner := ...` was an assignment to `inner`), read
+  assignments out of commented code, and skipped anything it could not parse
+  without a word. Measured on five production projects (349 blocks with code):
+  it found 3 086 assignments; the AST walk finds 9 344. Of the 1 438 (target,
+  dependency) pairs the old walk reported, every one of the 107 it alone reported
+  was its own mistake — 48 mis-read `.#member` targets, 44 from commented code, 15
+  garbage targets spanning statements. Nothing real is lost; 2 195 targets gain
+  dependencies they always had.
+
+  What is new in the result: a call statement's `=>` output is an assignment that
+  depends on the callee and every input argument (`#tmr(IN := #a, Q => #q)` makes
+  `q` depend on `tmr` and `a`; `=>` is not `:=`, so the text walk never saw
+  these); a `FOR` loop's variable is assigned from its bounds; an index expression
+  is a dependency of the indexed access (`OperatorType.INDEX`), and arithmetic
+  keeps every operand (`OperatorType.ADD`, `SUBTRACT`, `MULTIPLY`, `DIVIDE`,
+  `MODULO`, `POWER`, `NEGATE` — the Mermaid generator labels them by their own
+  value). A member path is typed by its root variable when the path itself is not
+  declared, so a member of an input struct is an input rather than `UNKNOWN`.
+  Source lines are the file's own, not a region-relative count. What the parser
+  refuses is recorded in the new `BlockDependencies.parse_errors` and printed by
+  `plc code trace`. The `ExpressionParser(text)` / `parse_expression(text)` API is
+  kept and gains `ExpressionParser.convert(tree)` and `reference_text(tree)`.
+
 - **plc-code (executor)** — `TranspileResult` carries its failures as
   `problems: list[TranspileProblem]` (message plus SCL `source_line`), replacing the
   two parallel lists `errors` and `error_lines` that were aligned by convention

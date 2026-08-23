@@ -3,21 +3,25 @@
 This module extracts variable assignments and their dependencies from
 parsed Block objects. It:
 - Builds a variable registry from VAR sections
-- Extracts all assignments with line numbers
+- Walks the shared statement AST of every region and network
 - Tracks enclosing IF/CASE context
-- Parses expressions into LogicExpression trees
+- Folds expression trees into LogicExpression trees
 """
 
-import re
-
+from plc_code.parser.expressions import Expression, Index, Literal, Member, TypedLiteral, VariableRef
+from plc_code.parser.lexer import Token
 from plc_code.parser.models import Block, Network, Region
+from plc_code.parser.statement_parser import parse_statements, verify_no_silent_loss
+from plc_code.parser.statements import Assignment as StmtAssignment
+from plc_code.parser.statements import Call, Case, For, If, Statement, While
 
-from .expression_parser import ExpressionParser, ParseError
+from .expression_parser import ExpressionParser, ParseError, reference_text
 from .models import (
     Assignment,
     BlockDependencies,
     LogicExpression,
     NodeType,
+    OperatorType,
     SourceLocation,
     VariableInfo,
 )
@@ -86,35 +90,21 @@ def get_variable_type(name: str, registry: dict[str, VariableInfo]) -> NodeType:
 
 
 class AssignmentExtractor:
-    """Extracts assignments from SCL code with context tracking."""
+    """Extracts assignments, with their enclosing IF/CASE context, from a block.
 
-    # Pattern for simple assignments: target := expression
-    # Note: Parser may add spaces after # (e.g., "# alarmState" instead of "#alarmState")
-    ASSIGNMENT_PATTERN = re.compile(
-        r"(#\s*[a-zA-Z_][a-zA-Z0-9_.]*|\"[^\"]+\"[a-zA-Z0-9_.\[\]\"]*)\s*:=\s*([^;]+);",
-        re.MULTILINE | re.DOTALL,
-    )
+    Walks the statement AST the shared parser builds from each region's and
+    network's token slice (:func:`plc_code.parser.statement_parser.parse_statements`),
+    so an assignment's target and value are expression trees, never text sliced by
+    regex. The old text walk read ``Region.content`` -- a re-spaced rendering in
+    which ``<=`` had become ``< =`` and ``T#0s`` ``T # 0 s`` -- with patterns that
+    could capture several statements as one expression and parse only its first
+    token. What it could not read it skipped without a word; what this walker
+    cannot read is recorded in ``parse_errors``.
 
-    # Pattern for IF statements
-    IF_PATTERN = re.compile(r"\bIF\s+(.+?)\s+THEN\b", re.IGNORECASE | re.DOTALL)
-
-    # Pattern for ELSIF statements
-    ELSIF_PATTERN = re.compile(r"\bELSIF\s+(.+?)\s+THEN\b", re.IGNORECASE | re.DOTALL)
-
-    # Pattern for END_IF
-    END_IF_PATTERN = re.compile(r"\bEND_IF\b", re.IGNORECASE)
-
-    # Pattern for ELSE
-    ELSE_PATTERN = re.compile(r"\bELSE\b", re.IGNORECASE)
-
-    # Pattern for CASE statements (handles space after #)
-    CASE_PATTERN = re.compile(r"\bCASE\s+(#\s*\S+|\S+)\s+OF\b", re.IGNORECASE)
-
-    # Pattern for case labels (e.g., #NO_ALARM: or # NO_ALARM:)
-    CASE_LABEL_PATTERN = re.compile(r"^\s*(#\s*[a-zA-Z_][a-zA-Z0-9_]*)\s*:", re.MULTILINE)
-
-    # Pattern for END_CASE
-    END_CASE_PATTERN = re.compile(r"\bEND_CASE\b", re.IGNORECASE)
+    An FB or FC call statement with ``=>`` output bindings yields one assignment per
+    bound output: the output depends on the callee and every input argument. The
+    text walk never saw those (``=>`` is not ``:=``).
+    """
 
     def __init__(
         self,
@@ -132,236 +122,232 @@ class AssignmentExtractor:
         """
         self.variable_registry = variable_registry
         self.source_file = source_file
+        self.parse_errors: list[str] = []
         self.variable_lookup = {name: info.node_type for name, info in variable_registry.items()}
 
     def extract_from_block(self, block: Block) -> list[Assignment]:
-        """Extract all assignments from a block.
-
-        Parameters
-        ----------
-        block : Block
-            The parsed block.
-
-        Returns
-        -------
-        list[Assignment]
-            All assignments found.
-        """
+        """Extract all assignments from a block, in source order."""
         assignments: list[Assignment] = []
-
         for network in block.networks:
             assignments.extend(self._extract_from_network(network))
-
         return assignments
 
     def _extract_from_network(self, network: Network) -> list[Assignment]:
-        """Extract assignments from a network."""
         assignments: list[Assignment] = []
-
-        # Process content directly
-        if network.content:
-            assignments.extend(self._extract_from_code(network.content, region_name=""))
-
-        # Process regions
+        if network.tokens:
+            assignments.extend(self._extract_from_tokens(network.tokens, region_name=""))
         for region in network.regions:
             assignments.extend(self._extract_from_region(region))
-
         return assignments
 
     def _extract_from_region(self, region: Region, parent_region: str = "") -> list[Assignment]:
-        """Extract assignments from a region."""
-        assignments: list[Assignment] = []
+        # ``region.tokens`` already carries the nested regions' tokens flattened
+        # in (the SCL parser's doing), so the nesting only names the context.
         region_name = region.name if not parent_region else f"{parent_region}/{region.name}"
+        if region.tokens:
+            return self._extract_from_tokens(region.tokens, region_name=region_name)
+        return []
 
-        # Process region content
-        if region.content:
-            assignments.extend(self._extract_from_code(region.content, region_name=region_name))
+    def _extract_from_tokens(self, tokens: list[Token], region_name: str) -> list[Assignment]:
+        result = parse_statements(tokens)
+        for error in result.errors:
+            self.parse_errors.append(error.message)
+        for problem in verify_no_silent_loss(tokens, result):
+            self.parse_errors.append(problem)
+        return self._walk(result.statements, region_name, condition=None, case_context=None)
 
-        # Process nested regions
-        for nested in region.nested_regions:
-            assignments.extend(self._extract_from_region(nested, region_name))
+    # -- the walk ------------------------------------------------------------------
 
-        return assignments
-
-    def _extract_from_code(
+    def _walk(
         self,
-        code: str,
-        region_name: str = "",
-        base_line: int = 1,
+        statements: list[Statement],
+        region_name: str,
+        condition: LogicExpression | None,
+        case_context: str | None,
     ) -> list[Assignment]:
-        """Extract assignments from code string with context tracking.
+        """Assignments in ``statements``, each under the innermost IF condition and
+        CASE label enclosing it (an ELSE body carries no condition, as before)."""
+        found: list[Assignment] = []
+        for statement in statements:
+            if isinstance(statement, StmtAssignment):
+                assignment = self._assignment(statement, region_name, condition, case_context)
+                if assignment is not None:
+                    found.append(assignment)
+            elif isinstance(statement, Call):
+                found.extend(self._call_outputs(statement, region_name, condition, case_context))
+            elif isinstance(statement, If):
+                for branch in statement.branches:
+                    branch_condition = self._condition(branch.condition_expr, statement.line) or condition
+                    found.extend(self._walk(branch.body, region_name, branch_condition, case_context))
+                found.extend(self._walk(statement.else_body, region_name, condition, case_context))
+            elif isinstance(statement, Case):
+                for arm in statement.branches:
+                    label = ", ".join(_label_text(value) for value in arm.values_expr)
+                    found.extend(self._walk(arm.body, region_name, condition, label or case_context))
+                found.extend(self._walk(statement.default, region_name, condition, case_context))
+            elif isinstance(statement, For):
+                loop_variable = self._for_variable(statement, region_name, condition, case_context)
+                if loop_variable is not None:
+                    found.append(loop_variable)
+                found.extend(self._walk(statement.body, region_name, condition, case_context))
+            elif isinstance(statement, While):
+                found.extend(self._walk(statement.body, region_name, condition, case_context))
+            # Return / Exit: nothing assigned.
+        return found
 
-        Parameters
-        ----------
-        code : str
-            The code to analyze.
-        region_name : str
-            Name of enclosing region.
-        base_line : int
-            Base line number offset.
+    def _condition(self, expression: Expression | None, line: int) -> LogicExpression | None:
+        if expression is None:
+            return None
+        try:
+            return self._parser(line).convert(expression)
+        except ParseError as error:
+            self._record(error, line)
+            return None
 
-        Returns
-        -------
-        list[Assignment]
-            Extracted assignments.
-        """
-        assignments: list[Assignment] = []
+    def _assignment(
+        self,
+        statement: StmtAssignment,
+        region_name: str,
+        condition: LogicExpression | None,
+        case_context: str | None,
+    ) -> Assignment | None:
+        if statement.target_expr is None or statement.value_expr is None:
+            self.parse_errors.append(f"line {statement.line}: assignment has no parsed expression tree")
+            return None
+        try:
+            expression = self._parser(statement.line).convert(statement.value_expr)
+        except ParseError as error:
+            self._record(error, statement.line)
+            return None
+        target, target_type = self._target(statement.target_expr)
+        return Assignment(
+            target=target,
+            target_type=target_type,
+            expression=expression,
+            source_location=SourceLocation(self.source_file, statement.line, region_name),
+            enclosing_condition=condition,
+            case_context=case_context,
+        )
 
-        # Track context stack.
-        # Each entry: (kind, condition, case_value) where kind is one of
-        # 'IF', 'ELSIF', 'ELSE', 'CASE'.
-        context_stack: list[tuple[str, LogicExpression | None, str | None]] = []
-
-        lines = code.split("\n")
-        line_starts = [0]
-        for line in lines[:-1]:
-            line_starts.append(line_starts[-1] + len(line) + 1)
-
-        def get_line_number(pos: int) -> int:
-            """Get line number for a position."""
-            for i, start in enumerate(line_starts):
-                if pos < start:
-                    return base_line + i - 1
-            return base_line + len(line_starts) - 1
-
-        # Process code sequentially to track context
-        pos = 0
-        current_case_var: str | None = None
-
-        while pos < len(code):
-            # Check for IF
-            if_match = self.IF_PATTERN.match(code, pos)
-            if if_match:
-                condition_str = if_match.group(1).strip()
-                try:
-                    condition_expr = self._parse_condition(condition_str, get_line_number(pos))
-                    context_stack.append(("IF", condition_expr, None))
-                except ParseError:
-                    context_stack.append(("IF", None, None))
-                pos = if_match.end()
+    def _call_outputs(
+        self,
+        statement: Call,
+        region_name: str,
+        condition: LogicExpression | None,
+        case_context: str | None,
+    ) -> list[Assignment]:
+        """One assignment per ``=>`` output of a call: it depends on the callee and inputs."""
+        outputs = [argument for argument in statement.arguments if argument.is_output]
+        if not outputs or statement.callee_expr is None:
+            return []
+        parser = self._parser(statement.line)
+        try:
+            callee = parser.convert(statement.callee_expr)
+            inputs = [
+                parser.convert(argument.value_expr)
+                for argument in statement.arguments
+                if not argument.is_output and argument.value_expr is not None
+            ]
+        except ParseError as error:
+            self._record(error, statement.line)
+            return []
+        depends_on = (
+            LogicExpression(operator=OperatorType.AND, operands=[callee, *inputs]) if inputs else callee
+        )
+        found: list[Assignment] = []
+        for argument in outputs:
+            if argument.value_expr is None:
+                self.parse_errors.append(
+                    f"line {statement.line}: output {argument.name!r} has no parsed expression tree"
+                )
                 continue
+            target, target_type = self._target(argument.value_expr)
+            found.append(
+                Assignment(
+                    target=target,
+                    target_type=target_type,
+                    expression=depends_on,
+                    source_location=SourceLocation(self.source_file, statement.line, region_name),
+                    enclosing_condition=condition,
+                    case_context=case_context,
+                )
+            )
+        return found
 
-            # Check for ELSIF
-            elsif_match = self.ELSIF_PATTERN.match(code, pos)
-            if elsif_match:
-                # Pop previous IF/ELSIF
-                if context_stack and context_stack[-1][0] in ("IF", "ELSIF"):
-                    context_stack.pop()
-                condition_str = elsif_match.group(1).strip()
-                try:
-                    condition_expr = self._parse_condition(condition_str, get_line_number(pos))
-                    context_stack.append(("ELSIF", condition_expr, None))
-                except ParseError:
-                    context_stack.append(("ELSIF", None, None))
-                pos = elsif_match.end()
-                continue
+    def _for_variable(
+        self,
+        statement: For,
+        region_name: str,
+        condition: LogicExpression | None,
+        case_context: str | None,
+    ) -> Assignment | None:
+        """The loop variable as an assignment from the loop's bounds (and step)."""
+        bounds = [expr for expr in (statement.start_expr, statement.end_expr, statement.step_expr) if expr]
+        variable = _for_variable_text(statement.variable)
+        if not bounds or variable is None:
+            return None
+        parser = self._parser(statement.line)
+        try:
+            operands = [parser.convert(expr) for expr in bounds]
+        except ParseError as error:
+            self._record(error, statement.line)
+            return None
+        expression = (
+            operands[0]
+            if len(operands) == 1
+            else LogicExpression(operator=OperatorType.AND, operands=list(operands))
+        )
+        name = variable.lstrip("#")
+        return Assignment(
+            target=name,
+            target_type=get_variable_type(name, self.variable_registry),
+            expression=expression,
+            source_location=SourceLocation(self.source_file, statement.line, region_name),
+            enclosing_condition=condition,
+            case_context=case_context,
+        )
 
-            # Check for ELSE
-            else_match = self.ELSE_PATTERN.match(code, pos)
-            if else_match:
-                # Pop previous IF/ELSIF
-                if context_stack and context_stack[-1][0] in ("IF", "ELSIF"):
-                    context_stack.pop()
-                context_stack.append(("ELSE", None, None))
-                pos = else_match.end()
-                continue
+    def _target(self, expression: Expression) -> tuple[str, NodeType]:
+        """The assignment target's name (``#``-less path text) and node type."""
+        text = reference_text(expression)
+        if text.startswith("#"):
+            name = text[1:]
+            root = name.split(".")[0].split("[")[0]
+            node_type = get_variable_type(name, self.variable_registry)
+            if node_type is NodeType.UNKNOWN:
+                node_type = get_variable_type(root, self.variable_registry)
+            return name, node_type
+        return text, NodeType.GLOBAL_DB
 
-            # Check for END_IF
-            end_if_match = self.END_IF_PATTERN.match(code, pos)
-            if end_if_match:
-                # Pop all IF/ELSIF/ELSE entries until we find the IF
-                while context_stack and context_stack[-1][0] in ("IF", "ELSIF", "ELSE"):
-                    context_stack.pop()
-                pos = end_if_match.end()
-                continue
+    def _parser(self, line: int) -> ExpressionParser:
+        return ExpressionParser(self.variable_lookup, self.source_file, line)
 
-            # Check for CASE
-            case_match = self.CASE_PATTERN.match(code, pos)
-            if case_match:
-                current_case_var = case_match.group(1)
-                context_stack.append(("CASE", None, None))
-                pos = case_match.end()
-                continue
+    def _record(self, error: ParseError, line_number: int) -> None:
+        """Keep an expression the parser refused, with its line, for the caller."""
+        self.parse_errors.append(f"line {line_number}: {error}")
 
-            # Check for case label
-            label_match = self.CASE_LABEL_PATTERN.match(code, pos)
-            if label_match and current_case_var:
-                label = label_match.group(1)
-                # Pop previous case label if any
-                if context_stack and context_stack[-1][0] == "CASE_LABEL":
-                    context_stack.pop()
-                context_stack.append(("CASE_LABEL", None, label))
-                pos = label_match.end()
-                continue
 
-            # Check for END_CASE
-            end_case_match = self.END_CASE_PATTERN.match(code, pos)
-            if end_case_match:
-                # Pop case context
-                while context_stack and context_stack[-1][0] in ("CASE", "CASE_LABEL"):
-                    context_stack.pop()
-                current_case_var = None
-                pos = end_case_match.end()
-                continue
+def _for_variable_text(tokens: list[Token]) -> str | None:
+    """``#name`` from a FOR variable's token slice (``#`` then an identifier), else None."""
+    values = [token.value for token in tokens]
+    if len(values) == 2 and values[0] == "#":
+        return f"#{values[1]}"
+    if len(values) == 1 and values[0].startswith("#"):
+        return values[0]
+    return None
 
-            # Check for assignment
-            assign_match = self.ASSIGNMENT_PATTERN.match(code, pos)
-            if assign_match:
-                target = assign_match.group(1)
-                expr_str = assign_match.group(2).strip()
-                line_num = get_line_number(assign_match.start())
 
-                # Get current context
-                enclosing_condition = None
-                case_context = None
-                for ctx_type, ctx_cond, ctx_case in context_stack:
-                    if ctx_type in ("IF", "ELSIF") and ctx_cond:
-                        enclosing_condition = ctx_cond
-                    elif ctx_type == "CASE_LABEL" and ctx_case:
-                        case_context = ctx_case
-
-                # Parse the expression
-                try:
-                    expr = self._parse_expression(expr_str, line_num)
-
-                    # Determine target type (strip # and any spaces)
-                    target_name = target.lstrip("#").strip()
-                    target_type = get_variable_type(target_name, self.variable_registry)
-
-                    # Check for global DB target
-                    if target.startswith('"'):
-                        target_type = NodeType.GLOBAL_DB
-
-                    assignment = Assignment(
-                        target=target_name,
-                        target_type=target_type,
-                        expression=expr,
-                        source_location=SourceLocation(self.source_file, line_num, region_name),
-                        enclosing_condition=enclosing_condition,
-                        case_context=case_context,
-                    )
-                    assignments.append(assignment)
-                except ParseError:
-                    # Skip unparseable expressions
-                    pass
-
-                pos = assign_match.end()
-                continue
-
-            # Move forward
-            pos += 1
-
-        return assignments
-
-    def _parse_condition(self, condition: str, line_number: int) -> LogicExpression:
-        """Parse a condition expression."""
-        parser = ExpressionParser(self.variable_lookup, self.source_file, line_number)
-        return parser.parse(condition)
-
-    def _parse_expression(self, expr: str, line_number: int) -> LogicExpression:
-        """Parse an expression."""
-        parser = ExpressionParser(self.variable_lookup, self.source_file, line_number)
-        return parser.parse(expr)
+def _label_text(value: Expression | None) -> str:
+    """A CASE label as written: a literal's text, a reference's spelling, else ``*``."""
+    if value is None:
+        return "*"
+    if isinstance(value, Literal):
+        return value.value
+    if isinstance(value, TypedLiteral):
+        return f"{value.prefix}#{value.value}"
+    if isinstance(value, VariableRef | Member | Index):
+        return reference_text(value)
+    return "*"
 
 
 def extract_dependencies(block: Block) -> BlockDependencies:
@@ -389,6 +375,7 @@ def extract_dependencies(block: Block) -> BlockDependencies:
         source_file=block.source_file,
         variables=registry,
         assignments=assignments,
+        parse_errors=list(extractor.parse_errors),
     )
 
 

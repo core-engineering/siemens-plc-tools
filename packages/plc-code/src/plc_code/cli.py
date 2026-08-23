@@ -1599,6 +1599,8 @@ def trace(
 
                 # Extract dependencies
                 deps = extract_dependencies(block)
+                for problem in deps.parse_errors:
+                    diag_console.print(f"[yellow]{block.name}:[/yellow] not traced, {problem}")
 
                 # Build output trees
                 output_trees = build_all_output_trees(deps)

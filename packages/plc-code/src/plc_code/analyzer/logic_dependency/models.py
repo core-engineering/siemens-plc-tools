@@ -82,6 +82,13 @@ class OperatorType(Enum):
         CASE state context.
     IDENTITY : str
         Pass-through (single operand, no operation).
+    ADD, SUBTRACT, MULTIPLY, DIVIDE, MODULO, POWER : str
+        Arithmetic; the result depends on both operands.
+    NEGATE : str
+        Unary minus.
+    INDEX : str
+        Indexed access: operands are the base reference, then each index
+        expression in order.
     """
 
     AND = "AND"
@@ -98,6 +105,16 @@ class OperatorType(Enum):
     IF_THEN = "IF"
     CASE_WHEN = "CASE"
     IDENTITY = "IDENTITY"
+    # Arithmetic and indexing: a value that depends on every operand. The old
+    # private parser knew none of these and dropped the operands after the first.
+    ADD = "+"
+    SUBTRACT = "-"
+    MULTIPLY = "*"
+    DIVIDE = "/"
+    MODULO = "MOD"
+    POWER = "**"
+    NEGATE = "NEG"
+    INDEX = "[]"
 
 
 @dataclass
@@ -270,12 +287,17 @@ class BlockDependencies:
         Registry of all declared variables.
     assignments : list[Assignment]
         All assignments found in the block.
+    parse_errors : list[str]
+        Expressions the extractor could not read, one message each with the
+        source line; the assignment or condition they belong to is absent from
+        ``assignments``. Used to be dropped without a trace.
     """
 
     block_name: str
     source_file: str = ""
     variables: dict[str, VariableInfo] = field(default_factory=dict)
     assignments: list[Assignment] = field(default_factory=list)
+    parse_errors: list[str] = field(default_factory=list)
 
 
 @dataclass

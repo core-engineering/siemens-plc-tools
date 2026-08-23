@@ -1,18 +1,25 @@
-"""Expression parser for SCL boolean and comparison expressions.
+"""SCL expressions as :class:`LogicExpression` trees, read through the shared parser.
 
-This module provides a tokenizer and recursive descent parser for
-parsing SCL expressions into LogicExpression trees. Handles:
-- Boolean operators: AND, OR, NOT, XOR
-- Comparison operators: =, <>, <, >, <=, >=
-- Variable references: #var, "DB".field
-- Parenthesized expressions
-- Function calls (as terminal nodes)
+This module used to carry its own regex lexer and recursive-descent parser for
+boolean and comparison expressions. That parser knew no arithmetic and no
+indexing, and tolerated unread trailing tokens: ``#a + #b`` was read as ``#a`` and
+``#b`` silently vanished from the dependency graph. It is gone. The expression
+text is now tokenized by :mod:`plc_code.parser.lexer` and parsed by
+:func:`plc_code.parser.expression_parser.parse_expression` -- the one grammar every
+other consumer reads SCL with, which refuses a slice it cannot read in full -- and
+the resulting tree is folded into the :class:`LogicExpression` shape the tracers,
+the graph builder and the Mermaid generator consume.
+
+The public surface keeps :class:`ExpressionParser`, :class:`ParseError` and
+:func:`parse_expression`, and adds :meth:`ExpressionParser.convert` for a caller
+that already holds a tree, plus :func:`reference_text`.
 """
 
-import re
-from collections.abc import Iterator
-from dataclasses import dataclass
-from enum import Enum, auto
+from __future__ import annotations
+
+from plc_code.parser import expressions as ast
+from plc_code.parser.expression_parser import parse_expression as parse_expression_tokens
+from plc_code.parser.lexer import TokenType, tokenize
 
 from .models import (
     DependencyNode,
@@ -22,190 +29,48 @@ from .models import (
     SourceLocation,
 )
 
-
-class TokenType(Enum):
-    """Token types for the lexer."""
-
-    # Literals and identifiers
-    LOCAL_VAR = auto()  # #variableName
-    GLOBAL_REF = auto()  # "DBName".field.path
-    IDENTIFIER = auto()  # plain identifier
-    NUMBER = auto()  # numeric literal
-    STRING = auto()  # string literal
-    BOOL_LITERAL = auto()  # TRUE/FALSE
-
-    # Boolean operators
-    AND = auto()
-    OR = auto()
-    NOT = auto()
-    XOR = auto()
-
-    # Comparison operators
-    EQ = auto()  # =
-    NE = auto()  # <>
-    LT = auto()  # <
-    GT = auto()  # >
-    LE = auto()  # <=
-    GE = auto()  # >=
-
-    # Delimiters
-    LPAREN = auto()  # (
-    RPAREN = auto()  # )
-    LBRACKET = auto()  # [
-    RBRACKET = auto()  # ]
-    COMMA = auto()  # ,
-    DOT = auto()  # .
-    ASSIGN = auto()  # :=
-    OUTPUT_ASSIGN = auto()  # =>
-
-    # Special
-    EOF = auto()
-    UNKNOWN = auto()
-
-
-@dataclass
-class Token:
-    """A lexical token.
-
-    Attributes
-    ----------
-    type : TokenType
-        The type of token.
-    value : str
-        The token's string value.
-    position : int
-        Position in source string.
-    """
-
-    type: TokenType
-    value: str
-    position: int = 0
-
-
-class Lexer:
-    """Tokenizer for SCL expressions.
-
-    Converts a string expression into a sequence of tokens.
-    """
-
-    # Token patterns (order matters - longer matches first)
-    PATTERNS = [
-        # Assignment operators (before comparison)
-        (r":=", TokenType.ASSIGN),
-        (r"=>", TokenType.OUTPUT_ASSIGN),
-        # Comparison operators (multi-char first)
-        (r"<>", TokenType.NE),
-        (r"<=", TokenType.LE),
-        (r">=", TokenType.GE),
-        (r"<", TokenType.LT),
-        (r">", TokenType.GT),
-        (r"=", TokenType.EQ),
-        # Boolean operators (case-insensitive)
-        (r"\bAND\b", TokenType.AND),
-        (r"\bOR\b", TokenType.OR),
-        (r"\bNOT\b", TokenType.NOT),
-        (r"\bXOR\b", TokenType.XOR),
-        (r"\bTRUE\b", TokenType.BOOL_LITERAL),
-        (r"\bFALSE\b", TokenType.BOOL_LITERAL),
-        # Local variable reference: #varName or # varName (parser may add space after #)
-        (r"#\s*[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*", TokenType.LOCAL_VAR),
-        # Global DB reference: "DBName".field.path or "DBName".field["index"]
-        (r'"[^"]+"\.[a-zA-Z_][a-zA-Z0-9_.\[\]"]*', TokenType.GLOBAL_REF),
-        # Plain identifier (function names, type names, etc.)
-        (r"[a-zA-Z_][a-zA-Z0-9_]*", TokenType.IDENTIFIER),
-        # Numeric literals (including negative, floats, time literals)
-        (r"-?\d+\.?\d*(?:[eE][+-]?\d+)?", TokenType.NUMBER),
-        (r"T#[0-9a-zA-Z_]+", TokenType.NUMBER),  # Time literal
-        # String literal
-        (r"'[^']*'", TokenType.STRING),
-        # Delimiters
-        (r"\(", TokenType.LPAREN),
-        (r"\)", TokenType.RPAREN),
-        (r"\[", TokenType.LBRACKET),
-        (r"\]", TokenType.RBRACKET),
-        (r",", TokenType.COMMA),
-        (r"\.", TokenType.DOT),
-    ]
-
-    def __init__(self, text: str) -> None:
-        """Initialize lexer with input text.
-
-        Parameters
-        ----------
-        text : str
-            The expression to tokenize.
-        """
-        self.text = text
-        self.pos = 0
-        self.compiled_patterns = [
-            (re.compile(pattern, re.IGNORECASE), token_type) for pattern, token_type in self.PATTERNS
-        ]
-
-    def tokenize(self) -> list[Token]:
-        """Tokenize the entire input.
-
-        Returns
-        -------
-        list[Token]
-            List of tokens, ending with EOF.
-        """
-        tokens = []
-        for token in self._generate_tokens():
-            tokens.append(token)
-        return tokens
-
-    def _generate_tokens(self) -> Iterator[Token]:
-        """Generate tokens from input text."""
-        while self.pos < len(self.text):
-            # Skip whitespace and newlines
-            if self.text[self.pos].isspace():
-                self.pos += 1
-                continue
-
-            # Skip comments
-            if self.text[self.pos : self.pos + 2] == "//":
-                # Skip to end of line
-                while self.pos < len(self.text) and self.text[self.pos] != "\n":
-                    self.pos += 1
-                continue
-
-            # Try each pattern
-            matched = False
-            for pattern, token_type in self.compiled_patterns:
-                match = pattern.match(self.text, self.pos)
-                if match:
-                    value = match.group(0)
-                    yield Token(token_type, value, self.pos)
-                    self.pos = match.end()
-                    matched = True
-                    break
-
-            if not matched:
-                # Unknown character
-                yield Token(TokenType.UNKNOWN, self.text[self.pos], self.pos)
-                self.pos += 1
-
-        yield Token(TokenType.EOF, "", self.pos)
+#: SCL binary operator spelling (upper-cased) to the dependency operator it becomes.
+_BINARY_OPERATORS: dict[str, OperatorType] = {
+    "AND": OperatorType.AND,
+    "&": OperatorType.AND,
+    "OR": OperatorType.OR,
+    "XOR": OperatorType.XOR,
+    "=": OperatorType.COMPARE_EQ,
+    "<>": OperatorType.COMPARE_NE,
+    "<": OperatorType.COMPARE_LT,
+    ">": OperatorType.COMPARE_GT,
+    "<=": OperatorType.COMPARE_LE,
+    ">=": OperatorType.COMPARE_GE,
+    "+": OperatorType.ADD,
+    "-": OperatorType.SUBTRACT,
+    "*": OperatorType.MULTIPLY,
+    "/": OperatorType.DIVIDE,
+    "MOD": OperatorType.MODULO,
+    "**": OperatorType.POWER,
+}
 
 
 class ParseError(Exception):
-    """Exception raised for parsing errors."""
-
-    pass
+    """The expression text could not be read as one SCL expression."""
 
 
 class ExpressionParser:
-    """Recursive descent parser for SCL expressions.
+    """Reads an SCL expression string into a :class:`LogicExpression` tree.
 
-    Parses tokenized expressions into LogicExpression trees.
+    Variables become :class:`DependencyNode` leaves typed through
+    ``variable_lookup``; operators become the matching :class:`OperatorType` with
+    their operands as children. A function call is an opaque operation that depends
+    on all its input arguments (an ``AND`` of the call node and the arguments, as
+    before); an indexed access depends on its base and on every index expression.
 
-    Operator precedence (low to high):
-    1. OR
-    2. XOR
-    3. AND
-    4. NOT (unary)
-    5. Comparisons (=, <>, <, >, <=, >=)
-    6. Primary (variables, literals, parenthesized expressions)
+    Parameters
+    ----------
+    variable_lookup : dict[str, NodeType] | None
+        Mapping from variable name (without ``#``) to its node type.
+    source_file : str
+        Source file path recorded on every node's location.
+    base_line : int
+        Source line recorded on every node's location.
     """
 
     def __init__(
@@ -214,359 +79,164 @@ class ExpressionParser:
         source_file: str = "",
         base_line: int = 0,
     ) -> None:
-        """Initialize parser.
-
-        Parameters
-        ----------
-        variable_lookup : dict[str, NodeType] | None
-            Mapping from variable name to its type.
-        source_file : str
-            Source file path for location tracking.
-        base_line : int
-            Base line number offset.
-        """
         self.variable_lookup = variable_lookup or {}
         self.source_file = source_file
         self.base_line = base_line
-        self.tokens: list[Token] = []
-        self.pos = 0
 
     def parse(self, expression: str) -> LogicExpression:
-        """Parse an expression string into a LogicExpression tree.
-
-        Parameters
-        ----------
-        expression : str
-            The expression to parse.
-
-        Returns
-        -------
-        LogicExpression
-            The parsed expression tree.
+        """Parse ``expression`` into a :class:`LogicExpression` tree.
 
         Raises
         ------
         ParseError
-            If the expression cannot be parsed.
+            When the shared parser cannot read the text as one expression in full.
+            The message is the parser's own, with its line and column relative to
+            the text.
         """
-        lexer = Lexer(expression)
-        self.tokens = lexer.tokenize()
-        self.pos = 0
+        tokens = [token for token in tokenize(expression) if token.type is not TokenType.EOF]
+        result = parse_expression_tokens(tokens)
+        if result.expression is None:
+            detail = "; ".join(error.message for error in result.errors) or "empty expression"
+            raise ParseError(f"cannot read {expression.strip()!r}: {detail}")
+        return self.convert(result.expression)
 
-        result = self._parse_or_expression()
+    # -- tree folding -------------------------------------------------------------
 
-        # Check for unconsumed tokens (except EOF)
-        if self.current_token.type != TokenType.EOF:
-            # Allow trailing content (might be part of larger statement)
-            pass
+    def convert(self, node: ast.Expression) -> LogicExpression:
+        """Fold an already-parsed expression tree into a :class:`LogicExpression`.
 
-        return result
-
-    @property
-    def current_token(self) -> Token:
-        """Get the current token."""
-        if self.pos < len(self.tokens):
-            return self.tokens[self.pos]
-        return Token(TokenType.EOF, "", len(self.tokens))
-
-    def _advance(self) -> Token:
-        """Consume and return the current token."""
-        token = self.current_token
-        self.pos += 1
-        return token
-
-    def _expect(self, token_type: TokenType) -> Token:
-        """Expect a specific token type.
-
-        Raises
-        ------
-        ParseError
-            If the current token doesn't match.
+        The extractor's path: it walks the statement AST and hands each
+        expression node here, so no text is ever re-parsed.
         """
-        if self.current_token.type != token_type:
-            raise ParseError(
-                f"Expected {token_type.name}, got {self.current_token.type.name} "
-                f"'{self.current_token.value}' at position {self.current_token.position}"
-            )
-        return self._advance()
+        if isinstance(node, ast.Grouping):
+            return self.convert(node.inner)
+        if isinstance(node, ast.Literal):
+            return self._constant(node.value, _literal_data_type(node.value))
+        if isinstance(node, ast.TypedLiteral):
+            return self._constant(f"{node.prefix}#{node.value}", node.prefix.upper())
+        if isinstance(node, ast.VariableRef | ast.Member | ast.Index):
+            return self._reference(node)
+        if isinstance(node, ast.UnaryOp):
+            operator = OperatorType.NOT if node.operator.upper() == "NOT" else OperatorType.NEGATE
+            return self._expression(operator, [self.convert(node.operand)])
+        if isinstance(node, ast.BinaryOp):
+            binary = _BINARY_OPERATORS.get(node.operator.upper())
+            if binary is None:  # pragma: no cover - the shared grammar has no other spelling
+                raise ParseError(f"unknown operator {node.operator!r}")
+            return self._expression(binary, [self.convert(node.left), self.convert(node.right)])
+        if isinstance(node, ast.FunctionCall):
+            return self._call(node)
+        raise ParseError(f"unsupported expression node {type(node).__name__}")  # pragma: no cover
 
-    def _parse_or_expression(self) -> LogicExpression:
-        """Parse OR expression (lowest precedence)."""
-        left = self._parse_xor_expression()
+    def _reference(self, node: ast.VariableRef | ast.Member | ast.Index) -> LogicExpression:
+        """A variable, a member path, or an indexed access, as a leaf (plus index deps).
 
-        while self.current_token.type == TokenType.OR:
-            self._advance()
-            right = self._parse_xor_expression()
-            left = LogicExpression(
-                operator=OperatorType.OR,
-                operands=[left, right],
-            )
-
-        return left
-
-    def _parse_xor_expression(self) -> LogicExpression:
-        """Parse XOR expression."""
-        left = self._parse_and_expression()
-
-        while self.current_token.type == TokenType.XOR:
-            self._advance()
-            right = self._parse_and_expression()
-            left = LogicExpression(
-                operator=OperatorType.XOR,
-                operands=[left, right],
-            )
-
-        return left
-
-    def _parse_and_expression(self) -> LogicExpression:
-        """Parse AND expression."""
-        left = self._parse_not_expression()
-
-        while self.current_token.type == TokenType.AND:
-            self._advance()
-            right = self._parse_not_expression()
-            left = LogicExpression(
-                operator=OperatorType.AND,
-                operands=[left, right],
-            )
-
-        return left
-
-    def _parse_not_expression(self) -> LogicExpression:
-        """Parse NOT expression (unary)."""
-        if self.current_token.type == TokenType.NOT:
-            self._advance()
-            # NOT can be followed by parentheses or directly by operand
-            if self.current_token.type == TokenType.LPAREN:
-                self._advance()
-                operand = self._parse_or_expression()
-                self._expect(TokenType.RPAREN)
-            else:
-                operand = self._parse_not_expression()  # Allow NOT NOT x
-            return LogicExpression(
-                operator=OperatorType.NOT,
-                operands=[operand],
-            )
-
-        return self._parse_comparison_expression()
-
-    def _parse_comparison_expression(self) -> LogicExpression:
-        """Parse comparison expression."""
-        left = self._parse_primary()
-
-        # Check for comparison operator
-        comparison_ops = {
-            TokenType.EQ: OperatorType.COMPARE_EQ,
-            TokenType.NE: OperatorType.COMPARE_NE,
-            TokenType.LT: OperatorType.COMPARE_LT,
-            TokenType.GT: OperatorType.COMPARE_GT,
-            TokenType.LE: OperatorType.COMPARE_LE,
-            TokenType.GE: OperatorType.COMPARE_GE,
-        }
-
-        if self.current_token.type in comparison_ops:
-            op = comparison_ops[self.current_token.type]
-            self._advance()
-            right = self._parse_primary()
-            return LogicExpression(
-                operator=op,
-                operands=[left, right],
-            )
-
-        return left
-
-    def _parse_primary(self) -> LogicExpression:
-        """Parse primary expression (variables, literals, parenthesized)."""
-        token = self.current_token
-
-        # Parenthesized expression
-        if token.type == TokenType.LPAREN:
-            self._advance()
-            expr = self._parse_or_expression()
-            self._expect(TokenType.RPAREN)
-            return expr
-
-        # Local variable reference
-        if token.type == TokenType.LOCAL_VAR:
-            self._advance()
-            return self._create_variable_expression(token.value)
-
-        # Global DB reference
-        if token.type == TokenType.GLOBAL_REF:
-            self._advance()
-            return self._create_global_db_expression(token.value)
-
-        # Boolean literal
-        if token.type == TokenType.BOOL_LITERAL:
-            self._advance()
-            return self._create_constant_expression(token.value, "Bool")
-
-        # Numeric literal
-        if token.type == TokenType.NUMBER:
-            self._advance()
-            return self._create_constant_expression(token.value, "Number")
-
-        # String literal
-        if token.type == TokenType.STRING:
-            self._advance()
-            return self._create_constant_expression(token.value, "String")
-
-        # Identifier (could be function call, constant, or type conversion)
-        if token.type == TokenType.IDENTIFIER:
-            self._advance()
-            # Check for function call
-            if self.current_token.type == TokenType.LPAREN:
-                return self._parse_function_call(token.value)
-            # Plain identifier (likely a constant reference)
-            return self._create_identifier_expression(token.value)
-
-        # EOF or unknown
-        if token.type == TokenType.EOF:
-            raise ParseError("Unexpected end of expression")
-
-        raise ParseError(f"Unexpected token {token.type.name} '{token.value}' at position {token.position}")
-
-    def _parse_function_call(self, func_name: str) -> LogicExpression:
-        """Parse a function call and return as a single node.
-
-        Function calls are treated as opaque operations that depend on
-        all their input arguments.
+        The leaf names the whole path (``arr[#i].x``, which the tracers normalize to
+        ``arr[*].x`` themselves); every index expression anywhere along the path is
+        a dependency of its own, so ``#arr[#i].x`` depends on ``i`` as well.
         """
-        self._expect(TokenType.LPAREN)
+        indices: list[ast.Expression] = []
+        path: ast.Expression = node
+        while isinstance(path, ast.Member | ast.Index):
+            if isinstance(path, ast.Index):
+                indices = [*path.indices, *indices]
+            path = path.base
+        leaf = self._leaf(node)
+        if not indices:
+            return leaf
+        return self._expression(OperatorType.INDEX, [leaf, *(self.convert(index) for index in indices)])
 
-        # Collect all arguments as dependencies
-        args: list[LogicExpression] = []
-        while self.current_token.type != TokenType.RPAREN:
-            if self.current_token.type == TokenType.EOF:
-                raise ParseError("Unclosed function call")
-
-            # Skip parameter names in named arguments (param := value)
-            if (
-                self.current_token.type == TokenType.IDENTIFIER
-                and self.pos + 1 < len(self.tokens)
-                and self.tokens[self.pos + 1].type == TokenType.ASSIGN
-            ):
-                self._advance()  # Skip identifier
-                self._advance()  # Skip :=
-
-            # Skip output parameters (param => value)
-            if (
-                self.current_token.type == TokenType.IDENTIFIER
-                and self.pos + 1 < len(self.tokens)
-                and self.tokens[self.pos + 1].type == TokenType.OUTPUT_ASSIGN
-            ):
-                # Skip entire output assignment
-                self._advance()  # Skip identifier
-                self._advance()  # Skip =>
-                self._skip_until_comma_or_rparen()
-                if self.current_token.type == TokenType.COMMA:
-                    self._advance()
-                continue
-
-            # Parse argument expression
-            try:
-                arg = self._parse_or_expression()
-                args.append(arg)
-            except ParseError:
-                # Skip unparseable content
-                self._skip_until_comma_or_rparen()
-
-            if self.current_token.type == TokenType.COMMA:
-                self._advance()
-
-        self._expect(TokenType.RPAREN)
-
-        # Create function call node
-        func_node = DependencyNode(
-            name=func_name,
-            node_type=NodeType.FUNCTION_CALL,
-            data_type="",
-            raw_reference=func_name,
-        )
-
-        if args:
-            # Return AND of function node and all args (represents dependencies)
-            return LogicExpression(
-                operator=OperatorType.AND,
-                operands=[
-                    LogicExpression(operator=OperatorType.IDENTITY, operands=[func_node]),
-                    *args,
-                ],
+    def _leaf(self, node: ast.Expression) -> LogicExpression:
+        """The :class:`DependencyNode` a reference path names."""
+        root = node
+        while isinstance(root, ast.Member | ast.Index):
+            root = root.base
+        reference = reference_text(node)
+        if isinstance(root, ast.VariableRef) and root.is_local:
+            # Typed by the full path when the lookup knows it, else by its root
+            # variable: a member of an input struct is an input.
+            name = reference.lstrip("#")
+            node_type = self.variable_lookup.get(name) or self.variable_lookup.get(
+                root.name, NodeType.UNKNOWN
             )
-        else:
-            return LogicExpression(
-                operator=OperatorType.IDENTITY,
-                operands=[func_node],
-            )
+            return self._identity(name, node_type, reference, located=True)
+        if isinstance(root, ast.VariableRef) and root.is_absolute:
+            return self._identity(reference, NodeType.GLOBAL_DB, reference, located=True)
+        if isinstance(root, ast.VariableRef) and isinstance(node, ast.Member | ast.Index):
+            # `"DB".field.path`: a global data block member.
+            return self._identity(reference, NodeType.GLOBAL_DB, reference, located=True)
+        # A bare quoted name (`"Block"`): a block-level symbol, typed by the lookup
+        # when it knows it, a constant otherwise -- what a plain identifier was.
+        node_type = self.variable_lookup.get(reference.strip('"'), NodeType.CONSTANT)
+        return self._identity(reference.strip('"'), node_type, reference, located=False)
 
-    def _skip_until_comma_or_rparen(self) -> None:
-        """Skip tokens until comma or right paren."""
-        depth = 0
-        while self.current_token.type != TokenType.EOF:
-            if self.current_token.type == TokenType.LPAREN:
-                depth += 1
-            elif self.current_token.type == TokenType.RPAREN:
-                if depth == 0:
-                    return
-                depth -= 1
-            elif self.current_token.type == TokenType.COMMA and depth == 0:
-                return
-            self._advance()
+    def _call(self, node: ast.FunctionCall) -> LogicExpression:
+        arguments = [self.convert(argument.value) for argument in node.arguments if not argument.is_output]
+        call = self._identity(node.name, NodeType.FUNCTION_CALL, node.name, located=False)
+        if not arguments:
+            return call
+        return self._expression(OperatorType.AND, [call, *arguments])
 
-    def _create_variable_expression(self, reference: str) -> LogicExpression:
-        """Create expression for a variable reference."""
-        # Strip # prefix and any spaces (parser may store as "# varName")
-        name = reference.lstrip("#").strip()
+    # -- leaves -------------------------------------------------------------------
 
-        # Look up type
-        node_type = self.variable_lookup.get(name, NodeType.UNKNOWN)
+    def _constant(self, value: str, data_type: str) -> LogicExpression:
+        return self._identity(value, NodeType.CONSTANT, value, located=False, data_type=data_type)
 
-        node = DependencyNode(
+    def _identity(
+        self,
+        name: str,
+        node_type: NodeType,
+        reference: str,
+        *,
+        located: bool,
+        data_type: str = "",
+    ) -> LogicExpression:
+        location = SourceLocation(self.source_file, self.base_line) if located else SourceLocation()
+        leaf = DependencyNode(
             name=name,
             node_type=node_type,
-            data_type="",
-            source_location=SourceLocation(self.source_file, self.base_line),
-            raw_reference=reference,
-        )
-
-        return LogicExpression(operator=OperatorType.IDENTITY, operands=[node])
-
-    def _create_global_db_expression(self, reference: str) -> LogicExpression:
-        """Create expression for a global DB reference."""
-        node = DependencyNode(
-            name=reference,
-            node_type=NodeType.GLOBAL_DB,
-            data_type="",
-            source_location=SourceLocation(self.source_file, self.base_line),
-            raw_reference=reference,
-        )
-
-        return LogicExpression(operator=OperatorType.IDENTITY, operands=[node])
-
-    def _create_constant_expression(self, value: str, data_type: str) -> LogicExpression:
-        """Create expression for a constant/literal."""
-        node = DependencyNode(
-            name=value,
-            node_type=NodeType.CONSTANT,
             data_type=data_type,
-            raw_reference=value,
+            source_location=location,
+            raw_reference=reference,
         )
+        return LogicExpression(operator=OperatorType.IDENTITY, operands=[leaf])
 
-        return LogicExpression(operator=OperatorType.IDENTITY, operands=[node])
+    def _expression(self, operator: OperatorType, operands: list[LogicExpression]) -> LogicExpression:
+        return LogicExpression(operator=operator, operands=list(operands))
 
-    def _create_identifier_expression(self, name: str) -> LogicExpression:
-        """Create expression for an identifier (likely constant or type)."""
-        # Check if it's a known variable
-        node_type = self.variable_lookup.get(name, NodeType.CONSTANT)
 
-        node = DependencyNode(
-            name=name,
-            node_type=node_type,
-            data_type="",
-            raw_reference=name,
-        )
+def _literal_data_type(value: str) -> str:
+    if value.upper() in ("TRUE", "FALSE"):
+        return "Bool"
+    if value.startswith("'"):
+        return "String"
+    return "Number"
 
-        return LogicExpression(operator=OperatorType.IDENTITY, operands=[node])
+
+def reference_text(node: ast.Expression) -> str:
+    """The SCL spelling of a reference path: ``#a.b[i]``, ``"DB".x``, ``%I0.0``."""
+    if isinstance(node, ast.VariableRef):
+        if node.is_local:
+            return f"#{node.name}"
+        if node.is_absolute:
+            return f"%{node.name}"
+        return f'"{node.name}"'
+    if isinstance(node, ast.Member):
+        name = f'"{node.name}"' if node.is_quoted else node.name
+        return f"{reference_text(node.base)}.{name}"
+    if isinstance(node, ast.Index):
+        inner = ", ".join(_index_text(index) for index in node.indices)
+        return f"{reference_text(node.base)}[{inner}]"
+    return _index_text(node)
+
+
+def _index_text(node: ast.Expression) -> str:
+    """An index expression's spelling, enough to tell two slots apart."""
+    if isinstance(node, ast.Literal):
+        return node.value
+    if isinstance(node, ast.VariableRef | ast.Member | ast.Index):
+        return reference_text(node)
+    return "*"
 
 
 def parse_expression(
@@ -575,23 +245,5 @@ def parse_expression(
     source_file: str = "",
     base_line: int = 0,
 ) -> LogicExpression:
-    """Convenience function to parse an expression.
-
-    Parameters
-    ----------
-    expression : str
-        The expression to parse.
-    variable_lookup : dict[str, NodeType] | None
-        Mapping from variable name to its type.
-    source_file : str
-        Source file path for location tracking.
-    base_line : int
-        Base line number offset.
-
-    Returns
-    -------
-    LogicExpression
-        The parsed expression tree.
-    """
-    parser = ExpressionParser(variable_lookup, source_file, base_line)
-    return parser.parse(expression)
+    """Parse ``expression`` with a one-off :class:`ExpressionParser`."""
+    return ExpressionParser(variable_lookup, source_file, base_line).parse(expression)
