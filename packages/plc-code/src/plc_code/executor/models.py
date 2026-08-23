@@ -27,6 +27,24 @@ class TranspileOptions:
     include_comments: bool = True
 
 
+@dataclass(frozen=True)
+class TranspileProblem:
+    """One reason a transpile failed, with where in the SCL source it was found.
+
+    Attributes
+    ----------
+    message : str
+        Human-readable description.
+    source_line : int | None
+        The 1-based SCL source line the message points at, or ``None`` when it
+        has no single line to point at (e.g. an unaccounted-for token range, or an
+        exception raised outside any statement).
+    """
+
+    message: str
+    source_line: int | None = None
+
+
 @dataclass
 class TranspileResult:
     """Result of transpiling an SCL block to Python.
@@ -39,23 +57,22 @@ class TranspileResult:
         The generated Python source code.
     class_name : str
         Name of the generated class.
-    errors : list[str]
-        List of error messages if transpilation failed.
+    problems : list[TranspileProblem]
+        Why transpilation failed, each with its SCL source line. Empty on success.
     warnings : list[str]
         List of warning messages (non-fatal issues).
-    error_lines : list[int | None]
-        Parallel to ``errors``: the 1-based SCL source line each message
-        points at, or ``None`` when a message has no single line to point at
-        (e.g. an unaccounted-for token range). Carries the location as data,
-        for a caller that wants it without re-parsing the message string.
     """
 
     success: bool
     python_code: str
     class_name: str = ""
-    errors: list[str] = field(default_factory=list)
+    problems: list[TranspileProblem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    error_lines: list[int | None] = field(default_factory=list)
+
+    @property
+    def errors(self) -> list[str]:
+        """The problem messages alone, for a caller that only prints them."""
+        return [problem.message for problem in self.problems]
 
 
 @dataclass

@@ -58,7 +58,7 @@ from pathlib import Path
 from plc_core.reporting import Severity
 
 from plc_code.executor.arguments import SignatureResolver
-from plc_code.executor.models import TranspileOptions
+from plc_code.executor.models import TranspileOptions, TranspileProblem
 from plc_code.executor.transpiler import build_runtime_globals, transpile_block
 from plc_code.parser.models import Block
 
@@ -88,14 +88,16 @@ class Diagnostic:
         Human-readable description, naming the offending symbol where there is
         one.
     line : int | None
-        1-based line in the *generated Python*, not in the SCL source — except
-        for ``CODE_TRANSPILE``, which has no generated Python to point into and
-        instead carries the SCL source line the parser stopped on (``None``
-        when the message names no single token, e.g. an unaccounted-for token
-        range).
+        1-based line in the *generated Python*. ``None`` for ``CODE_TRANSPILE``,
+        which has no generated Python to point into.
     generated_line : str
         The generated line itself, stripped. Empty when there is no single
         line to point at.
+    source_line : int | None
+        1-based line in the *SCL source*. Set for ``CODE_TRANSPILE`` (the line
+        the parser stopped on; ``None`` when the message names no single token,
+        e.g. an unaccounted-for token range); ``None`` for the other codes, which
+        point into the generated Python instead.
     source_file : Path | None
         The ``.s7dcl`` the block came from, when the caller knows it.
     """
@@ -107,6 +109,7 @@ class Diagnostic:
     line: int | None = None
     generated_line: str = ""
     source_file: Path | None = None
+    source_line: int | None = None
 
 
 def _module_bound_names(table: symtable.SymbolTable) -> set[str]:
@@ -191,19 +194,18 @@ def check_block(
     block_name = block.name or ""
     result = transpile_block(block, options, signature_resolver=signature_resolver)
 
-    if not result.success or result.errors:
-        messages = result.errors or ["Transpilation failed"]
-        lines = result.error_lines if result.errors else [None]
+    if not result.success or result.problems:
+        problems = result.problems or [TranspileProblem("Transpilation failed")]
         return [
             Diagnostic(
                 block_name=block_name,
                 code=CODE_TRANSPILE,
                 severity=Severity.ERROR,
-                message=message,
-                line=line,
+                message=problem.message,
+                source_line=problem.source_line,
                 source_file=source_file,
             )
-            for message, line in zip(messages, lines, strict=True)
+            for problem in problems
         ]
 
     code = result.python_code

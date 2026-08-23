@@ -145,7 +145,7 @@ class UnsupportedExpression(Exception):
         not require an ``Expression`` specifically). Consulted by
         ``SCLTranspiler.transpile``'s top-level exception handler so a raised
         ``UnsupportedExpression`` still produces a located
-        ``TranspileResult.error_lines`` entry, not ``None``.
+        ``TranspileProblem.source_line``, not ``None``.
         """
         line = getattr(self.node, "line", None)
         return line if isinstance(line, int) else None

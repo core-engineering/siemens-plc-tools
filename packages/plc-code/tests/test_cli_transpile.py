@@ -222,6 +222,9 @@ class TestCheckMode:
         result = runner.invoke(cli, ["transpile", "--check", str(unsupported_block)])
         assert result.exit_code == 1
         assert "RepeatUser" in result.output
+        # The parser's message states its own line; no second location is added.
+        assert "line 14, column" in result.output
+        assert "(SCL line" not in result.output
 
     def test_output_binding_on_a_bare_builtin_fails_the_transpile(
         self, runner: CliRunner, output_binding_defect_block: Path
@@ -231,18 +234,18 @@ class TestCheckMode:
         assert result.exit_code == 1
         assert "RdSysTUser" in result.output
 
-        # Fix round 1: renderer.UnsupportedExpression carries the SCL source line it
-        # was raised for, and SCLTranspiler.transpile now reads it instead of always
-        # reporting None -- JSON mode is where that reaches a caller as data, not text
-        # (text mode deliberately suppresses TRANSPILE's own location, assuming the
-        # message text states it, which this one does not -- unaffected here).
+        # This message does not state its own line, so text mode adds it from the
+        # diagnostic's `source_line` -- a parser message ("line 14, column 19: ...")
+        # already does and gets no doubled location.
+        assert "(SCL line 12)" in result.output
         json_result = runner.invoke(
             cli, ["transpile", "--check", "-f", "json", str(output_binding_defect_block)]
         )
         payload = json.loads(json_result.output)
         (finding,) = payload["diagnostics"]
         assert finding["code"] == "TRANSPILE"
-        assert finding["line"] == 12
+        assert finding["source_line"] == 12
+        assert finding["line"] is None  # no generated Python to point into
 
     def test_whole_fixture_corpus_is_clean(self, runner: CliRunner) -> None:
         """The shipped fixtures are blocks the toolchain handles — all of them."""

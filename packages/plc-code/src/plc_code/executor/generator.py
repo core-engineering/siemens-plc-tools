@@ -95,7 +95,7 @@ class UnsupportedStatement(Exception):
         The source line of the statement or slice this was raised for, when known.
         Consulted by `SCLTranspiler.transpile`'s top-level exception handler so a
         raised `UnsupportedStatement` still produces a located
-        `TranspileResult.error_lines` entry, not `None`.
+        `TranspileProblem.source_line`, not `None`.
     """
 
     def __init__(self, message: str, line: int | None = None) -> None:

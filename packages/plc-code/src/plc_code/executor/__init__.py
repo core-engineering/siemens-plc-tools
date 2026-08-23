@@ -89,6 +89,7 @@ from plc_code.executor.models import (
     ExecutionContext,
     PLCValue,
     TranspileOptions,
+    TranspileProblem,
     TranspileResult,
 )
 from plc_code.executor.runtime import MockClock, PLCRuntime
@@ -123,6 +124,7 @@ TestStep = Step
 __all__ = [
     # Models
     "TranspileOptions",
+    "TranspileProblem",
     "TranspileResult",
     "CompileResult",
     "ExecutionContext",

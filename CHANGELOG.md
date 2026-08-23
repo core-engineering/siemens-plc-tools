@@ -732,6 +732,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   handle that form; it is a separate, pre-existing gap and is left alone here.
 
 ### Changed
+- **plc-code (executor)** — `TranspileResult` carries its failures as
+  `problems: list[TranspileProblem]` (message plus SCL `source_line`), replacing the
+  two parallel lists `errors` and `error_lines` that were aligned by convention
+  only. `TranspileResult.errors` remains as a read-only property yielding the
+  messages, so callers that only print them are unchanged.
+- **plc-code (executor, CLI)** — `Diagnostic.line` now means one thing: a line in
+  the generated Python. It used to mean that for `SYNTAX` and `UNDEFINED_NAME` and
+  an SCL source line for `TRANSPILE`, with the reader expected to know which. The
+  SCL line lives in the new `Diagnostic.source_line` (and `"source_line"` in
+  `plc code transpile --check -f json`; `"line"` is `null` for `TRANSPILE`). Text
+  mode now shows `(SCL line N)` for a `TRANSPILE` finding whose message does not
+  already state its line — the renderer's own refusals did not, and were reported
+  with no location at all.
+
 - **plc-code (executor)** — `plc code transpile` (and therefore `compile_block`,
   and every downstream test harness) now generates Python from the statement AST
   (`plc_code.parser.statement_parser` / `plc_code.executor.generator`) instead of

@@ -11,7 +11,7 @@ from typing import Any
 from plc_code.executor.arguments import SignatureResolver
 from plc_code.executor.codegen import CodeGenContext
 from plc_code.executor.generator import UnsupportedStatement, generate_statements
-from plc_code.executor.models import CompileResult, TranspileOptions, TranspileResult
+from plc_code.executor.models import CompileResult, TranspileOptions, TranspileProblem, TranspileResult
 from plc_code.executor.renderer import UnsupportedExpression
 from plc_code.executor.timers import timer_class_name
 from plc_code.executor.types import ArrayTypeInfo, SCLType, TypeInfo, TypeMapper
@@ -44,8 +44,7 @@ class SCLTranspiler:
     signature_resolver: SignatureResolver | None = None
     _lines: list[str] = field(default_factory=list, repr=False)
     _ctx: CodeGenContext = field(default_factory=CodeGenContext, repr=False)
-    _errors: list[str] = field(default_factory=list, repr=False)
-    _error_lines: list[int | None] = field(default_factory=list, repr=False)
+    _problems: list[TranspileProblem] = field(default_factory=list, repr=False)
     _warnings: list[str] = field(default_factory=list, repr=False)
     _string_constants: dict[str, int] = field(default_factory=dict, repr=False)
     _fb_members: list[tuple[str, str]] = field(default_factory=list, repr=False)
@@ -59,8 +58,7 @@ class SCLTranspiler:
             The transpilation result containing the generated code.
         """
         self._lines = []
-        self._errors = []
-        self._error_lines = []
+        self._problems = []
         self._warnings = []
         self._ctx = CodeGenContext()
         self._string_constants = {}
@@ -82,30 +80,25 @@ class SCLTranspiler:
 
             python_code = "\n".join(self._lines)
             return TranspileResult(
-                success=len(self._errors) == 0,
+                success=not self._problems,
                 python_code=python_code,
                 class_name=self.block.name,
-                errors=self._errors,
+                problems=self._problems,
                 warnings=self._warnings,
-                error_lines=self._error_lines,
             )
         except Exception as e:
             # generator.UnsupportedStatement and renderer.UnsupportedExpression both
             # know the source line they were raised for -- carried through here so a
             # located TRANSPILE diagnostic (see diagnostics.py) can report it, rather
             # than falling back to None the way every other exception still must.
-            self._errors.append(f"Transpilation error: {e}")
-            if isinstance(e, UnsupportedExpression | UnsupportedStatement):
-                self._error_lines.append(e.line)
-            else:
-                self._error_lines.append(None)
+            source_line = e.line if isinstance(e, UnsupportedExpression | UnsupportedStatement) else None
+            self._problems.append(TranspileProblem(f"Transpilation error: {e}", source_line))
             return TranspileResult(
                 success=False,
                 python_code="",
                 class_name=self.block.name,
-                errors=self._errors,
+                problems=self._problems,
                 warnings=self._warnings,
-                error_lines=self._error_lines,
             )
 
     def _emit(self, line: str) -> None:
@@ -662,7 +655,7 @@ class SCLTranspiler:
         """Translate a token slice to Python statements via the statement AST.
 
         A unit whose tokens the statement parser cannot read produces a located
-        error appended to ``self._errors`` (making ``TranspileResult.success``
+        error appended to ``self._problems`` (making ``TranspileResult.success``
         False) rather than falling back to any other translation: a transpiler
         that cannot read its input must say so, not silently emit Python that
         means something else.
@@ -691,11 +684,9 @@ class SCLTranspiler:
         problems = verify_no_silent_loss(tokens, result)
         if result.errors or problems:
             for error in result.errors:
-                self._errors.append(error.message)
-                self._error_lines.append(error.line)
+                self._problems.append(TranspileProblem(error.message, error.line))
             for problem in problems:
-                self._errors.append(problem)
-                self._error_lines.append(None)
+                self._problems.append(TranspileProblem(problem))
             return []
         return generate_statements(
             result.statements,
