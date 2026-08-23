@@ -82,6 +82,8 @@ class ScenarioResult:
 class TestSuiteResult:
     """Result of running multiple scenarios."""
 
+    __test__ = False  # a result/config model, not a pytest test class
+
     scenario_results: list[ScenarioResult] = field(default_factory=list)
     total_duration_s: float = 0.0
 

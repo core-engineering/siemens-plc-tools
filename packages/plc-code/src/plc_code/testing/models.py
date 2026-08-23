@@ -26,6 +26,8 @@ class TestCaseResult:
         Test class name, if applicable.
     """
 
+    __test__ = False  # a result/config model, not a pytest test class
+
     name: str
     outcome: str
     duration: float = 0.0

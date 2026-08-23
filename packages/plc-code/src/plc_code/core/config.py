@@ -76,6 +76,8 @@ class TestingConfig:
         Additional test directories to search
     """
 
+    __test__ = False  # a result/config model, not a pytest test class
+
     enabled: bool = True
     test_dirs: list[str] = field(default_factory=lambda: ["test-cases"])
 
