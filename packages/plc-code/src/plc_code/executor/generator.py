@@ -119,6 +119,7 @@ class _Context:
     string_constants: dict[str, int] | None
     signature_resolver: SignatureResolver | None
     timer_instances: frozenset[str] = frozenset()
+    coverage_block: str | None = None
 
 
 def _generate_body(
@@ -883,6 +884,7 @@ def generate_statements(
     string_constants: dict[str, int] | None = None,
     signature_resolver: SignatureResolver | None = None,
     timer_instances: frozenset[str] = frozenset(),
+    coverage_block: str | None = None,
 ) -> list[str]:
     """Generate Python lines for a list of statements, natively from the tree.
 
@@ -937,6 +939,7 @@ def generate_statements(
             string_constants=string_constants,
             signature_resolver=signature_resolver,
             timer_instances=timer_instances,
+            coverage_block=coverage_block,
         ),
     )
 
@@ -952,6 +955,11 @@ def _generate_statements(
     lines: list[str] = []
 
     for statement in statements:
+        if ctx.coverage_block is not None:
+            # One mark per statement, headers included: an IF's own mark covers
+            # its condition, each body statement marks itself through this same
+            # loop when the branch runs.
+            lines.append(f'{prefix}self._runtime.touch("{ctx.coverage_block}", {statement.line})')
         if isinstance(statement, Assignment):
             lines.extend(_generate_assignment(statement, prefix, translator, ctx))
             continue
@@ -1031,3 +1039,21 @@ def _generate_statements(
         )
 
     return lines
+
+
+def executable_lines(statements: list[Statement]) -> list[int]:
+    """Every SCL line a coverage mark is emitted for, in source order."""
+    lines: list[int] = []
+    for statement in statements:
+        lines.append(statement.line)
+        if isinstance(statement, If):
+            for branch in statement.branches:
+                lines.extend(executable_lines(branch.body))
+            lines.extend(executable_lines(statement.else_body))
+        elif isinstance(statement, Case):
+            for arm in statement.branches:
+                lines.extend(executable_lines(arm.body))
+            lines.extend(executable_lines(statement.default))
+        elif isinstance(statement, For | While):
+            lines.extend(executable_lines(statement.body))
+    return sorted(set(lines))

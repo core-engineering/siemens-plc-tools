@@ -1839,13 +1839,20 @@ def _output_mermaid(results: dict, output_var: str | None, simplified: bool) -> 
 
 @code_group.command()
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Measure SCL line coverage: which lines of each block the tests executed",
+)
 @click.argument("path", type=click.Path(exists=True, path_type=Path), required=False)
-def test(verbose: bool, path: Path | None) -> None:
+def test(verbose: bool, coverage: bool, path: Path | None) -> None:
     """Run unit tests for PLC blocks.
 
-    If PATH is not specified, uses test directories from plc.yaml.
+    If PATH is not specified, uses test directories from plc.yaml. With
+    --coverage, every block compiled by the tests is instrumented and a per-block
+    SCL line-coverage table is printed after the run -- the qualification
+    argument a FAT wants: not "the block has a test" but "these lines ran".
     """
-
     # Determine test directories
     if path is not None:
         test_dirs = [path]
@@ -1864,41 +1871,96 @@ def test(verbose: bool, path: Path | None) -> None:
 
     console.print(f"Running tests from: {', '.join(str(d) for d in test_dirs if d.exists())}")
 
+    import json as json_module
     import os
     import subprocess
+    import tempfile
+
+    coverage_file: Path | None = None
+    env = os.environ.copy()
+    if coverage:
+        coverage_file = Path(tempfile.mkstemp(suffix=".json", prefix="scl-coverage-")[1])
+        coverage_file.write_text("{}", encoding="utf-8")
+        env["PLC_SCL_COVERAGE"] = str(coverage_file)
 
     test_paths = [str(d) for d in test_dirs if d.exists()]
     pytest_args = test_paths + (["-v"] if verbose else [])
     cwd = Path.cwd()
 
-    # 1. Try project's .venv pytest directly (most reliable)
+    command: list[str] | None = None
     venv_pytest = cwd / ".venv" / "bin" / "pytest"
     if venv_pytest.exists():
-        result = subprocess.run(
-            [str(venv_pytest)] + pytest_args,
-            cwd=cwd,
-        )
-        raise SystemExit(result.returncode)
-
-    # 2. Try uv run pytest (if project has pyproject.toml)
-    if (cwd / "pyproject.toml").exists():
-        uv_locations = [
+        command = [str(venv_pytest)]
+    elif (cwd / "pyproject.toml").exists():
+        for uv_path in (
             os.path.expanduser("~/.local/bin/uv"),
             os.path.expanduser("~/.cargo/bin/uv"),
             "/usr/local/bin/uv",
             "/usr/bin/uv",
-        ]
-        for uv_path in uv_locations:
+        ):
             if os.path.exists(uv_path):
-                result = subprocess.run(
-                    [uv_path, "run", "pytest"] + pytest_args,
-                    cwd=cwd,
-                )
-                raise SystemExit(result.returncode)
+                command = [uv_path, "run", "pytest"]
+                break
+    if command is None:
+        console.print("[red]Error:[/red] pytest not found.")
+        console.print("Run 'uv sync' from the project root to set up your project.")
+        raise SystemExit(1)
 
-    console.print("[red]Error:[/red] pytest not found.")
-    console.print("Run 'uv sync' from the project root to set up your project.")
-    raise SystemExit(1)
+    result = subprocess.run(command + pytest_args, cwd=cwd, env=env)
+
+    if coverage_file is not None:
+        try:
+            data = json_module.loads(coverage_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        finally:
+            coverage_file.unlink(missing_ok=True)
+        _print_scl_coverage(data)
+
+    raise SystemExit(result.returncode)
+
+
+def _line_ranges(lines: list[int]) -> str:
+    """``[3,4,5,9]`` -> ``"3-5, 9"``, the way a reader scans missing lines."""
+    ranges: list[str] = []
+    start = previous = None
+    for line in lines:
+        if start is None:
+            start = previous = line
+        elif previous is not None and line == previous + 1:
+            previous = line
+        else:
+            ranges.append(f"{start}-{previous}" if start != previous else f"{start}")
+            start = previous = line
+    if start is not None:
+        ranges.append(f"{start}-{previous}" if start != previous else f"{start}")
+    return ", ".join(ranges)
+
+
+def _print_scl_coverage(data: dict[str, Any]) -> None:
+    """The per-block SCL line-coverage table `plc code test --coverage` prints."""
+    if not data:
+        console.print("\n[yellow]No SCL coverage recorded[/yellow] — no block was compiled by the tests.")
+        return
+    console.print("\n[bold]SCL line coverage[/bold]")
+    total_executable = total_touched = 0
+    for block in sorted(data):
+        executable = set(data[block].get("executable", []))
+        touched = set(data[block].get("touched", [])) & executable
+        if not executable:
+            continue
+        total_executable += len(executable)
+        total_touched += len(touched)
+        percent = 100.0 * len(touched) / len(executable)
+        missing = sorted(executable - touched)
+        style = "green" if percent == 100.0 else ("yellow" if percent >= 75.0 else "red")
+        line = f"  [{style}]{percent:6.1f}%[/{style}]  {block}  ({len(touched)}/{len(executable)} lines)"
+        if missing:
+            line += f"  [dim]missing: {_line_ranges(missing)}[/dim]"
+        console.print(line)
+    if total_executable:
+        overall = 100.0 * total_touched / total_executable
+        console.print(f"  [bold]{overall:6.1f}%  overall ({total_touched}/{total_executable} lines)[/bold]")
 
 
 # =============================================================================

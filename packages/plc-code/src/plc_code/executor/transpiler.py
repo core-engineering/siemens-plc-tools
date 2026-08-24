@@ -10,7 +10,7 @@ from typing import Any
 
 from plc_code.executor.arguments import SignatureResolver
 from plc_code.executor.codegen import CodeGenContext
-from plc_code.executor.generator import UnsupportedStatement, generate_statements
+from plc_code.executor.generator import UnsupportedStatement, executable_lines, generate_statements
 from plc_code.executor.models import (
     CompileResult,
     TranspileOptions,
@@ -21,6 +21,7 @@ from plc_code.executor.models import (
     python_identifier,
 )
 from plc_code.executor.renderer import UnsupportedExpression
+from plc_code.executor.runtime import coverage_path, record_executable
 from plc_code.executor.timers import system_fb_class_name, timer_class_name
 from plc_code.executor.types import ArrayTypeInfo, SCLType, TypeInfo, TypeMapper
 from plc_code.parser.lexer import Token
@@ -53,6 +54,7 @@ class SCLTranspiler:
     _lines: list[str] = field(default_factory=list, repr=False)
     _ctx: CodeGenContext = field(default_factory=CodeGenContext, repr=False)
     _problems: list[TranspileProblem] = field(default_factory=list, repr=False)
+    _executable_lines: set[int] = field(default_factory=set, repr=False)
     _warnings: list[str] = field(default_factory=list, repr=False)
     _fb_members: list[tuple[str, str]] = field(default_factory=list, repr=False)
 
@@ -66,6 +68,7 @@ class SCLTranspiler:
         """
         self._lines = []
         self._problems = []
+        self._executable_lines = set()
         self._warnings = []
         self._ctx = CodeGenContext()
         self._fb_members = []
@@ -106,6 +109,7 @@ class SCLTranspiler:
                 class_name=python_class_name(self.block.name),
                 problems=self._problems,
                 warnings=self._warnings,
+                executable_lines=sorted(self._executable_lines),
             )
         except Exception as e:
             # generator.UnsupportedStatement and renderer.UnsupportedExpression both
@@ -120,6 +124,7 @@ class SCLTranspiler:
                 class_name=python_class_name(self.block.name),
                 problems=self._problems,
                 warnings=self._warnings,
+                executable_lines=sorted(self._executable_lines),
             )
 
     def _emit(self, line: str) -> None:
@@ -678,10 +683,13 @@ class SCLTranspiler:
             for problem in problems:
                 self._problems.append(TranspileProblem(problem))
             return []
+        if self.options.instrument_coverage:
+            self._executable_lines.update(executable_lines(result.statements))
         return generate_statements(
             result.statements,
             signature_resolver=self.signature_resolver,
             timer_instances=self._timer_instances(),
+            coverage_block=python_class_name(self.block.name) if self.options.instrument_coverage else None,
         )
 
     def _timer_instances(self) -> frozenset[str]:
@@ -829,7 +837,13 @@ def compile_block(
         return compile_ladder_block(block)
 
     # First transpile
+    if options is None and coverage_path() is not None:
+        # `plc code test --coverage` sets PLC_SCL_COVERAGE for its pytest
+        # subprocesses; every default-options compile inside them instruments.
+        options = TranspileOptions(instrument_coverage=True)
     transpile_result = transpile_block(block, options, type_mapper, fb_type_resolver, signature_resolver)
+    if transpile_result.executable_lines:
+        record_executable(python_class_name(block.name), transpile_result.executable_lines)
 
     if not transpile_result.success:
         return CompileResult(

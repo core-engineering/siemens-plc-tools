@@ -4,6 +4,9 @@ This module provides the runtime environment for executing transpiled
 SCL code, including clock simulation and global data block management.
 """
 
+import atexit
+import json
+import os
 import re
 from collections import deque
 from dataclasses import dataclass, field
@@ -143,6 +146,52 @@ def _with_bit_slice(value: Any, width: int, index: int, new: Any) -> int:
     """
     mask = ((1 << width) - 1) << (index * width)
     return (_slice_base(value) & ~mask) | ((int(new) << (index * width)) & mask)
+
+
+#: Line-coverage registry, alive when ``PLC_SCL_COVERAGE`` names a file: which SCL
+#: lines each block declares as executable, and which a run actually touched.
+#: Written (merged with the file's previous content) at interpreter exit, so the
+#: pytest subprocesses ``plc code test --coverage`` spawns each add their share.
+_COVERAGE_EXECUTABLE: dict[str, set[int]] = {}
+_COVERAGE_TOUCHED: dict[str, set[int]] = {}
+_COVERAGE_HOOKED = False
+
+
+def coverage_path() -> Path | None:
+    """The coverage file ``PLC_SCL_COVERAGE`` names, or ``None`` when coverage is off."""
+    value = os.environ.get("PLC_SCL_COVERAGE")
+    return Path(value) if value else None
+
+
+def record_executable(block: str, lines: list[int]) -> None:
+    """Register a block's executable SCL lines and arm the exit-time dump."""
+    global _COVERAGE_HOOKED
+    _COVERAGE_EXECUTABLE.setdefault(block, set()).update(lines)
+    if not _COVERAGE_HOOKED:
+        _COVERAGE_HOOKED = True
+        atexit.register(_dump_coverage)
+
+
+def _dump_coverage() -> None:
+    path = coverage_path()
+    if path is None:
+        return
+    merged: dict[str, dict[str, list[int]]] = {}
+    try:
+        merged = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        merged = {}
+    for block, lines in _COVERAGE_EXECUTABLE.items():
+        entry = merged.setdefault(block, {"executable": [], "touched": []})
+        entry["executable"] = sorted(set(entry.get("executable", [])) | lines)
+    for block, lines in _COVERAGE_TOUCHED.items():
+        entry = merged.setdefault(block, {"executable": [], "touched": []})
+        entry["touched"] = sorted(set(entry.get("touched", [])) | lines)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(merged, indent=0, sort_keys=True), encoding="utf-8")
+    except OSError:
+        pass  # coverage must never fail the run it measures
 
 
 class UnsetTag:
@@ -958,6 +1007,11 @@ class PLCRuntime:
         """
         self.clock.advance(self.cycle_time)
         self.cycle_count += 1
+
+    @staticmethod
+    def touch(block: str, line: int) -> None:
+        """One executed SCL line, recorded for ``plc code test --coverage``."""
+        _COVERAGE_TOUCHED.setdefault(block, set()).add(line)
 
     def system_time(self) -> datetime:
         """The system time ``RD_SYS_T`` reports: ``epoch`` plus the simulated clock."""

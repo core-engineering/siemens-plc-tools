@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   re-export formatting never show as changes. Text and `-f json` output; exit 0
   when semantically identical, 1 on any difference, 2 when an export could not
   be read (`analyzer/block_diff.py`).
+- **plc-code (CLI, executor)** — `plc code test --coverage`: SCL line coverage
+  measured while the block tests run — the qualification argument a FAT wants:
+  not "the block has a test" but "these lines ran, these did not". The command
+  sets `PLC_SCL_COVERAGE`; every block compiled inside the pytest subprocesses is
+  instrumented (`TranspileOptions.instrument_coverage`, one
+  `runtime.touch(block, line)` per statement, headers included), the runtime
+  merges executable and touched lines into the named file at interpreter exit
+  (processes add their shares), and the command prints a per-block table with
+  percentages and missing-line ranges (`66.7% Demo (2/3 lines) missing: 14`).
 
 ## [0.3.0] - 2026-08-24
 

@@ -26,6 +26,9 @@ class TranspileOptions:
 
     generate_type_hints: bool = True
     include_docstrings: bool = True
+    #: Emit a ``self._runtime.touch(block, line)`` before every statement, so a
+    #: test run records which SCL lines executed (see ``plc code test --coverage``).
+    instrument_coverage: bool = False
     include_comments: bool = True
 
 
@@ -70,6 +73,9 @@ class TranspileResult:
     class_name: str = ""
     problems: list[TranspileProblem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: Every SCL line holding a statement, when ``instrument_coverage`` was on:
+    #: the denominator of the block's line coverage.
+    executable_lines: list[int] = field(default_factory=list)
 
     @property
     def errors(self) -> list[str]:
