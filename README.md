@@ -3,7 +3,7 @@
 [![CI](https://github.com/core-engineering/siemens-plc-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/core-engineering/siemens-plc-tools/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-![Version](https://img.shields.io/badge/version-0.1.0-informational)
+![Version](https://img.shields.io/badge/version-0.3.0-informational)
 
 A toolkit for Siemens TIA Portal V21 (S7-1500) automation projects: parse and
 analyze SCL, generate documentation, transpile SCL to Python for unit testing,

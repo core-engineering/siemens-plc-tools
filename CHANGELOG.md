@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-24
+
+### Added
+- **plc-net, plc-sup, plc-sim (tests)** — first real unit suites: the OPC UA
+  dissector fed hand-built binary frames through fake packets (reassembly,
+  service classification, categories), protocol classification, supervision step
+  parsing and the verify executors on fake Redis/DB/API clients, simulation
+  config and the `assert_stable`/`assert_flash` executors on fake OPC UA
+  clients. No test opens a socket. Coverage gate raised to 68%.
+
+### Changed
+- **workspace (release)** — every package is versioned `0.3.0` (they disagreed:
+  `pyproject` files said `0.1.0` while `plc_tools.__version__` said `0.3.0`),
+  and the meta-package extras pin the workspace members exactly (`==0.3.0`);
+  the members are not published, so a floating `>=` could have resolved to an
+  unrelated PyPI package of the same name outside the workspace. First tagged
+  release: `v0.3.0`.
+
 ### Security
 - **plc-code / plc-sim (web)** — the analysis and simulation servers no longer
   install CORS middleware with `allow_origins=["*"]` and `allow_credentials=True`.

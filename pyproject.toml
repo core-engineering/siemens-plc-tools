@@ -1,6 +1,6 @@
 [project]
 name = "plc-tools"
-version = "0.1.0"
+version = "0.3.0"
 description = "PLC Tools - Industrial automation toolset for PLC development"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -31,42 +31,42 @@ dependencies = [
 
 [project.optional-dependencies]
 core = [
-    "plc-core>=0.1.0",
+    "plc-core==0.3.0",
 ]
 code = [
-    "plc-core>=0.1.0",
-    "plc-code>=0.1.0",
+    "plc-core==0.3.0",
+    "plc-code==0.3.0",
 ]
 iol = [
-    "plc-core>=0.1.0",
-    "plc-iol>=0.1.0",
+    "plc-core==0.3.0",
+    "plc-iol==0.3.0",
 ]
 sim = [
-    "plc-core>=0.1.0",
-    "plc-modbus>=0.1.0",
-    "plc-sim>=0.1.0",
+    "plc-core==0.3.0",
+    "plc-modbus==0.3.0",
+    "plc-sim==0.3.0",
 ]
 sup = [
-    "plc-core>=0.1.0",
-    "plc-sup>=0.1.0",
+    "plc-core==0.3.0",
+    "plc-sup==0.3.0",
 ]
 net = [
-    "plc-net>=0.1.0",
+    "plc-net==0.3.0",
 ]
 trace = [
-    "plc-core>=0.1.0",
-    "plc-code>=0.1.0",
-    "plc-trace>=0.1.0",
+    "plc-core==0.3.0",
+    "plc-code==0.3.0",
+    "plc-trace==0.3.0",
 ]
 all = [
-    "plc-core>=0.1.0",
-    "plc-code[web]>=0.1.0",
-    "plc-iol>=0.1.0",
-    "plc-modbus>=0.1.0",
-    "plc-sim[web]>=0.1.0",
-    "plc-sup>=0.1.0",
-    "plc-net>=0.1.0",
-    "plc-trace>=0.1.0",
+    "plc-core==0.3.0",
+    "plc-code[web]==0.3.0",
+    "plc-iol==0.3.0",
+    "plc-modbus==0.3.0",
+    "plc-sim[web]==0.3.0",
+    "plc-sup==0.3.0",
+    "plc-net==0.3.0",
+    "plc-trace==0.3.0",
 ]
 dev = [
     "pytest==9.0.3",
@@ -182,13 +182,13 @@ asyncio_mode = "auto"
 # number can only go up. Raise it whenever a run clears the next step —
 # lowering it is a decision, not a fix.
 #
-# 59 (measured 59.86) -> 63 (measured 63.74, after the safety-boundary work and
-# the parser/CLI fixes added tests).
+# 59 (measured 59.86) -> 63 (measured 63.74, safety-boundary work and parser/CLI
+# fixes) -> 68 (measured 68.26, after the AST refactor's suites and the first
+# real unit suites for plc-net/plc-sup/plc-sim).
 #
-# CLAUDE.md's "85% per package" is the goal, not the state. Worst offenders:
-# plc-sim, plc-net and plc-sup, none of which has a test suite of its own; what
-# they show is incidental import-time coverage.
-fail_under = 63
+# CLAUDE.md's "85% per package" is the goal, not the state. Worst offender left:
+# plc-sim (32.7%), whose bulk is the CLI and the web layer.
+fail_under = 68
 precision = 2
 
 [tool.mypy]

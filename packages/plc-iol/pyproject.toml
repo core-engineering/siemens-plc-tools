@@ -1,6 +1,6 @@
 [project]
 name = "plc-iol"
-version = "0.1.0"
+version = "0.3.0"
 description = "I/O list management, TAGS/IOL comparison, and validation for PLC projects"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,7 +19,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "plc-core>=0.1.0",
+    "plc-core==0.3.0",
     "openpyxl>=3.1.0",
     "pydantic>=2.0.0",
 ]

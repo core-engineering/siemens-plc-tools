@@ -14,7 +14,7 @@ PLC Tools is a monorepo containing packages for:
 - **plc-sup**: Supervision-pipeline integration tests (OPC UA → Redis → TimescaleDB → REST)
 - **plc-net**: Industrial network / OPC UA traffic monitoring (scapy)
 
-### Current Status (v0.1.0)
+### Current Status (v0.3.0)
 
 | Package | Status | Description |
 |---------|--------|-------------|
@@ -376,33 +376,32 @@ from plc_iol.exporters import ExcelExporter
 | Unit tests | Each package has `tests/` directory (no `__init__.py` — see §6) |
 | Integration tests | Root `tests/` for cross-package tests |
 | Coverage goal | 85% per package |
-| Coverage gate | `fail_under = 63` (whole workspace), a ratchet — raise it, never lower it |
+| Coverage gate | `fail_under = 68` (whole workspace), a ratchet — raise it, never lower it |
 
 ### Coverage: goal vs. state
 
 `uv run pytest` measures all nine coverage targets and fails below the floor in
-`[tool.coverage.report]`. As of the last full run: **63.92%** overall
-(12813/20046 statements).
+`[tool.coverage.report]`. As of the last full run: **68.26%** overall
+(14019/20537 statements).
 
 | Package | Coverage | Covered / statements |
 |---------|----------|----------------------|
 | plc-modbus | 97.8% | 135 / 138 |
 | plc-trace | 72.9% | 312 / 428 |
-| plc-code | 68.1% | 9636 / 14159 |
+| plc-code | 72.8% | 10661 / 14649 |
 | plc-iol | 67.3% | 1082 / 1608 |
 | plc-tools | 65.3% | 32 / 49 |
-| plc-core | 58.0% | 1031 / 1779 |
-| plc-sup | 39.0% | 174 / 446 |
-| plc-net | 31.5% | 145 / 461 |
-| plc-sim | 27.2% | 266 / 978 |
+| plc-core | 58.0% | 1033 / 1780 |
+| plc-net | 49.9% | 230 / 461 |
+| plc-sup | 48.0% | 214 / 446 |
+| plc-sim | 32.7% | 320 / 978 |
 
 The statement counts matter as much as the percentages: `plc-code` is 71% of the
-workspace, so it alone sets the headline number, while `plc-modbus`'s 97.8% is
-138 statements and moves nothing.
+workspace, so it alone sets the headline number.
 
-`plc-sup`, `plc-net` and `plc-sim` have no real suite of their own; their figures
-are incidental import-time coverage. They were also missing from the `--cov`
-list entirely until recently, so the headline number used to exclude them.
+`plc-net`, `plc-sup` and `plc-sim` now have unit suites over their pure logic
+(dissector, step parsing, executors on fakes); what remains uncovered there is
+live I/O (capture, OPC UA/Redis/DB connections, the web layer).
 
 ---
 

@@ -1,6 +1,6 @@
 [project]
 name = "plc-core"
-version = "0.1.0"
+version = "0.3.0"
 description = "Core library for PLC tools - shared utilities, models, and configuration"
 readme = "README.md"
 requires-python = ">=3.12"

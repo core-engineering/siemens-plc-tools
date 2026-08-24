@@ -1,6 +1,6 @@
 [project]
 name = "plc-sim"
-version = "0.1.0"
+version = "0.3.0"
 description = "OPC UA simulation interface for live PLC interaction and integration testing"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,8 +19,8 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "plc-core[opcua]>=0.1.0",
-    "plc-modbus>=0.1.0",
+    "plc-core[opcua]==0.3.0",
+    "plc-modbus==0.3.0",
 ]
 
 [project.optional-dependencies]
