@@ -177,19 +177,29 @@ class ScenarioRunner:
 
         Called before every scenario to guarantee a clean baseline.
         Supports two-phase initialization: ``values`` first, then
-        ``post_values`` (if any) after the initial settle time.
+        ``post_values`` (if any) after the initial settle time, and finally
+        ``steps`` (if any) for the baseline a flat value map cannot express —
+        a retentive state machine whose exit is a timed button combination.
+
+        Raises
+        ------
+        RuntimeError
+            If a setup step fails. The baseline premise is then unmet, and the
+            scenario about to run would report a verdict on a state nobody
+            asked for.
         """
-        if not self._setup or not self._setup.values:
+        if not self._setup or (not self._setup.values and not self._setup.steps):
             return
 
         # Phase 1: write initial values
-        self._console.print(f"  [dim]setup: writing {len(self._setup.values)} initial value(s)[/dim]")
+        if self._setup.values:
+            self._console.print(f"  [dim]setup: writing {len(self._setup.values)} initial value(s)[/dim]")
 
-        for path, value in self._setup.values.items():
-            tag = self._tags.resolve(path)
-            await self._client.write_value(tag.node_id, value, tag.data_type)
+            for path, value in self._setup.values.items():
+                tag = self._tags.resolve(path)
+                await self._client.write_value(tag.node_id, value, tag.data_type)
 
-        await asyncio.sleep(self._setup.settle_time_s)
+            await asyncio.sleep(self._setup.settle_time_s)
 
         # Phase 2: write post-values (e.g. restore operational config after safety reset)
         if self._setup.post_values:
@@ -200,6 +210,19 @@ class ScenarioRunner:
                 await self._client.write_value(tag.node_id, value, tag.data_type)
 
             await asyncio.sleep(self._setup.post_settle_time_s)
+
+        # Phase 3: run the setup steps, if any
+        if self._setup.steps:
+            self._console.print(f"  [dim]setup: running {len(self._setup.steps)} step(s)[/dim]")
+
+            for index, step in enumerate(self._setup.steps):
+                result = await self._execute_step(index, step)
+                if result.failed:
+                    label = step.description or step.step_type
+                    raise RuntimeError(
+                        f"setup step {index + 1} ({label}) did not pass: "
+                        f"{result.error_message or result.outcome.value}"
+                    )
 
     # ------------------------------------------------------------------
     # Suite runner

@@ -205,15 +205,29 @@ class SuiteSetup:
 
     Loaded from ``setup.yaml`` in the test directory.
 
-    Supports two-phase initialization:
+    Supports two-phase initialization plus an optional step sequence:
 
     1. ``values`` are written first, then the runner waits ``settle_time_s``.
     2. If ``post_values`` is non-empty, those are written next and the runner
        waits ``post_settle_time_s``.
+    3. If ``steps`` is non-empty, those run last, using the same step
+       vocabulary as a scenario.
 
-    This is needed for safety PLC reset sequences where the first phase
-    forces a transient configuration (e.g. arm type ``'none'``) and the
-    second phase restores operational settings.
+    Phases 1 and 2 exist for safety PLC reset sequences where the first phase
+    forces a transient configuration (e.g. arm type ``'none'``) and the second
+    phase restores operational settings.
+
+    Phase 3 exists because a flat value map can only express *levels*, never
+    *gestures*. A retentive state machine whose exit is a button combination
+    held over time — press A while holding B, release B, hold A past a delay,
+    release — is unreachable from ``values`` no matter how they are ordered,
+    so a baseline built only from levels silently inherits whatever such a
+    machine was left in. ``steps`` closes that gap without turning every
+    scenario into its own recovery ritual.
+
+    A step failing here aborts the setup: an unmet baseline premise makes the
+    scenario that follows meaningless, and a silent skip would report its
+    verdict as if the premise held.
     """
 
     description: str = ""
@@ -221,6 +235,7 @@ class SuiteSetup:
     values: dict[str, Any] = field(default_factory=dict)
     post_values: dict[str, Any] = field(default_factory=dict)
     post_settle_time_s: float = 1.0
+    steps: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -373,6 +388,7 @@ def parse_setup(test_dir: Path) -> SuiteSetup | None:
                 values=s.get("values", {}),
                 post_values=s.get("post_values", {}),
                 post_settle_time_s=parse_duration(s.get("post_settle_time", "1s")),
+                steps=[_parse_step(step) for step in s.get("steps", [])],
             )
 
     return None
