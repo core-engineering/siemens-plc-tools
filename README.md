@@ -44,7 +44,9 @@ See [`examples/demo-project/`](examples/demo-project/) for a runnable example:
 cd examples/demo-project
 plc code lint
 plc code docs
-plc code test
+plc code test --coverage         # block tests + SCL line coverage
+plc code diff old-export/ new-export/   # semantic diff, formatting-blind
+plc code xref --tags "PLC tags" "Program blocks"   # unused / undeclared I/O
 ```
 
 ## Documentation

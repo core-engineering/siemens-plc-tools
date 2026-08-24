@@ -144,6 +144,9 @@ plc                              # Root command group
 │   ├── lint [PATH] [-f]         # Quality analysis (text/json)
 │   ├── docs [PATH] [--serve]    # Generate MkDocs documentation
 │   ├── test [PATH] [-v]         # Run block unit tests
+│   │   └── --coverage           #   ...and print SCL line coverage per block
+│   ├── diff OLD NEW [-f]        # Semantic diff between two exports (exit 0/1/2)
+│   ├── xref --tags DIR [PATH]   # Tag table vs code: unused I/O, undeclared tags
 │   ├── transpile [PATH]         # Print generated Python
 │   │   ├── --check [-f]         #   ...or report blocks that won't load (exit 1)
 │   │   └── --conformance [-f]   #   ...or report statement-parser coverage (always exit 0)
