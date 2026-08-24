@@ -4,4 +4,4 @@ This package provides tools for connecting to PLC OPC UA servers,
 browsing and manipulating live variables, and running integration tests.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

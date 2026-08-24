@@ -7,10 +7,10 @@ Example
 -------
 >>> from plc_tools import __version__
 >>> print(__version__)
-0.3.0
+0.4.0
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "__version__",
 ]

@@ -1134,7 +1134,7 @@ wheels = [
 
 [[package]]
 name = "plc-code"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/plc-code" }
 dependencies = [
     { name = "jinja2" },
@@ -1182,7 +1182,7 @@ provides-extras = ["web", "dev"]
 
 [[package]]
 name = "plc-core"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/plc-core" }
 dependencies = [
     { name = "click" },
@@ -1226,7 +1226,7 @@ provides-extras = ["opcua", "dev"]
 
 [[package]]
 name = "plc-iol"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/plc-iol" }
 dependencies = [
     { name = "openpyxl" },
@@ -1260,7 +1260,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "plc-modbus"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/plc-modbus" }
 dependencies = [
     { name = "pymodbus" },
@@ -1290,7 +1290,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "plc-net"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/plc-net" }
 dependencies = [
     { name = "click" },
@@ -1307,7 +1307,7 @@ requires-dist = [
 
 [[package]]
 name = "plc-sim"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/plc-sim" }
 dependencies = [
     { name = "plc-core", extra = ["opcua"] },
@@ -1347,7 +1347,7 @@ provides-extras = ["web", "dev"]
 
 [[package]]
 name = "plc-sup"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/plc-sup" }
 dependencies = [
     { name = "httpx" },
@@ -1385,7 +1385,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "plc-tools"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -1517,7 +1517,7 @@ dev = [
 
 [[package]]
 name = "plc-trace"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/plc-trace" }
 dependencies = [
     { name = "click" },

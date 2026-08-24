@@ -1,6 +1,6 @@
 [project]
 name = "plc-sup"
-version = "0.3.0"
+version = "0.4.0"
 description = "Supervision pipeline testing for PLC systems"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -17,7 +17,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "plc-core[opcua]==0.3.0",
+    "plc-core[opcua]==0.4.0",
     "redis>=5.0.0",
     "psycopg[binary]>=3.1.0",
     "httpx>=0.27.0",

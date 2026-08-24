@@ -1,6 +1,6 @@
 [project]
 name = "plc-modbus"
-version = "0.3.0"
+version = "0.4.0"
 description = "Modbus TCP client for PLC integration testing — pairs with plc-sim/plc-core test runner"
 readme = "README.md"
 requires-python = ">=3.12"

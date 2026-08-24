@@ -14,7 +14,7 @@ Example
 >>> from plc_core.reporting import Severity, Finding
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # Re-export commonly used items
 from plc_core.config import (

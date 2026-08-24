@@ -1,6 +1,6 @@
 [project]
 name = "plc-tools"
-version = "0.3.0"
+version = "0.4.0"
 description = "PLC Tools - Industrial automation toolset for PLC development"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -31,42 +31,42 @@ dependencies = [
 
 [project.optional-dependencies]
 core = [
-    "plc-core==0.3.0",
+    "plc-core==0.4.0",
 ]
 code = [
-    "plc-core==0.3.0",
-    "plc-code==0.3.0",
+    "plc-core==0.4.0",
+    "plc-code==0.4.0",
 ]
 iol = [
-    "plc-core==0.3.0",
-    "plc-iol==0.3.0",
+    "plc-core==0.4.0",
+    "plc-iol==0.4.0",
 ]
 sim = [
-    "plc-core==0.3.0",
-    "plc-modbus==0.3.0",
-    "plc-sim==0.3.0",
+    "plc-core==0.4.0",
+    "plc-modbus==0.4.0",
+    "plc-sim==0.4.0",
 ]
 sup = [
-    "plc-core==0.3.0",
-    "plc-sup==0.3.0",
+    "plc-core==0.4.0",
+    "plc-sup==0.4.0",
 ]
 net = [
-    "plc-net==0.3.0",
+    "plc-net==0.4.0",
 ]
 trace = [
-    "plc-core==0.3.0",
-    "plc-code==0.3.0",
-    "plc-trace==0.3.0",
+    "plc-core==0.4.0",
+    "plc-code==0.4.0",
+    "plc-trace==0.4.0",
 ]
 all = [
-    "plc-core==0.3.0",
-    "plc-code[web]==0.3.0",
-    "plc-iol==0.3.0",
-    "plc-modbus==0.3.0",
-    "plc-sim[web]==0.3.0",
-    "plc-sup==0.3.0",
-    "plc-net==0.3.0",
-    "plc-trace==0.3.0",
+    "plc-core==0.4.0",
+    "plc-code[web]==0.4.0",
+    "plc-iol==0.4.0",
+    "plc-modbus==0.4.0",
+    "plc-sim[web]==0.4.0",
+    "plc-sup==0.4.0",
+    "plc-net==0.4.0",
+    "plc-trace==0.4.0",
 ]
 dev = [
     "pytest==9.0.3",

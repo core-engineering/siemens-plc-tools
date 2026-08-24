@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-24
+
 ### Added
 - **plc-code (CLI, analyzer)** — `plc code diff OLD NEW`: semantic diff between
   two SCL exports (directories or single `.s7dcl` files). Compares what the code

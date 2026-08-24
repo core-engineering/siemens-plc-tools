@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "plc-trace"
-version = "0.3.0"
+version = "0.4.0"
 description = "Cycle-granular on-PLC trace recorder: SCL scaffolding + OPC UA retrieval client"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,8 +19,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "plc-core[opcua]==0.3.0",
-    "plc-code==0.3.0",
+    "plc-core[opcua]==0.4.0",
+    "plc-code==0.4.0",
     "click>=8.1.0",
     "rich>=13.0.0",
     "pyyaml>=6.0.0",

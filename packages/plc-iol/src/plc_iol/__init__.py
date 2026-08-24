@@ -11,7 +11,7 @@ from plc_iol.core.config import ProjectConfig, load_config
 from plc_iol.core.database import DatabaseManager
 from plc_iol.core.models import IODatabase, IOPoint
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     # Shared types (from plc_core)

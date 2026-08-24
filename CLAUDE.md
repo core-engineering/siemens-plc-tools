@@ -14,7 +14,7 @@ PLC Tools is a monorepo containing packages for:
 - **plc-sup**: Supervision-pipeline integration tests (OPC UA → Redis → TimescaleDB → REST)
 - **plc-net**: Industrial network / OPC UA traffic monitoring (scapy)
 
-### Current Status (v0.3.0)
+### Current Status (v0.4.0)
 
 | Package | Status | Description |
 |---------|--------|-------------|
