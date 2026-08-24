@@ -1031,6 +1031,104 @@ def diff(output_format: str, old_path: Path, new_path: Path) -> None:
     raise SystemExit(2 if report.errors else 1)
 
 
+@code_group.command("xref")
+@click.option(
+    "--tags",
+    "tags_dir",
+    type=click.Path(exists=True, path_type=Path),
+    required=True,
+    help="Directory holding the PLC tag XML exports",
+)
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format",
+)
+@click.option("--all", "show_all", is_flag=True, help="List every tag, not only the findings")
+@click.argument("path", type=click.Path(exists=True, path_type=Path), required=False)
+def xref(tags_dir: Path, output_format: str, show_all: bool, path: Path | None) -> None:
+    """Cross-reference the tag table against the code.
+
+    Reports the gaps commissioning trips over: an input the code never reads, an
+    output it never writes, a declared tag it never touches, and quoted I/O-named
+    tags the code uses that no table declares. Exit 1 when there are findings.
+    """
+    import json as json_module
+
+    from plc_code.analyzer.logic_dependency.tag_parser import parse_tag_directory
+    from plc_code.analyzer.tag_xref import cross_reference
+    from plc_code.parser import parse_scl_file
+    from plc_code.project.discovery import discover_blocks
+
+    diag_console = console_err if output_format == "json" else console
+    if path is None:
+        try:
+            from plc_code.core.config import load_config
+
+            path = load_config().source_path
+        except FileNotFoundError:
+            diag_console.print("[red]Error:[/red] No plc.yaml found and no path specified.")
+            raise SystemExit(2) from None
+
+    blocks = []
+    for block_file in [bf.source_path for bf in discover_blocks(path)]:
+        try:
+            block = parse_scl_file(block_file)
+        except Exception as error:
+            diag_console.print(f"[yellow]warning:[/yellow] {block_file.name}: {error}")
+            continue
+        if block is not None and block.name:
+            blocks.append(block)
+    tags = parse_tag_directory(tags_dir)
+    report = cross_reference(blocks, tags)
+
+    if output_format == "json":
+        print(
+            json_module.dumps(
+                {
+                    "tags": [
+                        {
+                            "name": usage.tag.name,
+                            "address": usage.tag.address,
+                            "direction": usage.tag.direction,
+                            "verdict": usage.verdict,
+                            "reads": usage.reads,
+                            "writes": usage.writes,
+                        }
+                        for usage in (report.usages if show_all else report.findings)
+                    ],
+                    "undeclared": report.undeclared,
+                },
+                indent=2,
+            )
+        )
+        raise SystemExit(1 if (report.findings or report.undeclared) else 0)
+
+    listed = report.usages if show_all else report.findings
+    for usage in listed:
+        style = {"untouched": "red", "read-only": "yellow", "write-only": "yellow", "used": "green"}[
+            usage.verdict
+        ]
+        sites = ", ".join(f"{block}:{line}" for block, line in (usage.reads + usage.writes)[:4])
+        console.print(
+            f"  [{style}]{usage.verdict:10}[/{style}] {usage.tag.name}  ({usage.tag.address}, "
+            f"{usage.tag.direction})" + (f"  [dim]{sites}[/dim]" if sites else "")
+        )
+    for name, tag_sites in sorted(report.undeclared.items()):
+        where = ", ".join(f"{block}:{line}" for block, line in tag_sites[:4])
+        console.print(f"  [red]undeclared[/red] {name}  [dim]{where}[/dim]")
+    finding_names = {usage.tag.name for usage in report.findings}
+    healthy = sum(1 for usage in report.usages if usage.tag.name not in finding_names)
+    console.print(
+        f"\n{len(report.usages)} declared, {healthy} healthy, {len(report.findings)} finding(s), "
+        f"{len(report.undeclared)} undeclared."
+    )
+    raise SystemExit(1 if (report.findings or report.undeclared) else 0)
+
+
 @code_group.command("drawio")
 @click.option(
     "--doc-map",
