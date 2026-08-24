@@ -59,6 +59,10 @@ class XrefReport:
 
     usages: list[TagUsage] = field(default_factory=list)
     undeclared: dict[str, list[tuple[str, int]]] = field(default_factory=dict)
+    parse_errors: list[str] = field(default_factory=list)
+    #: Declared prefixes (``SDI_`` ...) none of whose tags is ever accessed: almost
+    #: always a program part missing from the compared export, not N broken chains.
+    silent_prefixes: list[str] = field(default_factory=list)
 
     @property
     def findings(self) -> list[TagUsage]:
@@ -79,9 +83,13 @@ def cross_reference(blocks: list[Block], tags: TagCollection) -> XrefReport:
     """Match every declared tag against every access in ``blocks``."""
     declared = {tag.name: TagUsage(tag=tag) for tag in tags.tags}
     undeclared: dict[str, list[tuple[str, int]]] = {}
+    parse_errors: list[str] = []
     for block in blocks:
-        for access in access_index(block).accesses:
-            name = _bare_tag_name(access.path)
+        index = access_index(block)
+        for problem in index.parse_errors:
+            parse_errors.append(f"{block.name}: {problem}")
+        for access in index.accesses:
+            name = _tag_root(access.path)
             if name is None:
                 continue
             site = (block.name, access.line)
@@ -90,17 +98,40 @@ def cross_reference(blocks: list[Block], tags: TagCollection) -> XrefReport:
                 target.append(site)
             elif _looks_like_io_tag(name):
                 undeclared.setdefault(name, []).append(site)
-    return XrefReport(usages=sorted(declared.values(), key=lambda u: u.tag.name), undeclared=undeclared)
+    usages = sorted(declared.values(), key=lambda u: u.tag.name)
+    silent = []
+    by_prefix: dict[str, list[TagUsage]] = {}
+    for usage in usages:
+        for prefix in _IO_PREFIXES:
+            if usage.tag.name.startswith(prefix):
+                by_prefix.setdefault(prefix, []).append(usage)
+                break
+    for prefix, members in sorted(by_prefix.items()):
+        if len(members) >= 3 and all(not m.reads and not m.writes for m in members):
+            silent.append(prefix)
+    return XrefReport(usages=usages, undeclared=undeclared, parse_errors=parse_errors, silent_prefixes=silent)
 
 
-def _bare_tag_name(path: str) -> str | None:
-    """``"DO_PUMP"`` -> ``DO_PUMP``; a path with members or a local is not a tag."""
-    if path.startswith('"') and path.endswith('"') and path.count('"') == 2:
-        return path[1:-1]
-    return None
+def _tag_root(path: str) -> str | None:
+    """The quoted root a tag access starts with: ``"SW".%X0`` and ``"A"[1]`` count.
+
+    A path rooted in a local (``#x``), an absolute address (``%I0.0``) or a
+    global DB *member* chain also starts with a quoted root -- the tag table
+    decides which quoted roots are tags; this only extracts the root name.
+    """
+    if not path.startswith('"'):
+        return None
+    closing = path.find('"', 1)
+    if closing < 0:
+        return None
+    return path[1:closing]
+
+
+#: The naming conventions the projects use for wired I/O. Must stay a superset of
+#: ``tag_parser.TAG_PREFIXES`` (checked by a test), or a declared category could
+#: never be reported at all.
+_IO_PREFIXES = ("DO_", "SDO_", "DI_", "SDI_", "AI_", "SAI_", "AO_", "SAO_")
 
 
 def _looks_like_io_tag(name: str) -> bool:
-    """The naming convention the projects use for wired I/O."""
-    prefixes = ("DO_", "SDO_", "DI_", "SDI_", "AI_", "SAI_", "AO_", "SAO_")
-    return name.startswith(prefixes)
+    return name.startswith(_IO_PREFIXES)

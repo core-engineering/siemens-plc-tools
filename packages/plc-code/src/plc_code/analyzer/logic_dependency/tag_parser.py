@@ -16,6 +16,8 @@ TAG_PREFIXES = {
     "SDI_": {"category": "SDI", "direction": "input", "description": "Safety Digital Input"},
     "AI_": {"category": "AI", "direction": "input", "description": "Analog Input"},
     "SAI_": {"category": "SAI", "direction": "input", "description": "Safety Analog Input"},
+    "AO_": {"category": "AO", "direction": "output", "description": "Analog Output"},
+    "SAO_": {"category": "SAO", "direction": "output", "description": "Safety Analog Output"},
 }
 
 

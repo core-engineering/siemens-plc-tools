@@ -176,20 +176,16 @@ def _dump_coverage() -> None:
     path = coverage_path()
     if path is None:
         return
-    merged: dict[str, dict[str, list[int]]] = {}
-    try:
-        merged = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        merged = {}
+    data: dict[str, dict[str, list[int]]] = {}
     for block, lines in _COVERAGE_EXECUTABLE.items():
-        entry = merged.setdefault(block, {"executable": [], "touched": []})
-        entry["executable"] = sorted(set(entry.get("executable", [])) | lines)
+        data.setdefault(block, {"executable": [], "touched": []})["executable"] = sorted(lines)
     for block, lines in _COVERAGE_TOUCHED.items():
-        entry = merged.setdefault(block, {"executable": [], "touched": []})
-        entry["touched"] = sorted(set(entry.get("touched", [])) | lines)
+        data.setdefault(block, {"executable": [], "touched": []})["touched"] = sorted(lines)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(merged, indent=0, sort_keys=True), encoding="utf-8")
+        # One shard per process: concurrent test workers (pytest-xdist) never
+        # race on a shared file; the consumer merges `<file>` and `<file>.*`.
+        Path(f"{path}.{os.getpid()}").write_text(json.dumps(data, indent=0, sort_keys=True), encoding="utf-8")
     except OSError:
         pass  # coverage must never fail the run it measures
 

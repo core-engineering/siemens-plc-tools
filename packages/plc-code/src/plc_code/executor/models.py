@@ -28,7 +28,10 @@ class TranspileOptions:
     include_docstrings: bool = True
     #: Emit a ``self._runtime.touch(block, line)`` before every statement, so a
     #: test run records which SCL lines executed (see ``plc code test --coverage``).
-    instrument_coverage: bool = False
+    #: ``None`` (the default) means: instrument exactly when ``PLC_SCL_COVERAGE``
+    #: is set -- so a caller passing explicit options for other reasons still
+    #: shows up in the coverage table instead of silently vanishing from it.
+    instrument_coverage: bool | None = None
     include_comments: bool = True
 
 

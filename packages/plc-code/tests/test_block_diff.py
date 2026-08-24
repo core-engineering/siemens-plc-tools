@@ -7,6 +7,7 @@ logic change in re-spaced expressions and shifted comments.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -60,9 +61,17 @@ class TestFormattingIsInvisible:
         assert not diff.is_change
 
     def test_a_self_diff_of_a_real_fixture_tree_is_empty(self) -> None:
-        fixtures = Path(__file__).parent / "fixtures"
+        fixtures = Path(__file__).parent / "fixtures" / "ladder"
         report = diff_trees(fixtures, fixtures)
         assert not report.has_changes
+
+    def test_a_self_diff_of_the_whole_fixture_tree_only_notes_duplicates(self) -> None:
+        # The fixture tree deliberately holds duplicate block names in subfolders;
+        # a self-diff reports those as errors and no block as changed.
+        fixtures = Path(__file__).parent / "fixtures"
+        report = diff_trees(fixtures, fixtures)
+        assert report.blocks == []
+        assert all("more than one file" in error for error in report.errors)
 
 
 class TestEditGranularity:
@@ -84,7 +93,9 @@ class TestEditGranularity:
 
     def test_an_added_statement_is_one_addition(self) -> None:
         old = _TEMPLATE.format(body=_BODY)
-        new = old.replace("            #out := #out * 2;", "            #out := #out * 2;\n            #a := 0;")
+        new = old.replace(
+            "            #out := #out * 2;", "            #out := #out * 2;\n            #a := 0;"
+        )
         diff = diff_blocks(_block(old), _block(new))
         assert [(c.kind, c.text) for c in diff.statements] == [("added", "#a := 0;")]
 
@@ -92,9 +103,8 @@ class TestEditGranularity:
 class TestInterface:
     def test_added_removed_retyped_redefaulted(self) -> None:
         old = _TEMPLATE.format(body=_BODY)
-        new = (
-            old.replace("a : Int;", "a : DInt;")
-            .replace("threshold : Real := 1.5;", "threshold : Real := 2.0;\n        enable : Bool;")
+        new = old.replace("a : Int;", "a : DInt;").replace(
+            "threshold : Real := 1.5;", "threshold : Real := 2.0;\n        enable : Bool;"
         )
         diff = diff_blocks(_block(old), _block(new))
         kinds = {(c.name, c.kind) for c in diff.interface}
@@ -133,11 +143,50 @@ class TestCli:
         source = _TEMPLATE.format(body=_BODY)
         _write(tmp_path / "old", "Probe", source)
         _write(tmp_path / "new", "Probe", source.replace("a : Int;", "a : DInt;"))
-        result = CliRunner().invoke(
-            cli, ["diff", "-f", "json", str(tmp_path / "old"), str(tmp_path / "new")]
-        )
+        result = CliRunner().invoke(cli, ["diff", "-f", "json", str(tmp_path / "old"), str(tmp_path / "new")])
         assert result.exit_code == 1
         payload = json.loads(result.output)
         assert payload["identical"] is False
         (block,) = payload["blocks"]
         assert block["interface"][0]["kind"] == "retyped"
+
+
+class TestBeyondScl:
+    def test_a_retyped_udt_member_is_a_change(self, tmp_path: Path) -> None:
+        udt = (
+            "TYPE\n    typeArm : STRUCT\n        angle : Real;\n"
+            "        valid : Bool;\n    END_STRUCT\nEND_TYPE\n"
+        )
+        _write(tmp_path / "old", "typeArm", udt)
+        _write(tmp_path / "new", "typeArm", udt.replace("angle : Real;", "angle : LReal;"))
+        report = diff_trees(tmp_path / "old", tmp_path / "new")
+        (block,) = report.blocks
+        assert [(c.name, c.kind, c.old, c.new) for c in block.interface] == [
+            ("angle", "retyped", "Real", "LReal")
+        ]
+
+    def test_a_rewired_ladder_element_is_a_change(self) -> None:
+        fixtures = Path(__file__).parent / "fixtures" / "ladder"
+        ladder = next(fixtures.glob("*.s7dcl"))
+        source = ladder.read_text(encoding="utf-8")
+        block_a = SCLParser(tokenize_with_newlines(source)).parse()
+        block_b = SCLParser(tokenize_with_newlines(source)).parse()
+        diff = diff_blocks(block_a, block_b)
+        assert not diff.is_change  # identical parse: no change
+        # Rewire one element in the parsed model and diff again.
+        for network in block_b.networks:
+            if network.ladder_elements:
+                network.ladder_elements[0] = network.ladder_elements[0].replace("(", "(REWIRED_", 1)
+                break
+        diff = diff_blocks(block_a, block_b)
+        assert diff.is_change
+        assert any("REWIRED_" in c.text for c in diff.statements)
+
+    def test_a_reattributed_variable_is_a_change(self) -> None:
+        old_block = _block(_TEMPLATE.format(body=_BODY))
+        new_block = _block(_TEMPLATE.format(body=_BODY))
+        # Attribute spellings vary by export dialect; flip the parsed flag directly.
+        variable = new_block.variable_sections[0].variables[0]
+        variable.attributes = replace(variable.attributes, access="ReadOnly := External")
+        diff = diff_blocks(old_block, new_block)
+        assert ("a", "reattributed") in {(c.name, c.kind) for c in diff.interface}

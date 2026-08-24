@@ -74,3 +74,31 @@ def test_io_named_tags_the_table_does_not_declare_are_reported_with_sites() -> N
     assert "DI_MYSTERY" in report.undeclared
     ((block, line),) = report.undeclared["DI_MYSTERY"]
     assert block == "IoMap" and line > 0
+
+
+def test_a_tag_accessed_through_a_bit_slice_or_index_is_still_that_tag() -> None:
+    source = _SOURCE.replace('"AI_LEVEL" > 2.0', '"AI_LEVEL".%X0')
+    block = SCLParser(tokenize_with_newlines(source)).parse()
+    report = cross_reference([block], TagCollection(tags=[_tag("AI_LEVEL", "input")]))
+    (usage,) = report.usages
+    assert usage.verdict == "read-only"
+
+
+def test_a_whole_silent_prefix_is_flagged_as_a_probably_missing_export() -> None:
+    block = SCLParser(tokenize_with_newlines(_SOURCE)).parse()
+    tags = TagCollection(tags=[_tag(f"SDI_UNSEEN_{i}", "input") for i in range(3)])
+    report = cross_reference([block], tags)
+    assert report.silent_prefixes == ["SDI_"]
+
+
+def test_the_io_prefix_list_covers_every_declared_prefix() -> None:
+    from plc_code.analyzer.logic_dependency.tag_parser import TAG_PREFIXES
+    from plc_code.analyzer.tag_xref import _IO_PREFIXES
+
+    assert set(TAG_PREFIXES) <= set(_IO_PREFIXES)
+
+
+def test_analog_outputs_are_declared_tags_now() -> None:
+    from plc_code.analyzer.logic_dependency.tag_parser import _get_tag_category
+
+    assert _get_tag_category("AO_VALVE_CMD") == ("AO", "output")

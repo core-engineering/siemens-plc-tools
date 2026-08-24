@@ -1012,6 +1012,7 @@ def diff(output_format: str, old_path: Path, new_path: Path) -> None:
                 "removed": f"- {change.name} : {change.old}",
                 "retyped": f"~ {change.name} : {change.old} -> {change.new}",
                 "redefaulted": f"~ {change.name} := {change.old!r} -> {change.new!r}",
+                "reattributed": f"~ {change.name} attributes: {change.old} -> {change.new}",
             }[change.kind]
             console.print(f"    [{change.section}] {detail}")
         last_region: str | None = None
@@ -1120,6 +1121,13 @@ def xref(tags_dir: Path, output_format: str, show_all: bool, path: Path | None) 
     for name, tag_sites in sorted(report.undeclared.items()):
         where = ", ".join(f"{block}:{line}" for block, line in tag_sites[:4])
         console.print(f"  [red]undeclared[/red] {name}  [dim]{where}[/dim]")
+    for problem in report.parse_errors:
+        console_err.print(f"  [yellow]not read:[/yellow] {problem}")
+    for prefix in report.silent_prefixes:
+        console_err.print(
+            f"  [yellow]warning:[/yellow] no {prefix}* tag is ever accessed — the part of the "
+            "program using them is probably missing from the compared export"
+        )
     finding_names = {usage.tag.name for usage in report.findings}
     healthy = sum(1 for usage in report.usages if usage.tag.name not in finding_names)
     console.print(
@@ -1977,7 +1985,9 @@ def test(verbose: bool, coverage: bool, path: Path | None) -> None:
     coverage_file: Path | None = None
     env = os.environ.copy()
     if coverage:
-        coverage_file = Path(tempfile.mkstemp(suffix=".json", prefix="scl-coverage-")[1])
+        descriptor, name = tempfile.mkstemp(suffix=".json", prefix="scl-coverage-")
+        os.close(descriptor)
+        coverage_file = Path(name)
         coverage_file.write_text("{}", encoding="utf-8")
         env["PLC_SCL_COVERAGE"] = str(coverage_file)
 
@@ -2007,12 +2017,21 @@ def test(verbose: bool, coverage: bool, path: Path | None) -> None:
     result = subprocess.run(command + pytest_args, cwd=cwd, env=env)
 
     if coverage_file is not None:
-        try:
-            data = json_module.loads(coverage_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            data = {}
-        finally:
-            coverage_file.unlink(missing_ok=True)
+        # Each process wrote its own `<file>.<pid>` shard (safe under xdist);
+        # merge them here.
+        data: dict[str, Any] = {}
+        shards = [coverage_file, *coverage_file.parent.glob(coverage_file.name + ".*")]
+        for shard in shards:
+            try:
+                part = json_module.loads(shard.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            finally:
+                shard.unlink(missing_ok=True)
+            for block, entry in part.items():
+                merged = data.setdefault(block, {"executable": [], "touched": []})
+                merged["executable"] = sorted(set(merged["executable"]) | set(entry.get("executable", [])))
+                merged["touched"] = sorted(set(merged["touched"]) | set(entry.get("touched", [])))
         _print_scl_coverage(data)
 
     raise SystemExit(result.returncode)

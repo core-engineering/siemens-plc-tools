@@ -683,13 +683,16 @@ class SCLTranspiler:
             for problem in problems:
                 self._problems.append(TranspileProblem(problem))
             return []
-        if self.options.instrument_coverage:
+        instrument = self.options.instrument_coverage
+        if instrument is None:
+            instrument = coverage_path() is not None
+        if instrument:
             self._executable_lines.update(executable_lines(result.statements))
         return generate_statements(
             result.statements,
             signature_resolver=self.signature_resolver,
             timer_instances=self._timer_instances(),
-            coverage_block=python_class_name(self.block.name) if self.options.instrument_coverage else None,
+            coverage_block=python_class_name(self.block.name) if instrument else None,
         )
 
     def _timer_instances(self) -> frozenset[str]:
@@ -837,12 +840,10 @@ def compile_block(
         return compile_ladder_block(block)
 
     # First transpile
-    if options is None and coverage_path() is not None:
-        # `plc code test --coverage` sets PLC_SCL_COVERAGE for its pytest
-        # subprocesses; every default-options compile inside them instruments.
-        options = TranspileOptions(instrument_coverage=True)
     transpile_result = transpile_block(block, options, type_mapper, fb_type_resolver, signature_resolver)
-    if transpile_result.executable_lines:
+    if transpile_result.success and transpile_result.executable_lines:
+        # A block that failed to transpile must not enter the denominator: it
+        # would sit at a permanent 0% whose real cause is elsewhere in the run.
         record_executable(python_class_name(block.name), transpile_result.executable_lines)
 
     if not transpile_result.success:

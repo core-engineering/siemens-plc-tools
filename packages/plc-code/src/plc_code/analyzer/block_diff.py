@@ -38,7 +38,7 @@ class InterfaceChange:
     name : str
         The variable's name.
     kind : str
-        ``added``, ``removed``, ``retyped`` or ``redefaulted``.
+        ``added``, ``removed``, ``retyped``, ``redefaulted`` or ``reattributed``.
     old : str | None
         The old type (``retyped``) or default (``redefaulted``); ``None`` for
         ``added``.
@@ -121,21 +121,63 @@ def diff_blocks(old: Block, new: Block) -> BlockDiff:
         diff.notes.append(f"return type: {old.return_type} -> {new.return_type}")
     if old.base_type != new.base_type:
         diff.notes.append(f"base type: {old.base_type} -> {new.base_type}")
-    diff.interface = _diff_interface(old, new)
+    diff.interface = _diff_interface(old, new, diff.parse_problems)
     diff.statements = _diff_bodies(old, new, diff.parse_problems)
+    if not diff.is_change and _opaque(old) and _opaque(new) and _raw_differs(old, new):
+        # A TYPE or DATA_BLOCK whose members the parser does not expose: the two
+        # sides' text differs, so say "changed, not semantically compared" rather
+        # than the false "identical".
+        diff.notes.append(f"{new.block_type} content differs (members not semantically compared)")
     return diff
 
 
-def _variables(block: Block) -> dict[tuple[str, str], VariableDeclaration]:
-    return {
-        (section.section_type, variable.name): variable
-        for section in block.variable_sections
-        for variable in section.variables
-    }
+def _opaque(block: Block) -> bool:
+    """A block the parser exposes no members or code for (an instance DB, some TYPEs)."""
+    has_members = any(section.variables for section in block.variable_sections) or (
+        block.user_data_type is not None and block.user_data_type.fields
+    )
+    has_code = any(network.tokens or network.regions or network.ladder_elements for network in block.networks)
+    return block.block_type in ("TYPE", "DATA_BLOCK") and not has_members and not has_code
 
 
-def _diff_interface(old: Block, new: Block) -> list[InterfaceChange]:
-    old_vars, new_vars = _variables(old), _variables(new)
+def _raw_differs(old: Block, new: Block) -> bool:
+    try:
+        old_text = Path(old.source_file).read_text(encoding="utf-8-sig")
+        new_text = Path(new.source_file).read_text(encoding="utf-8-sig")
+    except OSError:
+        return False
+
+    def normalize(text: str) -> list[str]:
+        return [" ".join(line.split()) for line in text.splitlines() if line.strip()]
+
+    return normalize(old_text) != normalize(new_text)
+
+
+def _variables(block: Block, problems: list[str]) -> dict[tuple[str, str, int], VariableDeclaration]:
+    """Every declared variable, keyed by section, name and occurrence.
+
+    The occurrence index keeps duplicates apart: the parser flattens inline
+    ``STRUCT`` members into their enclosing section, so two structs may both
+    declare an ``x`` -- collapsing them would hide a retype of the shadowed one.
+    """
+    variables: dict[tuple[str, str, int], VariableDeclaration] = {}
+    seen: dict[tuple[str, str], int] = {}
+    for section in block.variable_sections:
+        for variable in section.variables:
+            occurrence = seen.get((section.section_type, variable.name), 0)
+            seen[(section.section_type, variable.name)] = occurrence + 1
+            variables[(section.section_type, variable.name, occurrence)] = variable
+    if block.user_data_type is not None:
+        for position, struct_field in enumerate(block.user_data_type.fields):
+            variables[("TYPE", struct_field.name, 0)] = VariableDeclaration(
+                name=struct_field.name, data_type=struct_field.data_type
+            )
+            del position
+    return variables
+
+
+def _diff_interface(old: Block, new: Block, problems: list[str]) -> list[InterfaceChange]:
+    old_vars, new_vars = _variables(old, problems), _variables(new, problems)
     changes: list[InterfaceChange] = []
     for key in old_vars.keys() - new_vars.keys():
         changes.append(
@@ -163,6 +205,18 @@ def _diff_interface(old: Block, new: Block) -> list[InterfaceChange]:
                     new=after.default_value,
                 )
             )
+        if before.attributes != after.attributes:
+            # Retain, S7_Access, setpoint flags: semantic on the PLC even though
+            # they never touch the body.
+            changes.append(
+                InterfaceChange(
+                    section=key[0],
+                    name=key[1],
+                    kind="reattributed",
+                    old=str(before.attributes),
+                    new=str(after.attributes),
+                )
+            )
     changes.sort(key=lambda change: (change.section, change.name, change.kind))
     return changes
 
@@ -170,16 +224,38 @@ def _diff_interface(old: Block, new: Block) -> list[InterfaceChange]:
 # -- body-level ---------------------------------------------------------------------
 
 
-def _regions(block: Block) -> list[tuple[str, list[Token]]]:
-    """Every code-bearing token slice of the block, named."""
-    slices: list[tuple[str, list[Token]]] = []
+def _regions(block: Block) -> dict[tuple[int, str], list[Token]]:
+    """Every SCL token slice of the block, keyed by position and name.
+
+    The position keeps two same-named regions apart; the name alone is what the
+    report shows.
+    """
+    slices: dict[tuple[int, str], list[Token]] = {}
+    index = 0
     for position, network in enumerate(block.networks, 1):
         if network.tokens:
-            slices.append((f"<network {position}>", network.tokens))
+            slices[(index, f"<network {position}>")] = network.tokens
+            index += 1
         for region in network.regions:
             if region.tokens:
-                slices.append((region.name, region.tokens))
+                slices[(index, region.name)] = region.tokens
+                index += 1
     return slices
+
+
+def _ladder_units(block: Block) -> dict[tuple[int, str], list[_Comparable]]:
+    """One unit per ladder element, per network: the parser's canonical element text.
+
+    A rewired rung diffs as the changed elements; wire markers ride along, so a
+    re-parallelled branch shows too.
+    """
+    units: dict[tuple[int, str], list[_Comparable]] = {}
+    for position, network in enumerate(block.networks, 1):
+        if network.ladder_elements:
+            units[(position, f"<network {position} (LAD)>")] = [
+                _Comparable(text=element, line=position) for element in network.ladder_elements
+            ]
+    return units
 
 
 @dataclass(frozen=True)
@@ -291,26 +367,27 @@ def _tokens_text(tokens: list[Token]) -> str:
 
 
 def _diff_bodies(old: Block, new: Block, problems: list[str]) -> list[StatementChange]:
-    old_regions = dict(_regions(old))
-    new_regions = dict(_regions(new))
+    old_units = {key: _units(tokens, key[1], problems, "old") for key, tokens in _regions(old).items()}
+    new_units = {key: _units(tokens, key[1], problems, "new") for key, tokens in _regions(new).items()}
+    old_units.update(_ladder_units(old))
+    new_units.update(_ladder_units(new))
     changes: list[StatementChange] = []
-    for name in old_regions.keys() - new_regions.keys():
-        for unit in _units(old_regions[name], name, problems, "old"):
-            changes.append(StatementChange(region=name, kind="removed", line=unit.line, text=unit.text))
-    for name in new_regions.keys() - old_regions.keys():
-        for unit in _units(new_regions[name], name, problems, "new"):
-            changes.append(StatementChange(region=name, kind="added", line=unit.line, text=unit.text))
-    for name in old_regions.keys() & new_regions.keys():
-        before = _units(old_regions[name], name, problems, "old")
-        after = _units(new_regions[name], name, problems, "new")
+    for key in old_units.keys() - new_units.keys():
+        for unit in old_units[key]:
+            changes.append(StatementChange(region=key[1], kind="removed", line=unit.line, text=unit.text))
+    for key in new_units.keys() - old_units.keys():
+        for unit in new_units[key]:
+            changes.append(StatementChange(region=key[1], kind="added", line=unit.line, text=unit.text))
+    for key in old_units.keys() & new_units.keys():
+        before, after = old_units[key], new_units[key]
         matcher = difflib.SequenceMatcher(a=before, b=after, autojunk=False)
         for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
             if tag == "equal":
                 continue
             for unit in before[old_start:old_end]:
-                changes.append(StatementChange(region=name, kind="removed", line=unit.line, text=unit.text))
+                changes.append(StatementChange(region=key[1], kind="removed", line=unit.line, text=unit.text))
             for unit in after[new_start:new_end]:
-                changes.append(StatementChange(region=name, kind="added", line=unit.line, text=unit.text))
+                changes.append(StatementChange(region=key[1], kind="added", line=unit.line, text=unit.text))
     changes.sort(key=lambda change: (change.region, change.line, change.kind))
     return changes
 
@@ -338,8 +415,13 @@ def diff_trees(old_path: Path, new_path: Path) -> DiffReport:
         report.blocks.append(BlockDiff(name=name, kind="added"))
     for name in sorted(old_blocks.keys() & new_blocks.keys()):
         diff = diff_blocks(old_blocks[name], new_blocks[name])
-        if diff.is_change or diff.parse_problems:
+        if diff.is_change:
             report.blocks.append(diff)
+        elif diff.parse_problems:
+            # Nothing readable changed, but part of the block was not compared:
+            # that is an unreadable-input condition, not a difference.
+            for problem in diff.parse_problems:
+                report.errors.append(f"{name}: {problem}")
     return report
 
 
@@ -353,5 +435,7 @@ def _load(path: Path, errors: list[str], side: str) -> dict[str, Block]:
             errors.append(f"{side}: {file.name}: {error}")
             continue
         if block is not None and block.name:
+            if block.name in blocks:
+                errors.append(f"{side}: block {block.name!r} appears in more than one file; last kept")
             blocks[block.name] = block
     return blocks

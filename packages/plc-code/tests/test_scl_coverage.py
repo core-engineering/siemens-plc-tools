@@ -94,9 +94,16 @@ class TestExitTimeDump:
                 cwd=Path.cwd(),
             )
             assert run.returncode == 0, run.stderr
-        data = json.loads(coverage_file.read_text(encoding="utf-8"))
-        assert data["CovProbe"]["executable"] == [11, 12, 14, 16]
-        assert data["CovProbe"]["touched"] == [11, 12, 14, 16]  # both branches, across processes
+        # One shard per process (safe under parallel workers); merge like the CLI does.
+        merged: dict[str, set[int]] = {"executable": set(), "touched": set()}
+        shards = list(tmp_path.glob("cov.json.*"))
+        assert len(shards) == 2, "one shard per process"
+        for shard in shards:
+            part = json.loads(shard.read_text(encoding="utf-8"))
+            merged["executable"] |= set(part["CovProbe"]["executable"])
+            merged["touched"] |= set(part["CovProbe"]["touched"])
+        assert sorted(merged["executable"]) == [11, 12, 14, 16]
+        assert sorted(merged["touched"]) == [11, 12, 14, 16]  # both branches, across processes
 
 
 def test_line_ranges_read_like_a_human_wrote_them() -> None:

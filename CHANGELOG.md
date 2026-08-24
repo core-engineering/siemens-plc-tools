@@ -13,9 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   retyped / redefaulted), bodies statement by statement on the shared AST,
   flattened to edit granularity (a change in one `IF` branch reports that
   branch's line, not the whole construct) — so whitespace, comments and TIA
-  re-export formatting never show as changes. Text and `-f json` output; exit 0
-  when semantically identical, 1 on any difference, 2 when an export could not
-  be read (`analyzer/block_diff.py`).
+  re-export formatting never show as changes. UDT members and variable
+  attributes (retain, access, setpoint) are compared; ladder networks diff by
+  their canonical elements; an instance DB whose members the parser does not
+  expose is reported "content differs (not semantically compared)" rather than
+  a false "identical". Text and `-f json` output; exit 0 when semantically
+  identical, 1 on any difference, 2 when an export could not be read
+  (`analyzer/block_diff.py`).
 - **plc-code (CLI, executor)** — `plc code test --coverage`: SCL line coverage
   measured while the block tests run — the qualification argument a FAT wants:
   not "the block has a test" but "these lines ran, these did not". The command
