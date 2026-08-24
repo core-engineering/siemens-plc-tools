@@ -946,6 +946,91 @@ def _compute_page_block_ids(page: object, resolver: Resolver) -> set[str]:
 # =============================================================================
 
 
+@code_group.command("diff")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format",
+)
+@click.argument("old_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("new_path", type=click.Path(exists=True, path_type=Path))
+def diff(output_format: str, old_path: Path, new_path: Path) -> None:
+    """Semantic diff between two SCL exports (directories or single .s7dcl files).
+
+    Compares what the code means -- blocks, interfaces, statements on the AST --
+    so whitespace, comments and TIA re-export formatting never show as changes.
+    Exit code: 0 when semantically identical, 1 when anything differs, 2 when an
+    export could not be read.
+    """
+    import json as json_module
+
+    from plc_code.analyzer.block_diff import diff_trees
+
+    report = diff_trees(old_path, new_path)
+
+    if output_format == "json":
+        print(
+            json_module.dumps(
+                {
+                    "identical": not report.has_changes,
+                    "errors": report.errors,
+                    "blocks": [
+                        {
+                            "name": block.name,
+                            "kind": block.kind,
+                            "notes": block.notes,
+                            "interface": [vars(change) for change in block.interface],
+                            "statements": [vars(change) for change in block.statements],
+                            "parse_problems": block.parse_problems,
+                        }
+                        for block in report.blocks
+                    ],
+                },
+                indent=2,
+            )
+        )
+        raise SystemExit(2 if report.errors else (1 if report.has_changes else 0))
+
+    for error in report.errors:
+        console_err.print(f"[red]error:[/red] {error}")
+    if not report.has_changes:
+        console.print("[green]Identical[/green] — no semantic difference.")
+        raise SystemExit(0)
+    for block in report.blocks:
+        marker = {"added": "[green]+[/green]", "removed": "[red]-[/red]"}.get(
+            block.kind, "[yellow]~[/yellow]"
+        )
+        console.print(f"\n{marker} [bold]{block.name}[/bold] ({block.kind})")
+        for note in block.notes:
+            console.print(f"    {note}")
+        for change in block.interface:
+            detail = {
+                "added": f"+ {change.name} : {change.new}",
+                "removed": f"- {change.name} : {change.old}",
+                "retyped": f"~ {change.name} : {change.old} -> {change.new}",
+                "redefaulted": f"~ {change.name} := {change.old!r} -> {change.new!r}",
+            }[change.kind]
+            console.print(f"    [{change.section}] {detail}")
+        last_region: str | None = None
+        for statement in block.statements:
+            if statement.region != last_region:
+                console.print(f"    [dim]{statement.region}[/dim]")
+                last_region = statement.region
+            sign = "+" if statement.kind == "added" else "-"
+            style = "green" if statement.kind == "added" else "red"
+            console.print(f"      [{style}]{sign} L{statement.line}: {statement.text}[/{style}]")
+        for problem in block.parse_problems:
+            console_err.print(f"    [yellow]not compared:[/yellow] {problem}")
+    changed = sum(1 for b in report.blocks if b.kind == "changed")
+    added = sum(1 for b in report.blocks if b.kind == "added")
+    removed = sum(1 for b in report.blocks if b.kind == "removed")
+    console.print(f"\n{changed} changed, {added} added, {removed} removed.")
+    raise SystemExit(2 if report.errors else 1)
+
+
 @code_group.command("drawio")
 @click.option(
     "--doc-map",

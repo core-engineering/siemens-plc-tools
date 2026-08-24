@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **plc-code (CLI, analyzer)** — `plc code diff OLD NEW`: semantic diff between
+  two SCL exports (directories or single `.s7dcl` files). Compares what the code
+  means — blocks by name, interfaces variable by variable (added / removed /
+  retyped / redefaulted), bodies statement by statement on the shared AST,
+  flattened to edit granularity (a change in one `IF` branch reports that
+  branch's line, not the whole construct) — so whitespace, comments and TIA
+  re-export formatting never show as changes. Text and `-f json` output; exit 0
+  when semantically identical, 1 on any difference, 2 when an export could not
+  be read (`analyzer/block_diff.py`).
+
 ## [0.3.0] - 2026-08-24
 
 ### Added
