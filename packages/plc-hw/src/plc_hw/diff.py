@@ -13,8 +13,12 @@ from plc_core.reporting import Finding, Report, ReportSection, Severity
 
 from plc_hw.model import DeviceItemNode, DeviceNode, ProjectSnapshot, SubnetInfo, UnreadableAttribute
 
-#: Attribute and feature keys that carry a PROFIsafe address. A change here is
-#: never a routine parameter edit.
+#: Attribute and feature key suffixes that carry a PROFIsafe address. Matched
+#: as suffixes, not substrings: Openness names these attributes
+#: ``Failsafe_FSourceAddress`` and ``Failsafe_FDestinationAddress``, a vendor
+#: prefix followed by the marker, so a suffix match catches the real names
+#: while refusing a marker buried mid-identifier (e.g. ``MyFSourceAddressBackup``,
+#: which is an ordinary attribute, not a PROFIsafe address).
 _F_ADDRESS_MARKERS = ("FSourceAddress", "FDestinationAddress")
 
 _TITLES = {
@@ -35,6 +39,7 @@ _TITLES = {
     "HW015": "Subnet changed",
     "HW016": "Project name changed",
     "HW017": "Type name changed",
+    "HW018": "Unreadable reason changed",
 }
 
 _ERRORS = frozenset(
@@ -349,7 +354,7 @@ def _diff_mapping(
         after = new.get(key, "<absent>")
         if before == after:
             continue
-        actual = "HW002" if any(marker in key for marker in _F_ADDRESS_MARKERS) else code
+        actual = "HW002" if any(key.endswith(marker) for marker in _F_ADDRESS_MARKERS) else code
         label = f"{prefix}{key}"
         findings.append(_finding(actual, path, f"{label}: {before!r} -> {after!r}", label))
     return findings
@@ -387,12 +392,16 @@ def _diff_unreadable(
     new: list[UnreadableAttribute],
     location: str,
 ) -> list[Finding]:
-    """Report attributes that stopped being readable.
+    """Report attributes that stopped being readable, or whose failure changed shape.
 
     An attribute that vanishes from a dump without a trace reads as
     "unchanged". It is not: it means "not read". This is the finding that
     keeps that honest. An attribute already unreadable on both sides is not
-    news, so it produces nothing.
+    news by itself -- but its *reason* changing is: "not accessible in this
+    context" becoming "communication timeout" says the device left the
+    network, not that a permission is missing. Collapsing both sides to a set
+    of names would erase exactly that distinction, so both sides are kept as
+    name-to-reason maps instead.
 
     Parameters
     ----------
@@ -405,14 +414,20 @@ def _diff_unreadable(
     Returns
     -------
     list[Finding]
-        One HW011 finding per attribute newly unreadable in ``new``.
+        One HW011 finding per attribute newly unreadable in ``new``, and one
+        HW018 finding per attribute unreadable on both sides whose reason
+        changed. An attribute that became readable again produces nothing,
+        and neither does one whose reason is unchanged.
     """
-    before = {u.name for u in old}
+    before = {u.name: u.reason for u in old}
     after = {u.name: u.reason for u in new}
-    return [
-        _finding("HW011", location, f"{name} could not be read: {after[name]}", name)
-        for name in sorted(set(after) - before)
-    ]
+    findings: list[Finding] = []
+    for name in sorted(set(after) - set(before)):
+        findings.append(_finding("HW011", location, f"{name} could not be read: {after[name]}", name))
+    for name in sorted(set(before) & set(after)):
+        if before[name] != after[name]:
+            findings.append(_finding("HW018", location, f"{name}: {before[name]} -> {after[name]}", name))
+    return findings
 
 
 __all__ = ["build_report", "diff_snapshots"]

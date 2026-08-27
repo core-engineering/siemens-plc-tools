@@ -100,6 +100,67 @@ def test_an_attribute_becoming_unreadable_is_reported_never_silent() -> None:
     assert "HW011" in codes
 
 
+def test_attribute_becoming_readable_again_produces_no_unreadable_finding() -> None:
+    old = _base()
+    new = copy.deepcopy(old)
+    _module(new).unreadable = [u for u in _module(new).unreadable if u.name != "LockedParameter"]
+    assert _codes(old, new) == []
+
+
+def test_unreadable_reason_change_is_a_warning_on_item_and_device() -> None:
+    item_new = _base()
+    mod = _module(item_new)
+    mod.unreadable = [
+        UnreadableAttribute(name=u.name, reason="communication timeout") if u.name == "LockedParameter" else u
+        for u in mod.unreadable
+    ]
+    findings = diff_snapshots(_base(), item_new)
+    assert [f.rule_code for f in findings] == ["HW018"]
+    assert findings[0].severity is Severity.WARNING
+    assert findings[0].location == "IO_STATION_1/Rail/F-DI"
+    assert "not accessible in this context" in findings[0].message
+    assert "communication timeout" in findings[0].message
+
+    device_new = _base()
+    device_new.devices[0].unreadable = [
+        UnreadableAttribute(name=u.name, reason="communication timeout") if u.name == "TypeIdentifier" else u
+        for u in device_new.devices[0].unreadable
+    ]
+    device_findings = diff_snapshots(_base(), device_new)
+    assert [f.rule_code for f in device_findings] == ["HW018"]
+    assert device_findings[0].severity is Severity.WARNING
+    assert device_findings[0].location == "IO_STATION_1"
+
+
+def test_unreadable_attribute_with_same_reason_on_both_sides_is_silent() -> None:
+    new = _base()
+    mod = _module(new)
+    # Fresh objects, equal by value but not by identity: proves the comparison
+    # is on ``reason``, not on object identity.
+    mod.unreadable = [UnreadableAttribute(name=u.name, reason=u.reason) for u in mod.unreadable]
+    assert _codes(_base(), new) == []
+
+
+def test_f_address_marker_mid_identifier_is_not_promoted() -> None:
+    attr_new = _base()
+    _module(attr_new).attributes["MyFSourceAddressBackup"] = 1
+    assert _codes(_base(), attr_new) == ["HW010"]
+
+    feature_new = _base()
+    _module(feature_new).features["ProfiSafe"]["NotReallyFDestinationAddressXYZ"] = 1
+    assert _codes(_base(), feature_new) == ["HW013"]
+
+
+def test_real_openness_f_address_names_are_still_promoted() -> None:
+    source_new = _base()
+    _module(source_new).attributes["Failsafe_FSourceAddress"] = 1
+    assert _codes(_base(), source_new) == ["HW002"]
+
+    dest_new = _base()
+    _module(dest_new).attributes["Failsafe_FDestinationAddress"] = 1
+    assert _codes(_base(), dest_new) == ["HW002"]
+
+
 def test_address_range_change_is_reported() -> None:
     new = _base()
     _module(new).addresses[0] = type(_module(new).addresses[0])(start=200, length=8, io_type="Input")
@@ -250,6 +311,13 @@ def test_every_rule_code_is_reachable() -> None:
     _module(unreadable_item).attributes.pop("SomeParameter")
     _module(unreadable_item).unreadable.append(UnreadableAttribute(name="SomeParameter", reason="x"))
     seen.update(_codes(base, unreadable_item))
+
+    reason_change = _base()
+    reason_mod = _module(reason_change)
+    reason_mod.unreadable = [
+        UnreadableAttribute(name=u.name, reason="communication timeout") for u in reason_mod.unreadable
+    ]
+    seen.update(_codes(base, reason_change))
 
     addr = _base()
     _module(addr).addresses[0] = type(_module(addr).addresses[0])(start=1, length=1, io_type="Input")
