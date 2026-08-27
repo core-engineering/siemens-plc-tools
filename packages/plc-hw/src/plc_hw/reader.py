@@ -33,7 +33,12 @@ def read_dump(root: Path) -> ProjectSnapshot:
     Returns
     -------
     ProjectSnapshot
-        The snapshot the tree encodes.
+        The snapshot the tree encodes. Its ``devices`` come back sorted by
+        their verbatim name, matching the order ``walk_project`` produces: the
+        directory slug is a filename, not an ordering key, and two device names
+        can slugify to slugs that sort differently from the names themselves
+        (``slugify`` maps a space onto ``-`` but leaves ``!`` untouched, for
+        instance).
 
     Raises
     ------
@@ -52,7 +57,10 @@ def read_dump(root: Path) -> ProjectSnapshot:
         )
 
     project = _load(root / "_project.yaml")
-    devices = [_read_device(directory) for directory in sorted(p for p in root.iterdir() if p.is_dir())]
+    devices = sorted(
+        (_read_device(directory) for directory in root.iterdir() if directory.is_dir()),
+        key=lambda device: device.name,
+    )
     return ProjectSnapshot(
         project_name=str(project["project_name"]),
         subnets=[SubnetInfo(**s) for s in project["subnets"]],
@@ -73,7 +81,15 @@ def _read_device(directory: Path) -> DeviceNode:
     meta = _load(directory / "_device.yaml")
     racks = [_read_item({k: v for k, v in rack.items() if k != "index"}) for rack in meta["racks"]]
     for path in sorted(p for p in directory.glob("*.yaml") if p.name != "_device.yaml"):
-        rack_index = int(path.name.split("-", 1)[0])
+        prefix = path.name.split("-", 1)[0]
+        try:
+            rack_index = int(prefix)
+        except ValueError as exc:
+            raise DumpReadError(f"{path} does not start with a rack index") from exc
+        if not 0 <= rack_index < len(racks):
+            raise DumpReadError(
+                f"{path} names rack index {rack_index}, but {directory} declares {len(racks)} rack(s)"
+            )
         racks[rack_index].children.append(_read_item(_load(path)))
     return DeviceNode(
         name=str(meta["name"]),
@@ -107,10 +123,22 @@ def _read_item(data: dict[str, Any]) -> DeviceItemNode:
 
 
 def _load(path: Path) -> dict[str, Any]:
-    """Parse one dump file."""
+    """Parse one dump file.
+
+    Raises
+    ------
+    DumpReadError
+        If the file is missing, is not valid YAML, or does not parse to a
+        mapping. A raw ``yaml.YAMLError`` never escapes this function: every
+        malformed input on the read path must surface through the one error
+        type ``read_dump`` documents.
+    """
     if not path.exists():
         raise DumpReadError(f"{path} is missing from the dump")
-    parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise DumpReadError(f"{path} is not valid YAML: {exc}") from exc
     if not isinstance(parsed, dict):
         raise DumpReadError(f"{path} is not a mapping")
     return parsed
