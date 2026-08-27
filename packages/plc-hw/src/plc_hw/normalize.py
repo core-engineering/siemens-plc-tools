@@ -79,14 +79,18 @@ def disambiguate(slugs: list[str]) -> list[str]:
     Returns
     -------
     list[str]
-        Same length and order; later duplicates get a ``-<n>`` suffix.
+        Same length and order; later duplicates get a ``-<n>`` suffix, bumped
+        until the candidate is actually free -- a generated suffix can itself
+        collide with a slug already present in the list.
     """
     seen: set[str] = set()
     out: list[str] = []
     for index, slug in enumerate(slugs, start=1):
         candidate = slug
-        if candidate.lower() in seen:
-            candidate = f"{slug}-{index}"
+        bump = index
+        while candidate.lower() in seen:
+            candidate = f"{slug}-{bump}"
+            bump += 1
         seen.add(candidate.lower())
         out.append(candidate)
     return out

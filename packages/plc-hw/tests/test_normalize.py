@@ -68,3 +68,23 @@ def test_disambiguate_resolves_case_insensitive_collisions() -> None:
 
 def test_disambiguate_is_deterministic_on_order() -> None:
     assert disambiguate(["a", "A", "a"]) == ["a", "A-2", "a-3"]
+
+
+def test_disambiguate_generated_suffix_does_not_collide_with_an_existing_slug() -> None:
+    # A generated `<stem>-<N>` suffix must not collide with a slug that already
+    # exists elsewhere in the list -- if it does, two entries end up with the
+    # same output name and one silently overwrites the other on NTFS.
+    assert disambiguate(["Y-3", "Y", "Y"]) == ["Y-3", "Y", "Y-4"]
+
+
+def test_disambiguate_outputs_are_always_unique_and_same_length_as_input() -> None:
+    cases = [
+        ["Y-3", "Y", "Y"],
+        ["a", "A", "a", "A"],
+        ["x", "x", "x", "x-2"],
+    ]
+    for slugs in cases:
+        result = disambiguate(slugs)
+        assert len(result) == len(slugs)
+        lowered = [slug.lower() for slug in result]
+        assert len(set(lowered)) == len(lowered)
