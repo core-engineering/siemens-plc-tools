@@ -293,3 +293,28 @@ def test_an_internal_bug_escapes_as_a_traceback_not_exit_two(
     )
     assert result.exit_code != 2
     assert isinstance(result.exception, KeyError)
+
+
+def test_check_internal_bug_escapes_as_a_traceback_not_exit_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mirror of `test_an_internal_bug_escapes_as_a_traceback_not_exit_two`, for `check`.
+
+    `check` has its own `try`/`except` around `walk_project`, textually separate from
+    `dump`'s; nothing previously exercised that `check`'s catch tuple also excludes a bare
+    `KeyError`, only that `dump`'s does.
+    """
+    baseline = tmp_path / "baseline"
+    CliRunner().invoke(hw_group, ["dump", "--source", f"replay:{_fixture(tmp_path)}", "--out", str(baseline)])
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise KeyError("SomeInternalBug")
+
+    monkeypatch.setattr("plc_hw.cli.walk_project", _boom)
+    result = CliRunner().invoke(
+        hw_group,
+        ["check", "--source", f"replay:{_fixture(tmp_path)}", "--baseline", str(baseline)],
+        catch_exceptions=True,
+    )
+    assert result.exit_code != 2
+    assert isinstance(result.exception, KeyError)

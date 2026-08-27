@@ -285,14 +285,30 @@ class OpennessSource:
           method that reads the CLR directly.
         - A failure on *one* object partway through the scan -- reading its
           ``DeviceItems`` while descending (:meth:`_iter_hardware_objects`),
-          reading its ``SoftwareContainer.Software``, reaching
-          ``SafetyAdministration``, or reading one signature's ``Type``/
-          ``Value`` -- does not stop the scan. It is recorded under
-          :data:`UNREACHABLE_SAFETY`, naming the object, and the walk moves
-          on to the next object. A partial result (some signatures found,
-          some objects that could not be read) is therefore distinguishable
-          both from "no safety program anywhere" (``{}``) and from "nothing
-          could be read at all" (only :data:`UNREACHABLE_SAFETY` present).
+          reaching its ``SoftwareContainer`` service, reading that
+          container's ``Software``, reaching ``SafetyAdministration``, or
+          reading one signature's ``Type``/``Value`` -- does not stop the
+          scan. It is recorded under :data:`UNREACHABLE_SAFETY`, naming the
+          object, and the walk moves on to the next object. A partial result
+          (some signatures found, some objects that could not be read) is
+          therefore distinguishable both from "no safety program anywhere"
+          (``{}``) and from "nothing could be read at all" (only
+          :data:`UNREACHABLE_SAFETY` present).
+
+          The ``SoftwareContainer`` lookup deliberately does *not* go through
+          :meth:`_service` here, unlike :meth:`features`: :meth:`_service`'s
+          blanket ``except Exception: return None`` is correct for a feature
+          probe, where "this object does not support that service" is the
+          overwhelmingly common, ordinary case -- but it cannot tell that
+          case apart from a genuine CLR failure, and folding a real failure
+          into the same ``None`` here would make a session drop mid-scan
+          indistinguishable from "this project has no safety program",
+          which is the one answer this method must never give by accident.
+          ``GetService[T]()`` is called directly instead: Openness returns
+          ``None`` when an object genuinely does not implement a service
+          (an ordinary, silent outcome, handled the same as before), and
+          raises only on an actual failure to reach it, which is what gets
+          recorded.
         """
         try:
             import Siemens.Engineering.HW.Features as hw_features
@@ -305,11 +321,19 @@ class OpennessSource:
         for device in self._all_devices():
             for obj in self._iter_hardware_objects(device, errors):
                 try:
-                    container = self._service(obj, hw_features, "SoftwareContainer")
+                    # Not routed through _service(): its blanket except would
+                    # swallow a genuine CLR failure here into the same None
+                    # used for "this object has no SoftwareContainer",
+                    # exactly the ambiguity this method exists to avoid.
+                    # GetService[T]() itself already returns None for an
+                    # object that plainly does not implement the service
+                    # (ordinary, silent) and raises only on a real failure
+                    # to reach it (recorded below).
+                    container = obj.GetService[hw_features.SoftwareContainer]()
                     software = getattr(container, "Software", None) if container is not None else None
                 except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
                     errors.append(
-                        f"{self._safe_name(obj)}: could not read software container: "
+                        f"{self._safe_name(obj)}: could not reach the software container: "
                         f"{type(exc).__name__}: {exc}"
                     )
                     continue
