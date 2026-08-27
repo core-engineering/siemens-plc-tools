@@ -1,0 +1,186 @@
+"""Recording a source, replaying it, and scrubbing it before it is committed."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from plc_hw.record import (
+    RecordingSource,
+    ReplaySource,
+    anonymise,
+    load_fixture,
+    save_fixture,
+)
+from plc_hw.testing import build_fake_source
+from plc_hw.walk import walk_project
+
+
+def _record() -> dict[str, object]:
+    recorder = RecordingSource(build_fake_source())
+    walk_project(recorder)
+    return recorder.fixture()
+
+
+def test_replaying_a_recording_reproduces_the_snapshot() -> None:
+    assert walk_project(ReplaySource(_record())) == walk_project(build_fake_source())
+
+
+def test_a_fixture_round_trips_through_disk(tmp_path: Path) -> None:
+    path = tmp_path / "fixture.json"
+    save_fixture(_record(), path)
+    assert walk_project(ReplaySource(load_fixture(path))) == walk_project(build_fake_source())
+
+
+def test_saved_fixtures_are_stable_across_runs(tmp_path: Path) -> None:
+    first, second = tmp_path / "a.json", tmp_path / "b.json"
+    save_fixture(_record(), first)
+    save_fixture(_record(), second)
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_anonymising_removes_every_original_name() -> None:
+    # Deviation from the brief, unrelated to Correction 2: the brief's own loop also
+    # checked "F-DI" and "project-A", but both are unsatisfiable by the brief's own
+    # design, not just under the corrected allow-list:
+    #
+    # - "F-DI" is the module's TIA name, and it is also a literal substring of its
+    #   TypeName ("F-DI 8x24VDC HF"). TypeName values must survive verbatim -- the
+    #   brief's own SCRUBBED_VALUE_ATTRIBUTES never listed TypeName either, and
+    #   Correction 2's PRESERVED_VALUE_ATTRIBUTES explicitly keeps it. Removing "F-DI"
+    #   from the text would mean scrubbing TypeName, which test_anonymising_preserves_
+    #   what_the_walker_is_tested_on (kept verbatim from the brief) requires literally
+    #   ("F-DI 8x24VDC HF" must appear). The two assertions cannot both hold; verified
+    #   empirically that the brief's own uncorrected reference implementation fails
+    #   this same check, so this is pre-existing, not introduced here.
+    # - "project-A" is both the neutral project name build_fake_source() happens to use
+    #   and the fixed placeholder anonymise() always substitutes, so it is inherently
+    #   present in the output regardless of what the original project name was.
+    #
+    # Replaced with "Rail" (an item name with no such collision) and an explicit check
+    # that the project name is normalised to the fixed placeholder.
+    fixture, mapping = anonymise(_record())
+    text = json.dumps(fixture)
+    for original in ("IO_STATION_1", "PLC_MAIN", "Rail"):
+        assert original not in text
+    assert fixture["project_name"] == "project-A"
+    assert mapping["IO_STATION_1"].startswith("device-")
+
+
+def test_anonymising_preserves_what_the_walker_is_tested_on() -> None:
+    fixture, _ = anonymise(_record())
+    text = json.dumps(fixture)
+    for kept in ("F-DI 8x24VDC HF", "6ES7 136-6BA01-0CA0", "V2.0", "65534", "150"):
+        assert kept in text
+
+
+def test_an_anonymised_fixture_still_replays() -> None:
+    fixture, _ = anonymise(_record())
+    snapshot = walk_project(ReplaySource(fixture))
+    module = snapshot.devices[0].items[0].children[0]
+    assert module.order_number == "6ES7 136-6BA01-0CA0"
+    assert module.attributes["SomeParameter"] == 150
+    # Correction 2: attribute_error reasons are pseudonymised under the
+    # allow-list, so the literal reason from the fake source no longer
+    # survives anonymisation. What must survive is that the pseudonym is
+    # stable and distinct from other reasons -- checked below in
+    # test_anonymising_scrubs_attribute_error_reasons.
+    assert module.unreadable[0].reason.startswith("reason-")
+
+
+def test_anonymising_scrubs_identifying_attribute_values() -> None:
+    recorder = RecordingSource(build_fake_source())
+    walk_project(recorder)
+    fixture = recorder.fixture()
+    key = "IO_STATION_1/Rail/F-DI"
+    fixture["attributes"][key]["Comment"] = "SITE-TAG-0001"
+    fixture["attributes"][key]["Label"] = "X1"
+    scrubbed, _ = anonymise(fixture)
+    text = json.dumps(scrubbed)
+    assert "SITE-TAG-0001" not in text
+    assert "X1" not in text
+
+
+def test_the_mapping_is_stable_across_two_anonymisations() -> None:
+    fixture = _record()
+    assert anonymise(fixture)[1] == anonymise(fixture)[1]
+
+
+def test_anonymising_scrubs_string_features_but_not_numeric_ones() -> None:
+    recorder = RecordingSource(build_fake_source())
+    walk_project(recorder)
+    fixture = recorder.fixture()
+    key = "IO_STATION_1/Rail/F-DI"
+    fixture["features"][key]["NetworkInterface"] = {"HostName": "SITE-HOST-01"}
+    scrubbed, mapping = anonymise(fixture)
+    text = json.dumps(scrubbed)
+    assert "SITE-HOST-01" not in text
+    # Feature names and numeric feature values are Siemens vocabulary / structural.
+    assert "NetworkInterface" in text
+    assert "ProfiSafe" in text
+    renamed_key = "/".join(mapping.get(part, part) for part in key.split("/"))
+    assert scrubbed["features"][renamed_key]["ProfiSafe"]["FDestinationAddress"] == 65534
+
+
+def test_anonymising_scrubs_attribute_error_reasons() -> None:
+    recorder = RecordingSource(build_fake_source())
+    walk_project(recorder)
+    fixture = recorder.fixture()
+    key = "IO_STATION_1/Rail/F-DI"
+    fixture["attribute_error"][key]["OtherParameter"] = "different reason entirely"
+    scrubbed, mapping = anonymise(fixture)
+    text = json.dumps(scrubbed)
+
+    original_reason = "not accessible in this context"
+    other_reason = "different reason entirely"
+    assert original_reason not in text
+    assert other_reason not in text
+
+    renamed_key = "/".join(mapping.get(part, part) for part in key.split("/"))
+    first = scrubbed["attribute_error"][renamed_key]["LockedParameter"]
+    second = scrubbed["attribute_error"][renamed_key]["OtherParameter"]
+    assert first.startswith("reason-")
+    assert second.startswith("reason-")
+    assert first != second
+
+    # Same reason repeated gets the same pseudonym.
+    fixture["attribute_error"][key]["YetAnotherParameter"] = original_reason
+    rescrubbed, _ = anonymise(fixture)
+    assert rescrubbed["attribute_error"][renamed_key]["LockedParameter"] == (
+        rescrubbed["attribute_error"][renamed_key]["YetAnotherParameter"]
+    )
+
+
+def test_anonymising_scrubs_subnet_names_but_not_type_or_number() -> None:
+    fixture = _record()
+    scrubbed, mapping = anonymise(fixture)
+    subnet = scrubbed["subnets"][0]
+    assert subnet["name"] != "PN_1"
+    assert subnet["name"].startswith("subnet-")
+    assert subnet["type"] == "Ethernet"
+    assert subnet["number"] == 100
+    assert "PN_1" not in json.dumps(scrubbed)
+    assert mapping["PN_1"] == subnet["name"]
+
+
+def test_anonymising_leaves_no_marker_in_any_channel() -> None:
+    """The test that would have caught the deny-list-by-omission defect."""
+    marker = "LEAKCANARY"
+    recorder = RecordingSource(build_fake_source())
+    walk_project(recorder)
+    fixture = recorder.fixture()
+
+    fixture["project_name"] = marker
+    device_key = next(iter(fixture["device_items"]))
+    fixture["devices"][0]["name"] = marker
+    fixture["devices"][0]["key"] = marker
+    item_key = "IO_STATION_1/Rail/F-DI"
+    fixture["device_items"][device_key][0]["name"] = marker
+    fixture["attributes"][item_key]["Comment"] = marker
+    fixture["features"][item_key]["NetworkInterface"] = {"HostName": marker}
+    fixture["attribute_error"][item_key]["SomeAttr"] = marker
+    fixture["subnets"][0]["name"] = marker
+
+    scrubbed, _ = anonymise(fixture)
+    text = json.dumps(scrubbed)
+    assert marker not in text
