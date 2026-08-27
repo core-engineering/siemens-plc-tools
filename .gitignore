@@ -90,3 +90,8 @@ examples/**/report.pdf
 # Superpowers SDD scratch — plan ledgers, briefs, reports, review packages.
 # Never tracked: these are internal working notes, not deliverables.
 .superpowers/
+
+# Internal working notes — see tests/test_no_confidential_references.py
+docs/superpowers/
+docs/audits/
+.plc-hw-record/
