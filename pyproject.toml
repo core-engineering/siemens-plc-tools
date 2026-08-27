@@ -241,7 +241,9 @@ module = [
 ]
 ignore_missing_imports = true
 
-# clr is pythonnet's CLR bridge: Windows-only, and it ships no type information.
+# clr is pythonnet's CLR bridge; Siemens.Engineering and System.IO are the CLR
+# namespaces the Openness adapter (plc_hw.openness.source) imports through it.
+# All are Windows-only and ship no type information.
 [[tool.mypy.overrides]]
-module = ["clr"]
+module = ["clr", "Siemens", "Siemens.Engineering", "Siemens.Engineering.*", "System.IO"]
 ignore_missing_imports = true
