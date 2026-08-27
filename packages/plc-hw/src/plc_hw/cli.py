@@ -15,6 +15,7 @@ from rich.console import Console
 
 from plc_hw.config import load_hw_config
 from plc_hw.diff import build_report, diff_snapshots
+from plc_hw.openness.bootstrap import OpennessError
 from plc_hw.reader import DumpReadError, read_dump
 from plc_hw.record import (
     FixtureError,
@@ -40,7 +41,7 @@ console_err = Console(stderr=True, soft_wrap=True)
 #: Raw recordings may only land here. The directory is git-ignored.
 RAW_RECORD_DIR = ".plc-hw-record"
 
-# Two kinds of bad input, neither a programming error, that must still land on
+# Three kinds of bad input, none a programming error, that must still land on
 # exit 2 rather than escape as an unhandled exception (which Click would report
 # as exit 1, breaking the "0 success, 2 any failure" contract every command
 # below documents):
@@ -59,6 +60,17 @@ RAW_RECORD_DIR = ".plc-hw-record"
 #   the main catch to include it would also swallow
 #   `yaml.representer.RepresenterError` (a `YAMLError` subclass) from a real
 #   `write_dump` serialisation bug.
+# - A TIA/Openness read failing anywhere past the connect step -- a session
+#   dropping mid-dump, the Portal hanging -- surfaced by `OpennessSource` as
+#   `OpennessError` (see `plc_hw.openness.source`). `_open_source` already
+#   turns a *connect*-time `OpennessError` into a `click.ClickException`; this
+#   catches every other one, raised from inside `walk_project` while reading
+#   the live project. `OpennessError` itself is imported statically from
+#   `plc_hw.openness.bootstrap`, not through `_open_source`'s dynamic
+#   `importlib.import_module`: `bootstrap.py` imports only stdlib (`sys`,
+#   `collections.abc`, `dataclasses`, `pathlib`) at module scope and defers
+#   `import clr` to inside `load_clr`, so this import adds no CLR dependency
+#   and `plc hw diff` still runs on a machine with no TIA and no pythonnet.
 #
 # `dump` and `check` each therefore have two `try` blocks: one narrow one around
 # `load_hw_config()`, and the main one around everything else.
@@ -216,7 +228,7 @@ def dump(
             if config.anonymize and not no_anonymize:
                 fixture, _ = anonymise(fixture)
             save_fixture(fixture, record_to)
-    except (DumpRootError, click.ClickException, OSError, FixtureError) as exc:
+    except (DumpRootError, click.ClickException, OSError, FixtureError, OpennessError) as exc:
         console_err.print(f"[red]error:[/red] {exc}")
         raise SystemExit(2) from exc
     console.print(f"[green]Wrote[/green] {len(written)} file(s) to {target}")
@@ -269,7 +281,7 @@ def check(
             live = Path(scratch) / "dump"
             write_dump(snapshot, live)
             findings = diff_snapshots(read_dump(reference), read_dump(live))
-    except (DumpReadError, DumpRootError, click.ClickException, OSError, FixtureError) as exc:
+    except (DumpReadError, DumpRootError, click.ClickException, OSError, FixtureError, OpennessError) as exc:
         console_err.print(f"[red]error:[/red] {exc}")
         raise SystemExit(2) from exc
     _emit(findings, output_format)

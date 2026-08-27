@@ -168,11 +168,11 @@ class OpennessSource:
         obj = self._objects[item.key]
         try:
             infos = obj.GetAttributeInfos()
+            return [
+                AttributeInfo(name=str(info.Name), read_only=str(info.AccessMode) == "Read") for info in infos
+            ]
         except Exception:  # noqa: BLE001 - no attribute infos is not fatal
             return []
-        return [
-            AttributeInfo(name=str(info.Name), read_only=str(info.AccessMode) == "Read") for info in infos
-        ]
 
     def attributes(self, item: NodeRef, names: Sequence[str]) -> dict[str, object]:
         """Read the named attributes, keeping only the ones that could be read.
@@ -275,11 +275,24 @@ class OpennessSource:
         hardware object to its PLC software's safety program. Most objects
         offer neither service, which is ordinary and silent.
 
-        A genuine failure to reach a ``SafetyAdministration`` that should have
-        answered -- as opposed to an object simply not having one -- is
-        recorded under :data:`UNREACHABLE_SAFETY` rather than dropped, so an
-        empty result cannot be mistaken for "this project has no safety
-        program".
+        Two different failure shapes, kept distinct:
+
+        - A failure that stops the *whole* scan before it can start -- the
+          ``HW.Features``/``Safety`` namespaces failing to import, or
+          :meth:`_all_devices` raising :class:`OpennessError` -- is not
+          caught here. The former is reported inline (below); the latter
+          propagates as :class:`OpennessError`, the same as every other
+          method that reads the CLR directly.
+        - A failure on *one* object partway through the scan -- reading its
+          ``DeviceItems`` while descending (:meth:`_iter_hardware_objects`),
+          reading its ``SoftwareContainer.Software``, reaching
+          ``SafetyAdministration``, or reading one signature's ``Type``/
+          ``Value`` -- does not stop the scan. It is recorded under
+          :data:`UNREACHABLE_SAFETY`, naming the object, and the walk moves
+          on to the next object. A partial result (some signatures found,
+          some objects that could not be read) is therefore distinguishable
+          both from "no safety program anywhere" (``{}``) and from "nothing
+          could be read at all" (only :data:`UNREACHABLE_SAFETY` present).
         """
         try:
             import Siemens.Engineering.HW.Features as hw_features
@@ -290,22 +303,35 @@ class OpennessSource:
         out: dict[str, str] = {}
         errors: list[str] = []
         for device in self._all_devices():
-            for obj in self._iter_hardware_objects(device):
-                container = self._service(obj, hw_features, "SoftwareContainer")
-                software = getattr(container, "Software", None) if container is not None else None
+            for obj in self._iter_hardware_objects(device, errors):
+                try:
+                    container = self._service(obj, hw_features, "SoftwareContainer")
+                    software = getattr(container, "Software", None) if container is not None else None
+                except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
+                    errors.append(
+                        f"{self._safe_name(obj)}: could not read software container: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    continue
                 if software is None:
                     # Ordinary: most device items carry no software at all.
                     continue
                 try:
                     administration = software.GetService[safety.SafetyAdministration]()
                 except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
-                    errors.append(f"{getattr(obj, 'Name', '?')}: {type(exc).__name__}: {exc}")
+                    errors.append(f"{self._safe_name(obj)}: {type(exc).__name__}: {exc}")
                     continue
                 if administration is None:
                     # Ordinary: this PLC software has no safety program.
                     continue
-                for signature in administration.ProgramSignatures:
-                    out[str(signature.Type)] = str(signature.Value)
+                try:
+                    for signature in administration.ProgramSignatures:
+                        out[str(signature.Type)] = str(signature.Value)
+                except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
+                    errors.append(
+                        f"{self._safe_name(obj)}: could not read safety signatures: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
         if errors:
             # A real failure reaching the service, distinct from "not present
             # here" -- recorded so an all-empty result cannot be mistaken for
@@ -337,7 +363,7 @@ class OpennessSource:
         except Exception as exc:  # noqa: BLE001 - translated at the boundary
             raise OpennessError(f"could not enumerate devices: {type(exc).__name__}: {exc}") from exc
 
-    def _iter_hardware_objects(self, obj: Any) -> Iterator[Any]:
+    def _iter_hardware_objects(self, obj: Any, errors: list[str]) -> Iterator[Any]:
         """Yield ``obj`` and every device item nested beneath it, depth-first.
 
         The service that exposes a CPU's PLC software (``SoftwareContainer``)
@@ -346,10 +372,38 @@ class OpennessSource:
         asking. ``Device`` and ``DeviceItem`` both expose ``DeviceItems``
         from the same ``HardwareObject`` base, so this recursion applies to
         either without needing to know which one it was given.
+
+        Parameters
+        ----------
+        obj : Any
+            The object to yield, then descend from.
+        errors : list[str]
+            Mutated in place: a CLR failure reading ``obj``'s ``DeviceItems``
+            stops the walk from descending past ``obj`` -- its siblings and
+            everything already yielded are unaffected -- and is appended
+            here naming ``obj``, the same way :meth:`safety_signatures`
+            records every other per-object failure in this scan.
         """
         yield obj
-        for child in getattr(obj, "DeviceItems", None) or []:
-            yield from self._iter_hardware_objects(child)
+        try:
+            children = getattr(obj, "DeviceItems", None) or []
+        except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
+            errors.append(f"{self._safe_name(obj)}: could not read device items: {type(exc).__name__}: {exc}")
+            return
+        for child in children:
+            yield from self._iter_hardware_objects(child, errors)
+
+    @staticmethod
+    def _safe_name(obj: Any) -> str:
+        """Best-effort ``obj.Name`` for an error message; never raises.
+
+        Used only to label a diagnostic string, so a CLR failure reading the
+        name itself must not replace the failure it was trying to describe.
+        """
+        try:
+            return str(obj.Name)
+        except Exception:  # noqa: BLE001 - purely for a diagnostic message
+            return "?"
 
     def _register(self, obj: Any, key: str) -> NodeRef:
         """Remember a CLR object under the path the walker will use as its key."""

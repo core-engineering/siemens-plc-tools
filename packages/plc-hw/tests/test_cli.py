@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from plc_hw.cli import hw_group
+from plc_hw.openness.bootstrap import OpennessError
 from plc_hw.reader import read_dump
 from plc_hw.record import RecordingSource, ReplaySource, load_fixture, save_fixture
 from plc_hw.testing import build_fake_source
@@ -222,6 +223,51 @@ def test_dump_with_an_invalid_plc_yaml_exits_two_not_one(tmp_path: Path) -> None
     assert result.exit_code == 2
     assert "plc.yaml" in result.output
     assert "YAML" in result.output
+
+
+def test_a_source_failure_during_the_walk_exits_two_not_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read failing after a successful connect must still exit 2, not crash.
+
+    `_open_source` already turns a *connect*-time `OpennessError` into a
+    `click.ClickException` (see `test_dump_without_a_source_reports_openness_
+    unavailable`). This covers the gap that left: every other `OpennessError`,
+    raised from inside `walk_project` -- for instance because a live TIA
+    session dropped mid-dump -- used to have no catch around it and escaped
+    as a raw traceback with exit code 1, exactly the failure the adapter's
+    exception translation was supposed to prevent.
+    """
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise OpennessError("the TIA session dropped mid-read")
+
+    monkeypatch.setattr("plc_hw.cli.walk_project", _boom)
+    result = CliRunner().invoke(
+        hw_group,
+        ["dump", "--source", f"replay:{_fixture(tmp_path)}", "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 2
+    assert "the TIA session dropped mid-read" in result.output
+
+
+def test_check_with_a_source_failure_during_the_walk_exits_two_not_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same gap, for `check`'s copy of the same try/except."""
+    baseline = tmp_path / "baseline"
+    CliRunner().invoke(hw_group, ["dump", "--source", f"replay:{_fixture(tmp_path)}", "--out", str(baseline)])
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise OpennessError("the TIA session dropped mid-read")
+
+    monkeypatch.setattr("plc_hw.cli.walk_project", _boom)
+    result = CliRunner().invoke(
+        hw_group,
+        ["check", "--source", f"replay:{_fixture(tmp_path)}", "--baseline", str(baseline)],
+    )
+    assert result.exit_code == 2
+    assert "the TIA session dropped mid-read" in result.output
 
 
 def test_an_internal_bug_escapes_as_a_traceback_not_exit_two(
