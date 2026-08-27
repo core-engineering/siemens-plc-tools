@@ -155,11 +155,15 @@ class DeviceNode:
         TIA type identifier for the device.
     items : list[DeviceItemNode]
         Racks. Their children are the modules.
+    unreadable : list[UnreadableAttribute]
+        Attributes advertised or requested on the device itself that could not
+        be read.
     """
 
     name: str
     type_identifier: str = ""
     items: list[DeviceItemNode] = field(default_factory=list)
+    unreadable: list[UnreadableAttribute] = field(default_factory=list)
 
 
 @dataclass

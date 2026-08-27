@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from plc_hw.model import SubnetInfo
+from plc_hw.model import AttributeInfo, NodeRef, SubnetInfo
 from plc_hw.testing import FakeItem, FakeSource, build_fake_source
 from plc_hw.walk import walk_project
 
@@ -121,3 +121,47 @@ def test_an_unreadable_position_is_recorded_and_position_falls_back_to_none() ->
     module = snapshot.devices[0].items[0]
     assert module.position is None
     assert [u.name for u in module.unreadable] == ["PositionNumber"]
+
+
+def test_an_unreadable_device_type_identifier_is_recorded_not_silently_omitted() -> None:
+    """A device is not exempt from the gap-recording discipline either.
+
+    Reading the device's own ``TypeIdentifier`` used to bypass ``_walk_item``'s
+    request/compare/record logic entirely, so a failed read fell back to ``""``
+    with nothing anywhere in the snapshot saying the read was attempted and
+    failed -- indistinguishable from a device that genuinely has none.
+    """
+    device = FakeItem(name="D", errors={"TypeIdentifier": "not accessible in this context"})
+    snapshot = walk_project(FakeSource(project="p", devices=[device]))
+    assert snapshot.devices[0].type_identifier == ""
+    assert [u.name for u in snapshot.devices[0].unreadable] == ["TypeIdentifier"]
+    assert snapshot.devices[0].unreadable[0].reason == "not accessible in this context"
+
+
+def test_a_readable_device_type_identifier_leaves_unreadable_empty() -> None:
+    """The new field must not fill with noise when the read actually succeeds."""
+    device = FakeItem(name="D", attributes={"TypeIdentifier": "System:Device.X"})
+    snapshot = walk_project(FakeSource(project="p", devices=[device]))
+    assert snapshot.devices[0].type_identifier == "System:Device.X"
+    assert snapshot.devices[0].unreadable == []
+
+
+class _DuplicateAdvertisingSource(FakeSource):
+    """A source whose ``attribute_infos`` advertises the same name twice.
+
+    ``FakeSource.attribute_infos`` runs advertised names through ``set()``, so
+    it cannot exercise the walker's own deduplication. This subclass overrides
+    only that one method to prove ``_walk_item`` does not double-record a name
+    the source itself advertised twice.
+    """
+
+    def attribute_infos(self, item: NodeRef) -> list[AttributeInfo]:
+        return [AttributeInfo(name="Dup", read_only=True), AttributeInfo(name="Dup", read_only=True)]
+
+
+def test_a_name_advertised_twice_is_recorded_as_unreadable_only_once() -> None:
+    item = FakeItem(name="M", errors={"Dup": "boom"})
+    source = _DuplicateAdvertisingSource(project="p", devices=[FakeItem(name="D", children=[item])])
+    snapshot = walk_project(source)
+    unreadable = snapshot.devices[0].items[0].unreadable
+    assert [u.name for u in unreadable] == ["Dup"]

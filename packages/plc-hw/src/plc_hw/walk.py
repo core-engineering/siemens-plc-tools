@@ -21,6 +21,11 @@ from plc_hw.source import HardwareSource
 
 _POSITION = "PositionNumber"
 
+#: A device's own attribute set, read through the same gap-recording discipline
+#: as an item's -- a device is not exempt from the "every gap gets a reason"
+#: rule just because DeviceNode used to have nowhere to put one.
+_DEVICE_ATTRIBUTES = ("TypeIdentifier",)
+
 
 def walk_project(
     source: HardwareSource,
@@ -41,20 +46,33 @@ def walk_project(
     ProjectSnapshot
         The captured configuration.
     """
-    devices = [
-        DeviceNode(
-            name=ref.name,
-            type_identifier=str(source.attributes(ref, ["TypeIdentifier"]).get("TypeIdentifier", "")),
-            items=[_walk_item(source, child, ref.name, volatile) for child in source.device_items(ref)],
-        )
-        for ref in sorted(source.devices(), key=lambda r: r.name)
-    ]
+    devices = [_walk_device(source, ref, volatile) for ref in sorted(source.devices(), key=lambda r: r.name)]
     return ProjectSnapshot(
         project_name=source.project_name(),
         subnets=sorted(source.subnets(), key=lambda s: s.name),
         devices=devices,
         safety_signatures=dict(sorted(source.safety_signatures().items())),
         volatile_excluded=sorted(volatile),
+    )
+
+
+def _walk_device(source: HardwareSource, ref: NodeRef, volatile: Sequence[str]) -> DeviceNode:
+    """Read one device: its own attributes, then everything plugged into it."""
+    requested = [name for name in _DEVICE_ATTRIBUTES if name not in volatile]
+    raw = source.attributes(ref, requested)
+
+    # Same discipline as an item: what was requested and did not come back is
+    # recorded with its reason, never silently dropped.
+    unreadable = [
+        UnreadableAttribute(name=name, reason=source.attribute_error(ref, name))
+        for name in requested
+        if name not in raw
+    ]
+    return DeviceNode(
+        name=ref.name,
+        type_identifier=str(format_value(raw.get("TypeIdentifier", ""))),
+        items=[_walk_item(source, child, ref.name, volatile) for child in source.device_items(ref)],
+        unreadable=sorted(unreadable, key=lambda u: u.name),
     )
 
 
@@ -67,7 +85,9 @@ def _walk_item(
     """Read one device item and everything beneath it."""
     path = f"{parent_path}/{ref.name}"
     infos = source.attribute_infos(ref)
-    wanted = [info.name for info in infos if info.name not in volatile]
+    # Deduplicated, order-preserving: a name advertised twice must be recorded
+    # at most once if it fails to read, never doubled.
+    wanted = list(dict.fromkeys(info.name for info in infos if info.name not in volatile))
     raw = source.attributes(ref, wanted)
 
     # Every advertised attribute that did not come back is recorded with its
@@ -84,9 +104,9 @@ def _walk_item(
         name=ref.name,
         path=path,
         position=int(position) if isinstance(position, int | str) and str(position).isdigit() else None,
-        type_name=str(raw.pop("TypeName", "")),
-        order_number=strip_order_number_prefix(str(raw.pop("TypeIdentifier", ""))),
-        firmware=str(raw.pop("FirmwareVersion", "")),
+        type_name=str(format_value(raw.pop("TypeName", ""))),
+        order_number=strip_order_number_prefix(str(format_value(raw.pop("TypeIdentifier", "")))),
+        firmware=str(format_value(raw.pop("FirmwareVersion", ""))),
         attributes={name: format_value(raw[name]) for name in sorted(raw)},
         addresses=list(source.addresses(ref)),
         features={
