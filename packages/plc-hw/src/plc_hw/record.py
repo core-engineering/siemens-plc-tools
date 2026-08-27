@@ -18,6 +18,68 @@ from typing import Any
 from plc_hw.model import AddressRange, AttributeInfo, NodeRef, SubnetInfo
 from plc_hw.source import HardwareSource
 
+
+class FixtureError(Exception):
+    """The only failure mode of loading or replaying a fixture.
+
+    Mirrors :class:`~plc_hw.reader.DumpReadError`: every way a fixture file or a
+    fixture dict can be missing, malformed or the wrong shape is raised as this
+    one type, naming what is wrong, rather than as whatever built-in exception
+    (``FileNotFoundError``, ``json.JSONDecodeError``, ``KeyError``, ``TypeError``)
+    happened to surface first. A caller that catches ``FixtureError`` catches
+    every way a fixture can be bad input; nothing else escapes
+    :func:`load_fixture` or :meth:`ReplaySource.__init__`.
+    """
+
+
+#: Every top-level key :class:`ReplaySource` reads, and the type it must have.
+#: Matches exactly what :class:`RecordingSource` initialises and :func:`anonymise`
+#: produces, so any fixture built through this module's own machinery already
+#: satisfies it; only a hand-edited or corrupted file can fail it.
+_FIXTURE_SHAPE: dict[str, type] = {
+    "project_name": str,
+    "subnets": list,
+    "devices": list,
+    "device_items": dict,
+    "attribute_infos": dict,
+    "attributes": dict,
+    "attribute_error": dict,
+    "addresses": dict,
+    "features": dict,
+    "safety_signatures": dict,
+}
+
+
+def _validate_fixture(fixture: dict[str, Any]) -> None:
+    """Check that ``fixture`` has every key :class:`ReplaySource` reads, correctly typed.
+
+    Only the top-level shape is checked -- not, for instance, that every entry of
+    ``subnets`` is itself a well-formed subnet. A fixture failing that deeper way
+    is not input this package was designed to tolerate; it is a bug somewhere
+    upstream of the fixture (in the source that was recorded, or in a hand-edit
+    that got the top level right and the inside wrong), and deserves its own
+    traceback rather than a plausible-sounding message about the wrong thing.
+
+    Parameters
+    ----------
+    fixture : dict[str, Any]
+        The fixture to check.
+
+    Raises
+    ------
+    FixtureError
+        Naming the first missing or mistyped key found, checked in a fixed
+        order so the message is deterministic.
+    """
+    for key, expected in _FIXTURE_SHAPE.items():
+        if key not in fixture:
+            raise FixtureError(f"fixture is missing required key {key!r}")
+        if not isinstance(fixture[key], expected):
+            raise FixtureError(
+                f"fixture key {key!r} must be a {expected.__name__}, " f"got {type(fixture[key]).__name__}"
+            )
+
+
 #: Attribute names whose string values are kept verbatim. Everything else that is a
 #: string is pseudonymised.
 #:
@@ -143,9 +205,18 @@ class ReplaySource:
     fixture : dict[str, Any]
         A fixture produced by :meth:`RecordingSource.fixture`, :func:`load_fixture`
         or :func:`anonymise`.
+
+    Raises
+    ------
+    FixtureError
+        If ``fixture`` is missing a key this class reads, or a key has the
+        wrong type. Checked eagerly, here, rather than deferred to whichever
+        method happens to read the bad key first: a fixture that is wrong
+        should say so when it is loaded, not halfway through a walk.
     """
 
     def __init__(self, fixture: dict[str, Any]) -> None:
+        _validate_fixture(fixture)
         self._f = fixture
 
     def project_name(self) -> str:
@@ -391,14 +462,28 @@ def load_fixture(path: Path) -> dict[str, Any]:
     -------
     dict[str, Any]
         The parsed fixture.
+
+    Raises
+    ------
+    FixtureError
+        If ``path`` does not exist, is not valid JSON, or does not parse to a
+        mapping. Names ``path`` in every case.
     """
-    parsed: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-    return parsed
+    if not path.exists():
+        raise FixtureError(f"{path} does not exist")
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise FixtureError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise FixtureError(f"{path} is not a mapping")
+    return dict(parsed)
 
 
 __all__ = [
     "PRESERVED_STRUCTURAL_CHANNELS",
     "PRESERVED_VALUE_ATTRIBUTES",
+    "FixtureError",
     "RecordingSource",
     "ReplaySource",
     "anonymise",

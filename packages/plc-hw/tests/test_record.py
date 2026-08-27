@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from plc_hw.record import (
     PRESERVED_STRUCTURAL_CHANNELS,
+    FixtureError,
     RecordingSource,
     ReplaySource,
     anonymise,
@@ -38,6 +41,49 @@ def test_saved_fixtures_are_stable_across_runs(tmp_path: Path) -> None:
     save_fixture(_record(), first)
     save_fixture(_record(), second)
     assert first.read_bytes() == second.read_bytes()
+
+
+def test_load_fixture_reports_a_missing_file_clearly(tmp_path: Path) -> None:
+    path = tmp_path / "missing.json"
+    with pytest.raises(FixtureError, match=r"missing\.json.*does not exist"):
+        load_fixture(path)
+
+
+def test_load_fixture_reports_invalid_json_clearly(tmp_path: Path) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text("{not valid json")
+    with pytest.raises(FixtureError, match=r"bad\.json.*not valid JSON"):
+        load_fixture(path)
+
+
+def test_load_fixture_rejects_a_non_mapping_top_level_value(tmp_path: Path) -> None:
+    path = tmp_path / "array.json"
+    path.write_text("[1, 2, 3]")
+    with pytest.raises(FixtureError, match=r"array\.json.*not a mapping"):
+        load_fixture(path)
+
+
+def test_replay_source_reports_a_missing_key_clearly() -> None:
+    fixture = _record()
+    del fixture["safety_signatures"]
+    with pytest.raises(FixtureError, match="missing required key 'safety_signatures'"):
+        ReplaySource(fixture)
+
+
+def test_replay_source_reports_a_mistyped_key_clearly() -> None:
+    fixture = _record()
+    fixture["subnets"] = "not-a-list"
+    with pytest.raises(FixtureError, match="'subnets' must be a list, got str"):
+        ReplaySource(fixture)
+
+
+def test_replay_source_validates_before_any_replay_happens() -> None:
+    # "Do not defer to a KeyError at first use; a fixture that is wrong should
+    # say so when it is loaded, not halfway through a walk."
+    fixture = _record()
+    del fixture["devices"]
+    with pytest.raises(FixtureError, match="missing required key 'devices'"):
+        ReplaySource(fixture)
 
 
 def test_anonymising_removes_every_original_name() -> None:

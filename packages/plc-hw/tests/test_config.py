@@ -38,3 +38,12 @@ def test_no_plc_yaml_falls_back_to_defaults_and_the_start_path(tmp_path: Path) -
     config, root = load_hw_config(tmp_path)
     assert config == HwConfig()
     assert root == tmp_path
+
+
+def test_an_explicit_empty_volatile_list_means_drop_nothing(tmp_path: Path) -> None:
+    # An empty list is a deliberate choice ("drop nothing"), not the same as
+    # the key being absent ("use the default"). `if volatile else DEFAULT`
+    # conflated the two; `if volatile is not None else DEFAULT` does not.
+    (tmp_path / "plc.yaml").write_text("hw:\n  volatile_attributes: []\n")
+    config, _ = load_hw_config(tmp_path)
+    assert config.volatile_attributes == ()

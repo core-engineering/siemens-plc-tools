@@ -16,13 +16,26 @@ from rich.console import Console
 from plc_hw.config import load_hw_config
 from plc_hw.diff import build_report, diff_snapshots
 from plc_hw.reader import DumpReadError, read_dump
-from plc_hw.record import RecordingSource, ReplaySource, anonymise, load_fixture, save_fixture
+from plc_hw.record import (
+    FixtureError,
+    RecordingSource,
+    ReplaySource,
+    anonymise,
+    load_fixture,
+    save_fixture,
+)
 from plc_hw.source import HardwareSource
 from plc_hw.walk import walk_project
 from plc_hw.writer import DumpRootError, write_dump
 
-console = Console()
-console_err = Console(stderr=True)
+# soft_wrap=True on both: Rich assumes 80 columns whenever it cannot detect a
+# real terminal -- true for every pipe and every CI capture -- and inserts real
+# newlines into the output to fit. That silently breaks a `grep` on any phrase
+# this module prints, on both streams: `plc hw check` piped in CI is exactly
+# that scenario for stderr, and its "Wrote N file(s) to <path>" success line is
+# just as often parsed on stdout.
+console = Console(soft_wrap=True)
+console_err = Console(stderr=True, soft_wrap=True)
 
 #: Raw recordings may only land here. The directory is git-ignored.
 RAW_RECORD_DIR = ".plc-hw-record"
@@ -32,15 +45,23 @@ RAW_RECORD_DIR = ".plc-hw-record"
 # as exit 1, breaking the "0 success, 2 any failure" contract every command
 # below documents):
 #
-# - A hand-edited or truncated `--source replay:<path>` fixture. `ReplaySource`
-#   does no upfront validation -- it raises json.JSONDecodeError, KeyError or
-#   TypeError lazily, from inside walk_project, as it is asked for each piece
-#   of data.
+# - A hand-edited or truncated `--source replay:<path>` fixture. `load_fixture`
+#   and `ReplaySource` validate eagerly and raise `FixtureError` -- the only
+#   failure mode of loading or replaying a fixture, mirroring how `read_dump`
+#   raises only `DumpReadError`. `dump` and `check` catch that one type; a
+#   `KeyError` or `TypeError` reaching here now is a genuine bug in this
+#   package's own code (e.g. inside `walk_project`), not bad input, and is left
+#   to escape with its traceback rather than be reported as "could not read".
 # - A plc.yaml with invalid YAML syntax, surfaced by plc_core's `load_yaml` as
-#   `yaml.YAMLError`, so `load_hw_config()` is called inside the try below
-#   rather than before it.
+#   `yaml.YAMLError`. Caught in its own narrow `try` around the
+#   `load_hw_config()` call alone, not folded into the main try below: nothing
+#   else in either command can raise `yaml.YAMLError` on purpose, and widening
+#   the main catch to include it would also swallow
+#   `yaml.representer.RepresenterError` (a `YAMLError` subclass) from a real
+#   `write_dump` serialisation bug.
 #
-# Both `dump` and `check` catch these alongside their other failure modes.
+# `dump` and `check` each therefore have two `try` blocks: one narrow one around
+# `load_hw_config()`, and the main one around everything else.
 
 
 def record_to_parts(path: Path) -> tuple[str, ...]:
@@ -173,7 +194,11 @@ def dump(
     """
     try:
         config, root = load_hw_config()
-        target = out or (root / config.dump_dir)
+    except yaml.YAMLError as exc:
+        console_err.print(f"[red]error:[/red] plc.yaml is not valid YAML: {exc}")
+        raise SystemExit(2) from exc
+    target = out or (root / config.dump_dir)
+    try:
         if no_anonymize and record_to is not None and RAW_RECORD_DIR not in record_to_parts(record_to):
             raise click.ClickException(
                 f"--no-anonymize may only write under {RAW_RECORD_DIR}/, which is git-ignored; "
@@ -191,16 +216,8 @@ def dump(
             if config.anonymize and not no_anonymize:
                 fixture, _ = anonymise(fixture)
             save_fixture(fixture, record_to)
-    except (
-        DumpRootError,
-        click.ClickException,
-        OSError,
-        json_module.JSONDecodeError,
-        KeyError,
-        TypeError,
-        yaml.YAMLError,
-    ) as exc:
-        console_err.print(f"[red]error:[/red] {exc}", soft_wrap=True)
+    except (DumpRootError, click.ClickException, OSError, FixtureError) as exc:
+        console_err.print(f"[red]error:[/red] {exc}")
         raise SystemExit(2) from exc
     console.print(f"[green]Wrote[/green] {len(written)} file(s) to {target}")
 
@@ -217,7 +234,7 @@ def diff(old_path: Path, new_path: Path, output_format: str) -> None:
     try:
         findings = diff_snapshots(read_dump(old_path), read_dump(new_path))
     except DumpReadError as exc:
-        console_err.print(f"[red]error:[/red] {exc}", soft_wrap=True)
+        console_err.print(f"[red]error:[/red] {exc}")
         raise SystemExit(2) from exc
     _emit(findings, output_format)
 
@@ -241,24 +258,19 @@ def check(
     """
     try:
         config, root = load_hw_config()
-        reference = baseline or (root / config.dump_dir)
+    except yaml.YAMLError as exc:
+        console_err.print(f"[red]error:[/red] plc.yaml is not valid YAML: {exc}")
+        raise SystemExit(2) from exc
+    reference = baseline or (root / config.dump_dir)
+    try:
         hardware = _open_source(source, attach, project or (Path(config.project) if config.project else None))
         snapshot = walk_project(hardware, volatile=config.volatile_attributes)
         with tempfile.TemporaryDirectory() as scratch:
             live = Path(scratch) / "dump"
             write_dump(snapshot, live)
             findings = diff_snapshots(read_dump(reference), read_dump(live))
-    except (
-        DumpReadError,
-        DumpRootError,
-        click.ClickException,
-        OSError,
-        json_module.JSONDecodeError,
-        KeyError,
-        TypeError,
-        yaml.YAMLError,
-    ) as exc:
-        console_err.print(f"[red]error:[/red] {exc}", soft_wrap=True)
+    except (DumpReadError, DumpRootError, click.ClickException, OSError, FixtureError) as exc:
+        console_err.print(f"[red]error:[/red] {exc}")
         raise SystemExit(2) from exc
     _emit(findings, output_format)
 

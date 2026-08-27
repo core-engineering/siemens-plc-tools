@@ -52,7 +52,7 @@ class HwConfig:
         return cls(
             dump_dir=paths.get("dump", cls.dump_dir),
             project=data.get("project"),
-            volatile_attributes=tuple(volatile) if volatile else DEFAULT_VOLATILE,
+            volatile_attributes=tuple(volatile) if volatile is not None else DEFAULT_VOLATILE,
             anonymize=bool(data.get("anonymize", True)),
         )
 

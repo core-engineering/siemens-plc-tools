@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from plc_hw.cli import hw_group
@@ -185,14 +186,17 @@ def test_dump_record_writes_a_fixture_that_replays_to_the_same_snapshot(tmp_path
 def test_dump_from_a_corrupted_fixture_exits_two_not_one(tmp_path: Path) -> None:
     # A hand-edited or truncated fixture file is bad input, not a programming
     # error: dump's contract is "0 on success, 2 on any failure", with no room
-    # for a bare exit 1 and an empty stderr.
+    # for a bare exit 1 and an empty stderr. The message must be the specific
+    # FixtureError text (not just "any" text), or a regression to catching too
+    # broadly again -- catching, say, a bare KeyError -- would still pass this.
     bad = tmp_path / "bad.json"
     bad.write_text("{not valid json")
     result = CliRunner().invoke(
         hw_group, ["dump", "--source", f"replay:{bad}", "--out", str(tmp_path / "out")]
     )
     assert result.exit_code == 2
-    assert result.output.strip() != ""
+    assert "bad.json" in result.output
+    assert "JSON" in result.output
 
 
 def test_check_from_a_corrupted_live_fixture_exits_two_not_one(tmp_path: Path) -> None:
@@ -203,7 +207,8 @@ def test_check_from_a_corrupted_live_fixture_exits_two_not_one(tmp_path: Path) -
     bad.write_text("{not valid json")
     result = runner.invoke(hw_group, ["check", "--source", f"replay:{bad}", "--baseline", str(baseline)])
     assert result.exit_code == 2
-    assert result.output.strip() != ""
+    assert "bad.json" in result.output
+    assert "JSON" in result.output
 
 
 def test_dump_with_an_invalid_plc_yaml_exits_two_not_one(tmp_path: Path) -> None:
@@ -215,4 +220,30 @@ def test_dump_with_an_invalid_plc_yaml_exits_two_not_one(tmp_path: Path) -> None
         Path("plc.yaml").write_text("hw:\n  bad: [unterminated\n")
         result = runner.invoke(hw_group, ["dump", "--out", "out"])
     assert result.exit_code == 2
-    assert result.output.strip() != ""
+    assert "plc.yaml" in result.output
+    assert "YAML" in result.output
+
+
+def test_an_internal_bug_escapes_as_a_traceback_not_exit_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuine package defect must not be reported as "could not read".
+
+    Before this fix, `dump`'s except tuple included bare `KeyError`, so a real
+    bug inside `walk_project` (unrelated to any malformed input) printed as
+    ``error: 'SomeInternalBug'`` and exited 2 -- indistinguishable from a
+    corrupted fixture. After narrowing the catch to `FixtureError` and friends,
+    the same `KeyError` must now escape uncaught.
+    """
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise KeyError("SomeInternalBug")
+
+    monkeypatch.setattr("plc_hw.cli.walk_project", _boom)
+    result = CliRunner().invoke(
+        hw_group,
+        ["dump", "--source", f"replay:{_fixture(tmp_path)}", "--out", str(tmp_path / "out")],
+        catch_exceptions=True,
+    )
+    assert result.exit_code != 2
+    assert isinstance(result.exception, KeyError)
