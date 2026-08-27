@@ -25,6 +25,20 @@ from plc_hw.source import HardwareSource
 #: only the fields someone thought of, leaving every field added later exposed by default.
 PRESERVED_VALUE_ATTRIBUTES = ("TypeName", "TypeIdentifier", "FirmwareVersion")
 
+#: Fixture channels deliberately left verbatim: vendor vocabulary that the walker and
+#: differ key their behaviour on. Pseudonymising these would leave a fixture that
+#: replays into a structure no consumer can interpret.
+#:
+#: Named explicitly so that adding a channel is a decision someone makes, not a default
+#: something inherits.
+PRESERVED_STRUCTURAL_CHANNELS = (
+    "attribute names",
+    "feature names and inner keys",
+    "address io_type",
+    "subnet type",
+    "safety signature keys and values",
+)
+
 
 class RecordingSource:
     """Wrap a HardwareSource and accumulate everything it was asked.
@@ -210,19 +224,49 @@ def anonymise(fixture: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     can carry a customer or site identity, it is replaced by a stable pseudonym
     unless it is named in :data:`PRESERVED_VALUE_ATTRIBUTES`, is a device or item
     name's structural counterpart (a type name, order number or firmware
-    version), or is one of the small set of values known to be Siemens
-    vocabulary rather than customer data (feature names, subnet ``type``).
+    version), or falls into one of the channels named in
+    :data:`PRESERVED_STRUCTURAL_CHANNELS`.
 
     Renamed: the project name; every device and item name (and the path keys
     built from them); every attribute value that is a string, unless its
     attribute name is preserved; every feature's inner string values; every
     ``attribute_error`` reason; every subnet ``name``.
 
-    Preserved: ``TypeName``, ``TypeIdentifier`` and ``FirmwareVersion`` attribute
-    values; every non-string attribute and feature value (ints, floats, bools,
-    ``None``); feature names; subnet ``type`` and ``number``; ``safety_signatures``
-    (hex digests, no names); ``attribute_infos`` and ``addresses`` (structural,
-    not customer text).
+    Preserved by value-allow-list: ``TypeName``, ``TypeIdentifier`` and
+    ``FirmwareVersion`` attribute values.
+
+    Preserved structural channels (see :data:`PRESERVED_STRUCTURAL_CHANNELS`),
+    each kept verbatim by decision, not by omission:
+
+    - **Attribute names**, and the string keys of the ``attributes`` and
+      ``attribute_infos`` dicts. These come from the Openness device type model,
+      not from anything a customer authors, and the walker keys its entire
+      behaviour on them -- ``TypeName``, ``PositionNumber``, the volatile filter,
+      the hoisted identity fields. Pseudonymising them would leave a fixture the
+      walker cannot interpret, not a scrubbed one.
+    - **Feature names and their inner keys** (``ProfiSafe``, ``NetworkInterface``,
+      ``FDestinationAddress``, ...). These come from the vendor's GSDML file, and
+      ``walk_project`` and callers select behaviour by feature name.
+    - **``AddressRange.io_type``**. ``Input``/``Output`` (or whatever else TIA
+      reports -- see :class:`~plc_hw.model.AddressRange`) is vocabulary the differ
+      compares directly, not customer text.
+    - **``SubnetInfo.type``**. ``Ethernet``/``Profibus`` is Siemens vocabulary.
+    - **``safety_signatures`` keys and values**. Signature *type* names are fixed
+      TIA vocabulary; the values are hex digests that carry no names, and the
+      differ's tests depend on seeing them unchanged.
+
+    This is a judgment call about what counts as vendor vocabulary rather than
+    customer data, not a certainty: it holds for every case this package has
+    encountered so far (Siemens Openness attribute and feature names, GSDML
+    vocabulary), but a future source that stuffs a free-text comment into, say, a
+    feature's inner key rather than its value would slip through it. Anyone
+    adding a new structural channel should extend
+    :data:`PRESERVED_STRUCTURAL_CHANNELS` and this docstring explicitly, rather
+    than relying on it having been safe so far.
+
+    Also preserved: every non-string attribute and feature *value* (ints, floats,
+    bools, ``None``); subnet ``number``; ``addresses`` (``start``/``length``,
+    structural integers, plus the ``io_type`` channel above).
 
     Parameters
     ----------
@@ -235,7 +279,8 @@ def anonymise(fixture: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     tuple[dict[str, Any], dict[str, str]]
         The scrubbed fixture and the flat mapping of every original string to
         its pseudonym -- names, texts, reasons and subnets alike -- so a human
-        can audit exactly what was replaced.
+        can audit exactly what was replaced. The scrubbed fixture shares no
+        mutable structure with ``fixture``.
     """
     device_names = sorted({r["name"] for r in fixture["devices"]})
     item_names = sorted(
@@ -281,14 +326,19 @@ def anonymise(fixture: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
             for s in fixture["subnets"]
         ],
         "devices": [{"key": rename_key(r["key"]), "name": names[r["name"]]} for r in fixture["devices"]],
-        "safety_signatures": fixture["safety_signatures"],
+        "safety_signatures": dict(fixture["safety_signatures"]),
     }
     out["device_items"] = {
         rename_key(key): [{"key": rename_key(r["key"]), "name": names[r["name"]]} for r in refs]
         for key, refs in fixture["device_items"].items()
     }
-    out["attribute_infos"] = {rename_key(key): value for key, value in fixture["attribute_infos"].items()}
-    out["addresses"] = {rename_key(key): value for key, value in fixture["addresses"].items()}
+    out["attribute_infos"] = {
+        rename_key(key): [dict(info) for info in infos] for key, infos in fixture["attribute_infos"].items()
+    }
+    out["addresses"] = {
+        rename_key(key): [dict(address) for address in addresses]
+        for key, addresses in fixture["addresses"].items()
+    }
     out["attribute_error"] = {
         rename_key(key): {name: reason_map[reason] for name, reason in reasons.items()}
         for key, reasons in fixture["attribute_error"].items()
@@ -347,6 +397,7 @@ def load_fixture(path: Path) -> dict[str, Any]:
 
 
 __all__ = [
+    "PRESERVED_STRUCTURAL_CHANNELS",
     "PRESERVED_VALUE_ATTRIBUTES",
     "RecordingSource",
     "ReplaySource",

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from plc_hw.record import (
+    PRESERVED_STRUCTURAL_CHANNELS,
     RecordingSource,
     ReplaySource,
     anonymise,
@@ -164,7 +165,14 @@ def test_anonymising_scrubs_subnet_names_but_not_type_or_number() -> None:
 
 
 def test_anonymising_leaves_no_marker_in_any_channel() -> None:
-    """The test that would have caught the deny-list-by-omission defect."""
+    """The test that would have caught the deny-list-by-omission defect.
+
+    ``tests/test_no_confidential_references.py`` at the repo root is the second
+    line of defence for a fixture that actually gets committed: it scans tracked
+    files, including ``.json`` (listed in its ``_TEXT_SUFFIXES``), for known
+    customer/site terms. This test is the first line -- it catches the shape of
+    leak (a channel nobody scrubbed) rather than a specific known name.
+    """
     marker = "LEAKCANARY"
     recorder = RecordingSource(build_fake_source())
     walk_project(recorder)
@@ -184,3 +192,78 @@ def test_anonymising_leaves_no_marker_in_any_channel() -> None:
     scrubbed, _ = anonymise(fixture)
     text = json.dumps(scrubbed)
     assert marker not in text
+
+
+def test_anonymising_preserves_the_named_structural_channels() -> None:
+    """PRESERVED_STRUCTURAL_CHANNELS is a decision, not a default -- this test makes
+    it executable.
+
+    An assertion that something *survives* looks backwards next to every other test
+    in this file, until the point lands: if someone later scrubs one of these
+    channels, replay breaks (the walker keys its behaviour on attribute and feature
+    names) and this test fails, loudly, instead of silently changing what a fixture
+    means. If someone adds a fixture channel without deciding whether it is
+    structural or customer data, this test and PRESERVED_STRUCTURAL_CHANNELS start
+    disagreeing about what "every named channel" covers.
+    """
+    marker = "STRUCTMARKER"
+    recorder = RecordingSource(build_fake_source())
+    walk_project(recorder)
+    fixture = recorder.fixture()
+    item_key = "IO_STATION_1/Rail/F-DI"
+
+    # "attribute names": the marker is the attribute's *name*, not its value.
+    fixture["attributes"][item_key][marker] = "some value"
+    fixture["attribute_infos"][item_key].append({"name": marker, "read_only": True})
+
+    # "feature names and inner keys": marker as both the feature name and the
+    # name of one of its inner values.
+    fixture["features"][item_key][marker] = {marker: "some value"}
+
+    # "address io_type"
+    fixture["addresses"][item_key].append({"start": 1, "length": 1, "io_type": marker})
+
+    # "subnet type"
+    fixture["subnets"][0]["type"] = marker
+
+    # "safety signature keys and values"
+    fixture["safety_signatures"][marker] = marker
+
+    scrubbed, mapping = anonymise(fixture)
+    renamed_key = "/".join(mapping.get(part, part) for part in item_key.split("/"))
+
+    assert PRESERVED_STRUCTURAL_CHANNELS == (
+        "attribute names",
+        "feature names and inner keys",
+        "address io_type",
+        "subnet type",
+        "safety signature keys and values",
+    )
+    assert marker in scrubbed["attributes"][renamed_key]
+    assert any(info["name"] == marker for info in scrubbed["attribute_infos"][renamed_key])
+    assert marker in scrubbed["features"][renamed_key]
+    assert marker in scrubbed["features"][renamed_key][marker]
+    assert any(a["io_type"] == marker for a in scrubbed["addresses"][renamed_key])
+    assert scrubbed["subnets"][0]["type"] == marker
+    assert scrubbed["safety_signatures"][marker] == marker
+
+
+def test_anonymising_does_not_mutate_the_original_fixture() -> None:
+    """anonymise must copy, not alias: mutating its output must never reach back into
+    the caller's recording, which is a live handle to what a real dump captured."""
+    fixture = _record()
+    any_item_key = next(iter(fixture["attribute_infos"]))
+    original_signatures = dict(fixture["safety_signatures"])
+    original_infos = [dict(info) for info in fixture["attribute_infos"][any_item_key]]
+    original_addresses = [dict(a) for a in fixture["addresses"].get(any_item_key, [])]
+
+    scrubbed, _ = anonymise(fixture)
+    scrubbed["safety_signatures"]["Injected"] = "value"
+    for infos in scrubbed["attribute_infos"].values():
+        infos.append({"name": "Injected", "read_only": True})
+    for addresses in scrubbed["addresses"].values():
+        addresses.append({"start": 0, "length": 0, "io_type": "Injected"})
+
+    assert fixture["safety_signatures"] == original_signatures
+    assert fixture["attribute_infos"][any_item_key] == original_infos
+    assert fixture["addresses"].get(any_item_key, []) == original_addresses
