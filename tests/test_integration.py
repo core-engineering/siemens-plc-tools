@@ -12,20 +12,20 @@ class TestPackageImports:
         """Test plc_tools main package import."""
         import plc_tools
 
-        assert plc_tools.__version__ == "0.3.0"
+        assert plc_tools.__version__ == "0.4.0"
 
     def test_plc_core_import(self) -> None:
         """Test plc_core package import."""
         from plc_core import __version__
 
-        assert __version__ == "0.3.0"
+        assert __version__ == "0.4.0"
 
     def test_plc_code_import(self) -> None:
         """Test plc_code package import."""
         from plc_code import __version__
         from plc_code.cli import code_group
 
-        assert __version__ == "0.3.0"
+        assert __version__ == "0.4.0"
         assert code_group.name == "code"
 
     def test_plc_iol_import(self) -> None:
@@ -33,7 +33,7 @@ class TestPackageImports:
         from plc_iol import __version__
         from plc_iol.cli import iol_group
 
-        assert __version__ == "0.3.0"
+        assert __version__ == "0.4.0"
         assert iol_group.name == "iol"
 
 

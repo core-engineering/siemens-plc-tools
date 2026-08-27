@@ -21,6 +21,7 @@ supervision integration tests.
 | **plc-net** | Industrial network monitoring (scapy) + OPC UA dissector |
 | **plc-sim** | OPC UA simulation interface, CLI, web UI, integration-test runner |
 | **plc-sup** | Supervision pipeline integration tests (OPC UA → Redis → TimescaleDB → API) |
+| **plc-hw** | TIA Portal hardware-parameter dump via Openness, semantic diff, baseline check |
 
 ## Install
 
@@ -33,7 +34,7 @@ uv pip install -e packages/plc-code
 ```
 
 The root package also exposes capability extras (`core`, `code`, `iol`,
-`modbus`, `sim`, `sup`, `net`, `all`) for selective installs, e.g.
+`sim`, `sup`, `net`, `hw`, `trace`, `all`) for selective installs, e.g.
 `uv sync --extra code`.
 
 ## Quickstart
@@ -48,6 +49,20 @@ plc code test --coverage         # block tests + SCL line coverage
 plc code diff old-export/ new-export/   # semantic diff, formatting-blind
 plc code xref --tags "PLC tags" "Program blocks"   # unused / undeclared I/O
 ```
+
+### `plc hw` — hardware configuration
+
+An AutomationML export versions devices, order numbers, topology, I/O addresses
+and F-addresses. It carries no module parameters, no CPU settings, no PROFINET
+timing and no safety signatures. `plc hw` reads those through TIA Openness.
+
+```bash
+plc hw dump --out deliverables/hardware-parameters   # Windows + TIA
+plc hw diff OLD NEW                                  # anywhere
+plc hw check                                         # baseline gate for a FAT
+```
+
+The package never writes to TIA.
 
 ## Documentation
 Built with MkDocs (`uv run mkdocs serve`).

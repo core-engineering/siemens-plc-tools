@@ -200,11 +200,12 @@ omit = [
 #
 # 59 (measured 59.86) -> 63 (measured 63.74, safety-boundary work and parser/CLI
 # fixes) -> 68 (measured 68.26, after the AST refactor's suites and the first
-# real unit suites for plc-net/plc-sup/plc-sim).
+# real unit suites for plc-net/plc-sup/plc-sim) -> 69 (measured 69.46, plc-hw:
+# 149 tests at 98.8%, the CLR adapter itself excluded via `omit` above).
 #
 # CLAUDE.md's "85% per package" is the goal, not the state. Worst offender left:
 # plc-sim (32.7%), whose bulk is the CLI and the web layer.
-fail_under = 68
+fail_under = 69
 precision = 2
 
 [tool.mypy]

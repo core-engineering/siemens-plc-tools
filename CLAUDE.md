@@ -13,6 +13,7 @@ PLC Tools is a monorepo containing packages for:
 - **plc-sim**: OPC UA simulation interface and live-PLC YAML scenario runner
 - **plc-sup**: Supervision-pipeline integration tests (OPC UA → Redis → TimescaleDB → REST)
 - **plc-net**: Industrial network / OPC UA traffic monitoring (scapy)
+- **plc-hw**: TIA hardware-parameter dump via Openness (Windows), semantic diff of dumps (anywhere)
 
 ### Current Status (v0.4.0)
 
@@ -26,6 +27,7 @@ PLC Tools is a monorepo containing packages for:
 | plc-sup | Experimental | supervision-pipeline integration tests (no unit tests yet) |
 | plc-net | Experimental | network / OPC UA monitoring (no unit tests yet) |
 | plc-trace | Beta | cycle-granular on-PLC trace recorder: UDT-first SCL scaffold generator, OPC UA control/fetch client, CLI + scenario steps |
+| plc-hw | Beta | Openness dump, deterministic YAML tree, semantic diff, baseline check |
 
 ---
 
@@ -86,7 +88,21 @@ plc-tools/                          # Monorepo root
 │   ├── plc-modbus/                 # async Modbus TCP client (read) — depends on plc-core
 │   ├── plc-sim/                    # OPC UA sim + scenario runner + web — plc-core + plc-modbus
 │   ├── plc-sup/                    # supervision-pipeline tests (Redis/Timescale/REST) — plc-core
-│   └── plc-net/                    # network / OPC UA monitoring (scapy) — standalone
+│   ├── plc-net/                    # network / OPC UA monitoring (scapy) — standalone
+│   └── plc-hw/                     # TIA hardware parameters via Openness
+│       ├── src/plc_hw/
+│       │   ├── model.py            # snapshot data model
+│       │   ├── source.py           # HardwareSource protocol (the CLR boundary)
+│       │   ├── walk.py             # source -> snapshot
+│       │   ├── normalize.py        # volatiles, value formatting, slugs
+│       │   ├── writer.py           # snapshot -> deterministic YAML tree
+│       │   ├── reader.py           # YAML tree -> snapshot
+│       │   ├── diff.py             # snapshot x snapshot -> Report
+│       │   ├── record.py           # record / replay / anonymise
+│       │   ├── cli.py              # plc hw ...
+│       │   └── openness/           # pythonnet + CLR (Windows only, coverage-omitted)
+│       ├── tests/
+│       └── pyproject.toml          # depends on plc-core
 │
 ├── src/plc_tools/                  # Main entry point package
 │   ├── __init__.py                 # Version, imports
@@ -109,7 +125,8 @@ plc-core (standalone)
     ├── plc-modbus (→ plc-core)
     ├── plc-sim    (→ plc-core[opcua] + plc-modbus)
     ├── plc-sup    (→ plc-core[opcua])
-    └── plc-trace  (→ plc-core[opcua] + plc-code)
+    ├── plc-trace  (→ plc-core[opcua] + plc-code)
+    └── plc-hw     (→ plc-core)
 plc-net (standalone — no internal deps)
 
 plc-tools (meta-package, optional extras)
@@ -120,6 +137,7 @@ plc-tools (meta-package, optional extras)
     ├── [sup]   → plc-core + plc-sup
     ├── [net]   → plc-net
     ├── [trace] → plc-core + plc-code + plc-trace
+    ├── [hw]    → plc-core + plc-hw
     └── [all]   → everything
 ```
 
@@ -176,12 +194,17 @@ plc                              # Root command group
 │   ├── monitor                  # multi-protocol traffic dashboard
 │   └── opcua                    # OPC UA binary dissector
 │
-└── trace                        # plc-trace: cycle-granular on-PLC trace recorder
-    ├── scaffold --udt --depth   # Generate trace UDT + instance DB + recorder FC
-    ├── status                   # Show current recorder status
-    ├── start [--mode --decimation]
-    ├── stop
-    └── fetch [-o]                # Fetch recording, save as CSV + JSON metadata
+├── trace                        # plc-trace: cycle-granular on-PLC trace recorder
+│   ├── scaffold --udt --depth   # Generate trace UDT + instance DB + recorder FC
+│   ├── status                   # Show current recorder status
+│   ├── start [--mode --decimation]
+│   ├── stop
+│   └── fetch [-o]                # Fetch recording, save as CSV + JSON metadata
+│
+└── hw                           # plc-hw: TIA hardware parameters
+    ├── dump [--out --attach --project --record]   # exit 0/2
+    ├── diff OLD NEW [-f]        # exit 0/1/2
+    └── check [--baseline] [-f]  # baseline gate, exit 0/1/2
 ```
 
 ### Plugin Architecture
@@ -236,6 +259,15 @@ iol:
     database: .iol
   naming:
     pattern: "{io_category}_{location}_{signal}"
+
+# Hardware-dump configuration (consumed by `plc hw ...`)
+hw:
+  paths:
+    dump: deliverables/hardware-parameters   # dump root, relative to plc.yaml
+  project: null           # TIA project file to open headless; null = attach to a running session
+  volatile_attributes:    # attribute names dropped from every dump (default: InstallationDate)
+    - InstallationDate
+  anonymize: true          # whether `--record` scrubs identities by default
 ```
 
 ### Environment Variables
@@ -243,6 +275,7 @@ iol:
 | Variable | Effect |
 |----------|--------|
 | `PLC_WEB_ALLOWED_ORIGINS` | Comma-separated origins allowed to call the web API cross-origin. Unset (default) installs no CORS middleware at all. |
+| `PLC_HW_OPENNESS_PATH` | Directory holding the TIA Openness assemblies. Overrides discovery. |
 
 The web servers (`plc code web`, `plc sim web`) serve their UI, docs and API from
 one application, so browser calls are same-origin and need no CORS. They also
@@ -257,12 +290,16 @@ have **no authentication**, and `plc sim` writes PLC tags — so both bind to
 ALLOWED:
   plc-code  → imports from → plc-core ✓
   plc-iol  → imports from → plc-core ✓
+  plc-hw   → imports from → plc-core ✓
 
 FORBIDDEN:
   plc-core → imports from → plc-code ✗
   plc-core → imports from → plc-iol ✗
+  plc-core → imports from → plc-hw ✗
   plc-code  → imports from → plc-iol ✗
   plc-iol  → imports from → plc-code ✗
+  plc-hw   → imports from → plc-code ✗
+  plc-hw   → imports from → plc-iol ✗
 ```
 
 ---
@@ -350,6 +387,11 @@ plc iol init --name "My Project" --code "PRJ"
 plc iol status
 plc iol import tags --path ./tags
 plc iol validate
+
+# Hardware commands
+plc hw dump --out deliverables/hardware-parameters   # Windows + TIA
+plc hw diff old-dump/ new-dump/                      # anywhere
+plc hw check                                         # baseline gate for a FAT
 ```
 
 ### Import Examples
@@ -379,27 +421,32 @@ from plc_iol.exporters import ExcelExporter
 | Unit tests | Each package has `tests/` directory (no `__init__.py` — see §6) |
 | Integration tests | Root `tests/` for cross-package tests |
 | Coverage goal | 85% per package |
-| Coverage gate | `fail_under = 68` (whole workspace), a ratchet — raise it, never lower it |
+| Coverage gate | `fail_under = 69` (whole workspace), a ratchet — raise it, never lower it |
 
 ### Coverage: goal vs. state
 
-`uv run pytest` measures all nine coverage targets and fails below the floor in
-`[tool.coverage.report]`. As of the last full run: **68.26%** overall
-(14019/20537 statements).
+`uv run pytest` measures all ten coverage targets and fails below the floor in
+`[tool.coverage.report]`. As of the last full run: **69.46%** overall
+(15154/21817 statements).
 
 | Package | Coverage | Covered / statements |
 |---------|----------|----------------------|
+| plc-hw | 98.8% | 735 / 744 |
 | plc-modbus | 97.8% | 135 / 138 |
 | plc-trace | 72.9% | 312 / 428 |
-| plc-code | 72.8% | 10661 / 14649 |
+| plc-code | 72.8% | 11047 / 15176 |
 | plc-iol | 67.3% | 1082 / 1608 |
 | plc-tools | 65.3% | 32 / 49 |
-| plc-core | 58.0% | 1033 / 1780 |
+| plc-core | 58.5% | 1047 / 1789 |
 | plc-net | 49.9% | 230 / 461 |
 | plc-sup | 48.0% | 214 / 446 |
 | plc-sim | 32.7% | 320 / 978 |
 
-The statement counts matter as much as the percentages: `plc-code` is 71% of the
+`plc-hw` reads near-total: its untestable CLR adapter
+(`openness/source.py`, Windows + TIA only) is coverage-omitted rather than
+measured, so what remains is pure logic, fully covered.
+
+The statement counts matter as much as the percentages: `plc-code` is 70% of the
 workspace, so it alone sets the headline number.
 
 `plc-net`, `plc-sup` and `plc-sim` now have unit suites over their pure logic
