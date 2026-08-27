@@ -240,3 +240,8 @@ module = [
     "docx.*",
 ]
 ignore_missing_imports = true
+
+# clr is pythonnet's CLR bridge: Windows-only, and it ships no type information.
+[[tool.mypy.overrides]]
+module = ["clr"]
+ignore_missing_imports = true

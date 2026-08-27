@@ -68,6 +68,13 @@ def test_a_missing_directory_is_reported(tmp_path: Path) -> None:
         discover_assemblies(tmp_path / "nope")
 
 
+def test_a_path_that_is_a_file_not_a_directory_says_so(tmp_path: Path) -> None:
+    path = tmp_path / "not-a-directory"
+    path.write_bytes(b"")
+    with pytest.raises(OpennessError, match="not a directory"):
+        discover_assemblies(path)
+
+
 def test_the_environment_override_comes_first(tmp_path: Path) -> None:
     override = tmp_path / "custom"
     candidates = candidate_api_dirs({"PLC_HW_OPENNESS_PATH": str(override)}, tmp_path / "pf")
@@ -97,6 +104,15 @@ def test_split_layout_requires_step7_not_just_base(tmp_path: Path) -> None:
     api = _make(tmp_path / "net48", "Siemens.Engineering.Base.dll")
     with pytest.raises(OpennessError):
         discover_assemblies(api)
+
+
+def test_a_partial_split_install_names_what_was_found_and_missing(tmp_path: Path) -> None:
+    api = _make(tmp_path / "net48", "Siemens.Engineering.Base.dll")
+    with pytest.raises(OpennessError) as excinfo:
+        discover_assemblies(api)
+    message = str(excinfo.value)
+    assert "Siemens.Engineering.Base.dll" in message
+    assert "Siemens.Engineering.Step7.dll" in message
 
 
 # --- Additional tests for resolve() (Correction 2: part of the public surface)

@@ -63,18 +63,30 @@ def discover_assemblies(api_dir: Path) -> AssemblySet:
     Raises
     ------
     OpennessError
-        If the directory is missing or holds neither known layout.
+        If the directory is missing, is not a directory, holds a partial
+        split install, or holds neither known layout.
     """
-    if not api_dir.is_dir():
+    if not api_dir.exists():
         raise OpennessError(f"{api_dir} does not exist")
+    if not api_dir.is_dir():
+        raise OpennessError(f"{api_dir} exists but is not a directory")
 
-    if all((api_dir / name).is_file() for name in _SPLIT_MANDATORY):
+    mandatory_found = [name for name in _SPLIT_MANDATORY if (api_dir / name).is_file()]
+    if len(mandatory_found) == len(_SPLIT_MANDATORY):
         found = tuple(api_dir / name for name in _SPLIT if (api_dir / name).is_file())
         return AssemblySet(directory=api_dir, assemblies=found, layout="split")
 
     single = api_dir / _SINGLE
     if single.is_file():
         return AssemblySet(directory=api_dir, assemblies=(single,), layout="single")
+
+    if mandatory_found:
+        missing = [name for name in _SPLIT_MANDATORY if name not in mandatory_found]
+        raise OpennessError(
+            f"partial Openness install in {api_dir}: found {', '.join(mandatory_found)} but missing "
+            f"{', '.join(missing)}. Reinstall TIA Portal's Openness API, or set {ENV_OVERRIDE} to a "
+            "complete installation."
+        )
 
     raise OpennessError(
         f"no Openness assemblies in {api_dir}: expected either "
@@ -169,11 +181,10 @@ def load_clr(assemblies: AssemblySet) -> None:
     if sys.platform != "win32":
         raise OpennessError("TIA Openness runs on Windows only; use --source replay:<path> elsewhere")
     try:
-        import clr  # type: ignore[import-not-found]  # noqa: PLC0415
+        import clr
     except ImportError as exc:  # pragma: no cover - depends on the host
         raise OpennessError(
-            "pythonnet is not installed; install the openness extra: uv pip install -e '.[hw]' "
-            "and pip install pythonnet"
+            "pythonnet is not installed; from packages/plc-hw, run: uv pip install -e '.[openness]'"
         ) from exc
     directory = str(assemblies.directory)
     if directory not in sys.path:
