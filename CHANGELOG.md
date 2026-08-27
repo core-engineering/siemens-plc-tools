@@ -7,17 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- `plc-hw`: dump TIA Portal hardware parameters through Openness into a
-  deterministic YAML tree, diff two dumps semantically, and check a live
-  project against a committed baseline (`plc hw dump|diff|check`). Read-only
-  towards TIA — no `SetAttribute` or `Save` call anywhere in the package.
-  Covers what an AutomationML export leaves out: every readable module
-  attribute (order number, firmware, address ranges, ...), the PROFINET/MRP,
-  OPC UA and protection-level features Openness exposes per device item, and
-  the project's safety signatures. 18 diff rule codes (`HW001`-`HW018`); exit
-  codes 0 identical, 1 differences, 2 could not read. `dump` and `check` need
-  Windows and TIA Portal; `diff` works anywhere. 149 tests; only the
-  Openness/CLR adapter is untestable off Windows and is coverage-omitted.
+- **plc-hw (new package)** — `plc hw dump|diff|check`: dump TIA Portal hardware
+  parameters through Openness into a deterministic YAML tree, diff two dumps
+  semantically, and check a live project against a committed baseline.
+  Read-only towards TIA — no `SetAttribute` or `Save` call anywhere in the
+  package. Covers what an AutomationML export leaves out: every readable
+  module attribute (order number, firmware, address ranges, ...), the
+  PROFINET/MRP, OPC UA and protection-level features Openness exposes per
+  device item, and the project's safety signatures. 18 diff rule codes
+  (`HW001`-`HW018`); exit codes 0 identical, 1 differences, 2 could not read.
+  `dump` and `check` need Windows and TIA Portal; `diff` works anywhere. 149
+  tests; only the Openness/CLR adapter is untestable off Windows and is
+  coverage-omitted.
 
 ## [0.4.0] - 2026-08-24
 
