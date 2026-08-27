@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "plc-hw"
+version = "0.4.0"
+description = "Versionable dump and semantic diff of TIA Portal hardware parameters via Openness"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Camille Martin", email = "cma@core-engineering.fr" }]
+keywords = ["plc", "tia-portal", "openness", "hardware", "configuration", "versioning"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "plc-core==0.4.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+openness = [
+    "pythonnet>=3.0.0 ; sys_platform == 'win32'",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.entry-points."plc_tools.plugins"]
+hw = "plc_hw.cli:hw_group"
+
+[project.urls]
+Homepage = "https://github.com/core-engineering/siemens-plc-tools"
+Repository = "https://github.com/core-engineering/siemens-plc-tools"
+Issues = "https://github.com/core-engineering/siemens-plc-tools/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/plc_hw"]
+
+[tool.ruff]
+extend = "../../pyproject.toml"
+
+[tool.uv.sources]
+plc-core = { workspace = true }
