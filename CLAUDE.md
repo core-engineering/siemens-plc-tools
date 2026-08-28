@@ -426,12 +426,12 @@ from plc_iol.exporters import ExcelExporter
 ### Coverage: goal vs. state
 
 `uv run pytest` measures all ten coverage targets and fails below the floor in
-`[tool.coverage.report]`. As of the last full run: **69.46%** overall
-(15154/21817 statements).
+`[tool.coverage.report]`. As of the last full run: **69.47%** overall
+(15160/21823 statements).
 
 | Package | Coverage | Covered / statements |
 |---------|----------|----------------------|
-| plc-hw | 98.8% | 735 / 744 |
+| plc-hw | 98.8% | 741 / 750 |
 | plc-modbus | 97.8% | 135 / 138 |
 | plc-trace | 72.9% | 312 / 428 |
 | plc-code | 72.8% | 11047 / 15176 |
