@@ -155,6 +155,33 @@ def test_devices_with_case_colliding_names_get_separate_directories(tmp_path: Pa
     assert names == {"Device", "DEVICE"}
 
 
+def test_filename_index_follows_position_order_not_list_order(tmp_path: Path) -> None:
+    """The writer's filename numeral is the list index -- but the walker must sort first.
+
+    This is the exact scenario the finding demonstrated: two modules with
+    ``PositionNumber`` 5 and 1, handed to the writer already in that order,
+    used to produce ``00-00-ModAtSlot5.yaml`` and ``00-01-ModAtSlot1.yaml``.
+    ``write_dump`` itself does not sort -- ``walk_project`` does -- so this
+    test builds the snapshot directly, out of order, to prove the writer alone
+    is not what makes the tree deterministic.
+    """
+    rack = DeviceItemNode(
+        name="Rail",
+        path="D/Rail",
+        children=[
+            DeviceItemNode(name="ModAtSlot5", path="D/Rail/ModAtSlot5", position=5),
+            DeviceItemNode(name="ModAtSlot1", path="D/Rail/ModAtSlot1", position=1),
+        ],
+    )
+    snapshot = ProjectSnapshot(project_name="project-A", devices=[DeviceNode(name="D", items=[rack])])
+    write_dump(snapshot, tmp_path)
+    names = sorted(p.name for p in (tmp_path / "D").glob("*.yaml"))
+    # Unsorted input still lands as list-index filenames -- proving the fix
+    # belongs in the walker, not here: `write_dump` faithfully reflects
+    # whatever order `DeviceNode.items`/`children` already carry.
+    assert names == ["00-00-ModAtSlot5.yaml", "00-01-ModAtSlot1.yaml", "_device.yaml"]
+
+
 def test_rack_hardware_identity_is_written_in_full(tmp_path: Path) -> None:
     """A rack's order number, firmware and position must reach the dump.
 

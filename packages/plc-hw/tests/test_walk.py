@@ -159,6 +159,43 @@ class _DuplicateAdvertisingSource(FakeSource):
         return [AttributeInfo(name="Dup", read_only=True), AttributeInfo(name="Dup", read_only=True)]
 
 
+def test_children_are_sorted_by_position_not_source_enumeration_order() -> None:
+    """Spec S6.4: rack/module order must not depend on ``device_items()`` order.
+
+    Handed to the walker in reverse-of-position order -- the exact scenario
+    from the finding -- the walker must still emit them low-position-first, so
+    the writer's filename index (the list index) lines up with a stable order
+    rather than whatever Openness happened to enumerate.
+    """
+    slot5 = FakeItem(name="ModAtSlot5", attributes={"PositionNumber": 5})
+    slot1 = FakeItem(name="ModAtSlot1", attributes={"PositionNumber": 1})
+    source = FakeSource(project="p", devices=[FakeItem(name="D", children=[slot5, slot1])])
+    snapshot = walk_project(source)
+    assert [i.name for i in snapshot.devices[0].items] == ["ModAtSlot1", "ModAtSlot5"]
+
+
+def test_children_with_no_position_sort_last_and_deterministically_by_name() -> None:
+    """A missing ``position`` must sort last, not raise on a comparison against ``None``."""
+    no_position_b = FakeItem(name="B")
+    no_position_a = FakeItem(name="A")
+    has_position = FakeItem(name="Z", attributes={"PositionNumber": 1})
+    source = FakeSource(
+        project="p", devices=[FakeItem(name="D", children=[no_position_b, no_position_a, has_position])]
+    )
+    snapshot = walk_project(source)
+    assert [i.name for i in snapshot.devices[0].items] == ["Z", "A", "B"]
+
+
+def test_grandchildren_are_sorted_too() -> None:
+    """The same ordering discipline applies one level down, at ``children``."""
+    module5 = FakeItem(name="ModAtSlot5", attributes={"PositionNumber": 5})
+    module1 = FakeItem(name="ModAtSlot1", attributes={"PositionNumber": 1})
+    rack = FakeItem(name="Rail", children=[module5, module1])
+    source = FakeSource(project="p", devices=[FakeItem(name="D", children=[rack])])
+    snapshot = walk_project(source)
+    assert [c.name for c in snapshot.devices[0].items[0].children] == ["ModAtSlot1", "ModAtSlot5"]
+
+
 def test_a_name_advertised_twice_is_recorded_as_unreadable_only_once() -> None:
     item = FakeItem(name="M", errors={"Dup": "boom"})
     source = _DuplicateAdvertisingSource(project="p", devices=[FakeItem(name="D", children=[item])])

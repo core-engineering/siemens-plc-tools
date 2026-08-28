@@ -68,10 +68,11 @@ def _walk_device(source: HardwareSource, ref: NodeRef, volatile: Sequence[str]) 
         for name in requested
         if name not in raw
     ]
+    items = [_walk_item(source, child, ref.name, volatile) for child in source.device_items(ref)]
     return DeviceNode(
         name=ref.name,
         type_identifier=str(format_value(raw.get("TypeIdentifier", ""))),
-        items=[_walk_item(source, child, ref.name, volatile) for child in source.device_items(ref)],
+        items=sorted(items, key=_item_sort_key),
         unreadable=sorted(unreadable, key=lambda u: u.name),
     )
 
@@ -100,6 +101,7 @@ def _walk_item(
     ]
 
     position = raw.pop(_POSITION, None)
+    children = [_walk_item(source, child, path, volatile) for child in source.device_items(ref)]
     node = DeviceItemNode(
         name=ref.name,
         path=path,
@@ -114,9 +116,21 @@ def _walk_item(
             for feature, values in sorted(source.features(ref).items())
         },
         unreadable=sorted(unreadable, key=lambda u: u.name),
-        children=[_walk_item(source, child, path, volatile) for child in source.device_items(ref)],
+        children=sorted(children, key=_item_sort_key),
     )
     return node
+
+
+def _item_sort_key(item: DeviceItemNode) -> tuple[bool, int, str]:
+    """Order racks and modules per spec S6.4: by ``(position, name)``.
+
+    A missing ``position`` sorts last, deterministically, rather than raising
+    on a comparison against ``None`` -- ``HardwareSource.device_items()``
+    gives no ordering guarantee, so the on-disk order (and the writer's
+    filename index, which is the list index) must not depend on whatever
+    order Openness happens to enumerate children in.
+    """
+    return (item.position is None, item.position or 0, item.name)
 
 
 __all__ = ["walk_project"]

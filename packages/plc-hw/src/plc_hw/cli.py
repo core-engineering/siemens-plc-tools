@@ -210,11 +210,19 @@ def dump(
         console_err.print(f"[red]error:[/red] plc.yaml is not valid YAML: {exc}")
         raise SystemExit(2) from exc
     target = out or (root / config.dump_dir)
+    # Raw whenever either the flag or the config key says so -- gate the
+    # destination guard and the anonymisation call on the very same
+    # expression, or a route past one that still reaches the other (e.g.
+    # `hw: {anonymize: false}` in plc.yaml with no --no-anonymize flag) writes
+    # an un-anonymised fixture with no guard and no warning.
+    writing_raw = no_anonymize or not config.anonymize
     try:
-        if no_anonymize and record_to is not None and RAW_RECORD_DIR not in record_to_parts(record_to):
+        if record_to is not None and writing_raw and RAW_RECORD_DIR not in record_to_parts(record_to):
+            reason = "the --no-anonymize flag" if no_anonymize else "plc.yaml setting hw.anonymize: false"
             raise click.ClickException(
-                f"--no-anonymize may only write under {RAW_RECORD_DIR}/, which is git-ignored; "
-                "a raw recording carries device names, plant tags and the project name"
+                f"a raw recording (requested via {reason}) may only be written under "
+                f"{RAW_RECORD_DIR}/, which is git-ignored; it carries device names, plant "
+                "tags and the project name"
             )
         target_source = _open_source(
             source, attach, project or (Path(config.project) if config.project else None)
@@ -225,7 +233,7 @@ def dump(
         written = write_dump(snapshot, target)
         if recorder is not None and record_to is not None:
             fixture = recorder.fixture()
-            if config.anonymize and not no_anonymize:
+            if not writing_raw:
                 fixture, _ = anonymise(fixture)
             save_fixture(fixture, record_to)
     except (DumpRootError, click.ClickException, OSError, FixtureError, OpennessError) as exc:

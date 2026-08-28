@@ -142,6 +142,79 @@ def test_raw_recording_outside_the_ignored_directory_is_refused(tmp_path: Path) 
     assert not out.exists()
 
 
+def test_raw_recording_via_config_anonymize_false_outside_the_ignored_directory_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The leak this fix closes: `hw: {anonymize: false}` needs no --no-anonymize flag.
+
+    Before the fix, the destination guard inspected only `no_anonymize` (the
+    CLI flag), while the raw-write decision a few lines later also honoured
+    `config.anonymize`. A project with `hw: {anonymize: false}` in plc.yaml
+    wrote an un-anonymised fixture -- device names, item names, the project
+    name, verbatim -- to any path, exit 0, no warning.
+    """
+    runner = CliRunner()
+    out = tmp_path / "dump"
+    raw_record = tmp_path / "raw.json"
+    fixture = _fixture(tmp_path)
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        Path("plc.yaml").write_text("hw:\n  anonymize: false\n")
+        result = runner.invoke(
+            hw_group,
+            ["dump", "--source", f"replay:{fixture}", "--out", str(out), "--record", str(raw_record)],
+        )
+    assert result.exit_code == 2
+    assert ".plc-hw-record" in result.output
+    assert "anonymize" in result.output
+    assert not raw_record.exists()
+    assert not out.exists()
+
+
+def test_raw_recording_via_config_anonymize_false_inside_the_ignored_directory_is_allowed(
+    tmp_path: Path,
+) -> None:
+    """The other side of the same route: allowed under `.plc-hw-record/`."""
+    runner = CliRunner()
+    out = tmp_path / "dump"
+    fixture = _fixture(tmp_path)
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        Path("plc.yaml").write_text("hw:\n  anonymize: false\n")
+        record_path = Path(".plc-hw-record") / "raw.json"
+        result = runner.invoke(
+            hw_group,
+            ["dump", "--source", f"replay:{fixture}", "--out", str(out), "--record", str(record_path)],
+        )
+        assert result.exit_code == 0, result.output
+        assert record_path.exists()
+
+
+def test_raw_recording_via_flag_inside_the_ignored_directory_is_allowed(tmp_path: Path) -> None:
+    """The flag route's allowed side, named explicitly alongside the config route above.
+
+    (Already exercised end-to-end by
+    ``test_dump_record_writes_a_fixture_that_replays_to_the_same_snapshot``;
+    this pins just the exit code and file presence so all four combinations
+    of flag x config are visible as named tests in one place.)
+    """
+    out = tmp_path / "dump"
+    record_path = tmp_path / ".plc-hw-record" / "raw.json"
+    result = CliRunner().invoke(
+        hw_group,
+        [
+            "dump",
+            "--source",
+            f"replay:{_fixture(tmp_path)}",
+            "--out",
+            str(out),
+            "--record",
+            str(record_path),
+            "--no-anonymize",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert record_path.exists()
+
+
 def test_an_unknown_source_scheme_is_rejected(tmp_path: Path) -> None:
     result = CliRunner().invoke(hw_group, ["dump", "--source", "nonsense:x", "--out", str(tmp_path / "d")])
     assert result.exit_code == 2
