@@ -552,13 +552,9 @@ class SCLParser:
 
             if self._current().type == TokenType.END_STRUCT:
                 # `END_STRUCT;` closes the innermost inline Struct.
-                self._advance()
-                self._skip_newlines()
-                if self._current().type == TokenType.SEMICOLON:
-                    self._advance()
+                self._consume_end_struct()
                 if parents:
                     parents.pop()
-                self._skip_newlines()
                 continue
 
             # Variable declaration (identifier or quoted string for reserved words)
@@ -567,7 +563,7 @@ class SCLParser:
                 var.parent = ".".join(parents)
                 section.variables.append(var)
                 pending_attributes = VariableAttributes()
-                if var.data_type == "Struct":
+                if self._opens_inline_struct(var.data_type):
                     parents.append(var.name)
                 self._skip_newlines()
                 continue
@@ -722,6 +718,44 @@ class SCLParser:
                 parts.append(element_type)
 
         return "".join(parts)
+
+    @staticmethod
+    def _opens_inline_struct(data_type: str) -> bool:
+        """Return whether a parsed data type opens an inline Struct body.
+
+        A bare ``Struct`` and an array of Struct (``"Array[...] of Struct"``,
+        from `_parse_data_type` recursing into the element type) both leave
+        an `END_STRUCT` token in the stream that closes this declaration's
+        own inline Struct body; the caller must then treat the declaration's
+        own name as a new parent for the members that follow.
+
+        Parameters
+        ----------
+        data_type : str
+            The data type string returned by `_parse_data_type`.
+
+        Returns
+        -------
+        bool
+            True if `data_type` is `"Struct"` or ends with `" of Struct"`.
+        """
+        return data_type == "Struct" or data_type.endswith(" of Struct")
+
+    def _consume_end_struct(self) -> None:
+        """Consume the `END_STRUCT` token that closes an inline Struct body.
+
+        Advances past `END_STRUCT`, then an optional trailing `;`, skipping
+        newlines around both. Shared by `_parse_variable_section` and
+        `_parse_udt`; whether this closes a nested inline Struct (pop the
+        parent stack) or the enclosing section/UDT's own Struct body is
+        decided by the caller, since only the caller knows the depth of its
+        `parents` stack.
+        """
+        self._advance()
+        self._skip_newlines()
+        if self._current().type == TokenType.SEMICOLON:
+            self._advance()
+        self._skip_newlines()
 
     def _parse_value(self) -> str:
         """Parse a value (default value or constant).
@@ -1162,12 +1196,8 @@ class SCLParser:
                 if not parents:
                     break  # the UDT's own END_STRUCT
                 # `END_STRUCT;` closes the innermost inline Struct.
-                self._advance()
-                self._skip_newlines()
-                if self._current().type == TokenType.SEMICOLON:
-                    self._advance()
+                self._consume_end_struct()
                 parents.pop()
-                self._skip_newlines()
                 continue
 
             # MLC pragma for field
@@ -1213,7 +1243,7 @@ class SCLParser:
                 )
                 udt.fields.append(field)
                 pending_mlc = ""
-                if field_type == "Struct":
+                if self._opens_inline_struct(field_type):
                     parents.append(field_name)
             else:
                 # Skip unknown token to prevent infinite loop

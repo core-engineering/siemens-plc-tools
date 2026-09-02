@@ -28,6 +28,23 @@ NESTED_UDT = (
     "            y : Real;\n        END_STRUCT;\n    END_STRUCT;\nEND_TYPE\n"
 )
 
+ARRAY_OF_STRUCT_DB = DB_HEADER + (
+    "DATA_BLOCK ProbeArr\n    VAR\n        s : Struct\n            arr : Array[0..1] of Struct\n"
+    "                x : Bool;\n            END_STRUCT;\n            y : Real;\n        END_STRUCT;\n"
+    "    END_VAR\nEND_DATA_BLOCK\n"
+)
+
+ARRAY_OF_STRUCT_UDT = (
+    "TYPE\n    typeProbeArr : STRUCT\n        s : Struct\n            arr : Array[0..1] of Struct\n"
+    "                x : Bool;\n            END_STRUCT;\n            y : Real;\n        END_STRUCT;\n"
+    "    END_STRUCT;\nEND_TYPE\n"
+)
+
+SETPOINT_IN_STRUCT_DB = DB_HEADER + (
+    'DATA_BLOCK ProbeSetpoint\n    VAR\n        s : Struct\n            { S7_Setpoint := "True" }\n'
+    "            x : Bool;\n        END_STRUCT;\n    END_VAR\nEND_DATA_BLOCK\n"
+)
+
 
 def test_db_struct_children_carry_parent_paths(tmp_path: Path) -> None:
     block = parse_scl_file(write_s7dcl(tmp_path, "Probe.s7dcl", NESTED_DB))
@@ -54,3 +71,40 @@ def test_udt_struct_fields_carry_parent_paths(tmp_path: Path) -> None:
     assert block.user_data_type is not None
     rows = [(f.name, f.data_type, f.parent) for f in block.user_data_type.fields]
     assert rows == [("a", "Int", ""), ("s", "Struct", ""), ("x", "Bool", "s"), ("y", "Real", "s")]
+
+
+def test_db_array_of_struct_member_keeps_its_own_end_struct_scoped(tmp_path: Path) -> None:
+    """An `Array[..] of Struct` member opens its own inline Struct body too.
+
+    Its `END_STRUCT` must close only that member's body, not the enclosing
+    Struct's - otherwise the enclosing Struct's remaining members end up
+    tagged as top-level instead of nested under it.
+    """
+    block = parse_scl_file(write_s7dcl(tmp_path, "ProbeArr.s7dcl", ARRAY_OF_STRUCT_DB))
+    rows = [(v.name, v.data_type, v.parent) for v in block.variable_sections[0].variables]
+    assert rows == [
+        ("s", "Struct", ""),
+        ("arr", "Array[0..1] of Struct", "s"),
+        ("x", "Bool", "s.arr"),
+        ("y", "Real", "s"),
+    ]
+
+
+def test_udt_array_of_struct_field_keeps_its_own_end_struct_scoped(tmp_path: Path) -> None:
+    block = parse_scl_file(write_s7dcl(tmp_path, "typeProbeArr.s7dcl", ARRAY_OF_STRUCT_UDT))
+    assert block.user_data_type is not None
+    rows = [(f.name, f.data_type, f.parent) for f in block.user_data_type.fields]
+    assert rows == [
+        ("s", "Struct", ""),
+        ("arr", "Array[0..1] of Struct", "s"),
+        ("x", "Bool", "s.arr"),
+        ("y", "Real", "s"),
+    ]
+
+
+def test_db_pragma_on_struct_member_keeps_attributes_and_parent(tmp_path: Path) -> None:
+    block = parse_scl_file(write_s7dcl(tmp_path, "ProbeSetpoint.s7dcl", SETPOINT_IN_STRUCT_DB))
+    variables = block.variable_sections[0].variables
+    x = next(v for v in variables if v.name == "x")
+    assert x.attributes.setpoint == "True"
+    assert x.parent == "s"
