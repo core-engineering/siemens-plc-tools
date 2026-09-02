@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   structs and UDTs), `--format table|json|csv`, optimized blocks refused unless
   `--force`.
 
+### Changed
+- **plc-code (analyzer)** — `plc code lint` now sees data-block members: since
+  `DATA_BLOCK` bodies are parsed (see above), naming and other quality rules
+  that used to run only over FB/FC/OB interfaces now also apply to DB members.
+- **plc-code (parser)** — a `TYPE` block with an inline `Struct` member now
+  exposes its complete field list; the old parser stopped at the first
+  `END_STRUCT`, silently truncating any UDT with a nested Struct. This changes
+  the generated docs, type graphs and `plc code diff` output for such UDTs.
+
 ## [0.4.0] - 2026-08-24
 
 ### Added

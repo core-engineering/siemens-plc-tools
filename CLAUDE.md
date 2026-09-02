@@ -142,6 +142,8 @@ plc                              # Root command group
 │   ├── init [--with-tests]      # Initialize project
 │   ├── status                   # Show project status
 │   ├── lint [PATH] [-f]         # Quality analysis (text/json)
+│   ├── check-format PATH [-f]   # Import-readiness: BOM/CRLF, one block per file, header attrs
+│   ├── layout DB --types DIR    # Byte/bit offsets of a non-optimized DATA_BLOCK
 │   ├── docs [PATH] [--serve]    # Generate MkDocs documentation
 │   ├── test [PATH] [-v]         # Run block unit tests
 │   │   └── --coverage           #   ...and print SCL line coverage per block

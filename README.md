@@ -43,12 +43,20 @@ See [`examples/demo-project/`](examples/demo-project/) for a runnable example:
 ```bash
 cd examples/demo-project
 plc code lint
-plc code check-format "PLC_1"     # UTF-8 BOM and CRLF on every file (.s7dcl and tag-table .xml alike), one block per file, header attributes, well-formed tag tables
-plc code layout Probe.s7dcl --types "PLC data types"   # byte/bit offsets of a non-optimized DB
+plc code check-format program-blocks   # UTF-8 BOM/CRLF, one block per file, header attributes
 plc code docs
 plc code test --coverage         # block tests + SCL line coverage
 plc code diff old-export/ new-export/   # semantic diff, formatting-blind
 plc code xref --tags "PLC tags" "Program blocks"   # unused / undeclared I/O
+```
+
+`plc code check-format` and `plc code layout` operate on a full TIA Portal
+export tree (`.s7dcl` sources, tag-table `.xml`, `PLC data types`) — no
+`plc.yaml` required:
+
+```bash
+plc code check-format "PLC_1"     # UTF-8 BOM and CRLF on every file (.s7dcl and tag-table .xml alike), one block per file, header attributes, well-formed tag tables
+plc code layout Probe.s7dcl --types "PLC data types"   # byte/bit offsets of a non-optimized DB
 ```
 
 ## Documentation

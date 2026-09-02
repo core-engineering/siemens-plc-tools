@@ -290,6 +290,20 @@ class TestInstanceCamelCaseRule:
         # N005 only checks FB instances, not primitive types
         assert len(violations) == 0
 
+    def test_skips_inline_struct_member(self) -> None:
+        """Test that an inline `Struct` member is not flagged as an FB instance.
+
+        It may still be flagged by the variable-name rule (N001); this only
+        asserts on the instance-camelCase message.
+        """
+        block = make_block(
+            variables=[
+                ("MyStruct", "Struct", "VAR"),
+            ]
+        )
+        violations = self.rule.check(block)
+        assert not any("Instance" in v.message for v in violations)
+
     def test_skips_non_var_sections(self) -> None:
         """Test that VAR_INPUT/OUTPUT sections are skipped."""
         block = make_block(

@@ -398,6 +398,7 @@ class InstanceCamelCaseRule(Rule):
                         "Date",
                         "Date_And_Time",
                         "Time_Of_Day",
+                        "Struct",
                     )
                 )
 
