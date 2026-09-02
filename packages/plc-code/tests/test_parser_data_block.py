@@ -48,7 +48,7 @@ EDGE_CASES = HEADER + (
 )
 
 STRAY_BRACKET = HEADER + (
-    "DATA_BLOCK ProbeStrayBracket : typeProbeParameter\n    a := 1];\n    b := 2;\nEND_DATA_BLOCK\n"
+    "DATA_BLOCK ProbeStrayBracket : typeProbeParameter\n    a := 1]\n    b := 2;\nEND_DATA_BLOCK\n"
 )
 
 PATH_COMMENT = HEADER + (
