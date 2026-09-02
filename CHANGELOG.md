@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `.xml` alike, one block per file named like the block, expected header
   attributes per block kind, well-formed tag tables). Codes F001–F031,
   `--format json`, exit 1 on error. Independent of the style rules of `lint`.
+- **plc-code (parser)** — `DATA_BLOCK` bodies are parsed: inline `VAR` members
+  (with `S7_Setpoint`), start values of typed/instance DBs in `Block.initial_values`,
+  inline `Struct` nesting recorded in `parent`. `plc code diff` now compares data
+  blocks member by member and start value by start value.
+- **plc-code (CLI, layout)** — `plc code layout DB.s7dcl --types DIR`: byte/bit
+  offsets of a non-optimized data block from its source and its UDTs (S7
+  standard-access rules: word alignment, Bool packing, even padding of arrays,
+  structs and UDTs), `--format table|json|csv`, optimized blocks refused unless
+  `--force`.
 
 ## [0.4.0] - 2026-08-24
 

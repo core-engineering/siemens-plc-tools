@@ -384,6 +384,88 @@ def check_format(output_format: str, path: Path) -> None:
     raise SystemExit(0 if report.passed else 1)
 
 
+@code_group.command(name="layout")
+@click.option(
+    "--types",
+    "type_dirs",
+    multiple=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory of PLC data types (.s7dcl TYPE blocks); may repeat",
+)
+@click.option("--format", "-f", "output_format", type=click.Choice(["table", "json", "csv"]), default="table")
+@click.option(
+    "--force", is_flag=True, help="Lay out an optimized block with the standard rules (not guaranteed)"
+)
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def layout(type_dirs: tuple[Path, ...], output_format: str, force: bool, path: Path) -> None:
+    """Byte/bit offsets of a non-optimized DATA_BLOCK from its source.
+
+    Standard-access rules of the S7-1200/1500: word alignment for members of
+    two bytes and more, Bool packing, even padding of arrays and structs.
+    Offsets are what a raw read (S7 PUT/GET, S7CommPlus db_read) addresses.
+    """
+    import csv
+
+    from plc_code.layout import OptimizedBlockError, TypeRegistry, UnknownTypeError, compute_layout
+    from plc_code.parser import ParseError, parse_scl_file
+
+    registry = TypeRegistry.from_directories(*type_dirs)
+    for problem in registry.problems:
+        console_err.print(f"[yellow]Warning:[/yellow] skipped {escape(problem)}")
+
+    try:
+        block = parse_scl_file(path)
+        result = compute_layout(block, registry, force=force)
+    except UnknownTypeError as exc:
+        if exc.name == block.base_type:
+            console_err.print(
+                f"[red]Error:[/red] {escape(exc.name)!r} is not a user data type: "
+                "an instance DB has no standard layout from source"
+            )
+        else:
+            console_err.print(f"[red]Error:[/red] {escape(str(exc))}")
+        raise SystemExit(1) from None
+    except (OptimizedBlockError, ParseError, ValueError) as exc:
+        console_err.print(f"[red]Error:[/red] {escape(str(exc))}")
+        raise SystemExit(1) from None
+
+    if output_format == "json":
+        payload = {
+            "block": result.block,
+            "optimized": result.optimized,
+            "total_size": result.total_size,
+            "members": [m.__dict__ for m in result.members],
+        }
+        print(json.dumps(payload, indent=2))
+    elif output_format == "csv":
+        writer = csv.writer(sys.stdout, lineterminator="\n")
+        writer.writerow(
+            ["path", "data_type", "byte_offset", "bit_offset", "size_bytes", "size_bits", "is_leaf"]
+        )
+        for m in result.members:
+            writer.writerow(
+                [m.path, m.data_type, m.byte_offset, m.bit_offset, m.size_bytes, m.size_bits, m.is_leaf]
+            )
+    else:
+        from rich.table import Table
+
+        title = f"{result.block} ({'optimized, not guaranteed' if result.optimized else 'standard access'})"
+        table = Table(title=title)
+        for column in ("Path", "Type", "Offset", "Size"):
+            table.add_column(column)
+        for m in result.members:
+            size = f"{m.size_bits} bit" if m.is_leaf and m.size_bytes == 0 else f"{m.size_bytes}"
+            table.add_row(
+                m.path,
+                m.data_type,
+                f"{m.byte_offset}.{m.bit_offset}",
+                size,
+                style=None if m.is_leaf else "dim",
+            )
+        console.print(table)
+        console.print(f"total {result.total_size} bytes")
+
+
 @code_group.command()
 @click.option(
     "--check",

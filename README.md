@@ -44,6 +44,7 @@ See [`examples/demo-project/`](examples/demo-project/) for a runnable example:
 cd examples/demo-project
 plc code lint
 plc code check-format "PLC_1"     # UTF-8 BOM and CRLF on every file (.s7dcl and tag-table .xml alike), one block per file, header attributes, well-formed tag tables
+plc code layout Probe.s7dcl --types "PLC data types"   # byte/bit offsets of a non-optimized DB
 plc code docs
 plc code test --coverage         # block tests + SCL line coverage
 plc code diff old-export/ new-export/   # semantic diff, formatting-blind
