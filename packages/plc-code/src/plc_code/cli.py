@@ -321,7 +321,7 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
                 for violation in result.project_violations:
                     marker = "[red]✗[/red]" if violation.severity is Severity.ERROR else "[yellow]⚠[/yellow]"
                     console.print(
-                        f"  {marker} {violation.rule_code} {violation.context}: " f"{violation.message}"
+                        f"  {marker} {violation.rule_code} {violation.context}: {violation.message}"
                     )
 
         # Exit code. `code.quality.fail_on_error: false` reports every finding and
@@ -334,6 +334,53 @@ def lint(output_format: str, verbose: bool, no_color: bool, path: Path | None) -
     except Exception as e:
         diag_console.print(f"[red]Error during analysis:[/red] {e}")
         raise SystemExit(1) from e
+
+
+@code_group.command(name="check-format")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format",
+)
+@click.argument("path", type=click.Path(exists=True, path_type=Path))
+def check_format(output_format: str, path: Path) -> None:
+    """Check that SIMATIC SD files will import into TIA Portal.
+
+    Verifies what TIA enforces on a file, not the code: UTF-8 BOM, CRLF,
+    one block per file named like the block, the header attributes of each
+    block kind, and well-formed tag tables. Exit code 1 on any error.
+    """
+    from plc_code.formatcheck import check_path
+
+    report = check_path(path)
+    if output_format == "json":
+        payload = {
+            "files": report.files,
+            "errors": report.errors,
+            "warnings": report.warnings,
+            "findings": [
+                {
+                    "path": str(f.path),
+                    "line": f.line,
+                    "code": f.code,
+                    "severity": f.severity,
+                    "message": f.message,
+                }
+                for f in report.findings
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+    else:
+        for f in report.findings:
+            where = f"{f.path}:{f.line}" if f.line is not None else str(f.path)
+            colour = "red" if f.severity == "ERROR" else "yellow"
+            console.print(f"{where}: [{colour}]{f.code} {f.severity}[/{colour}] {f.message}")
+        plural = "file" if report.files == 1 else "files"
+        console.print(f"{report.files} {plural} checked, {report.errors} errors, {report.warnings} warnings")
+    raise SystemExit(0 if report.passed else 1)
 
 
 @code_group.command()
@@ -478,7 +525,7 @@ def transpile(check: bool, conformance: bool, output_format: str, path: Path | N
                 f"[bold]{report.statements}[/bold] statement(s) parsed"
             )
             console.print(
-                f"token coverage: [bold]{report.coverage:.1%}[/bold] " f"({report.consumed}/{report.tokens})"
+                f"token coverage: [bold]{report.coverage:.1%}[/bold] ({report.consumed}/{report.tokens})"
             )
             console.print(
                 f"clean blocks: [bold]{report.block_clean_rate:.1%}[/bold] "
