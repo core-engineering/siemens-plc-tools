@@ -533,8 +533,12 @@ class SCLParser:
 
         self._skip_newlines()
 
-        # Parse variables until END_VAR
+        # Parse variables until END_VAR. `parents` tracks the dotted path of
+        # any inline Struct currently open, so its members (and any Struct
+        # nested inside them) get tagged with the right `parent` while the
+        # flat `section.variables` list itself stays flat.
         pending_attributes = VariableAttributes()
+        parents: list[str] = []
 
         while self._current().type != TokenType.END_VAR:
             if self._current().type == TokenType.EOF:
@@ -546,11 +550,25 @@ class SCLParser:
                 self._skip_newlines()
                 continue
 
+            if self._current().type == TokenType.END_STRUCT:
+                # `END_STRUCT;` closes the innermost inline Struct.
+                self._advance()
+                self._skip_newlines()
+                if self._current().type == TokenType.SEMICOLON:
+                    self._advance()
+                if parents:
+                    parents.pop()
+                self._skip_newlines()
+                continue
+
             # Variable declaration (identifier or quoted string for reserved words)
             if self._current().type in (TokenType.IDENTIFIER, TokenType.STRING):
                 var = self._parse_variable_declaration(pending_attributes)
+                var.parent = ".".join(parents)
                 section.variables.append(var)
                 pending_attributes = VariableAttributes()
+                if var.data_type == "Struct":
+                    parents.append(var.name)
                 self._skip_newlines()
                 continue
 
@@ -660,6 +678,13 @@ class SCLParser:
             Data type string.
         """
         parts = []
+
+        # Inline Struct: the keyword is a STRUCT token, not an IDENTIFIER. The
+        # members follow on the next lines; the caller reads them with the
+        # section's own loop, tagging each with its parent path.
+        if self._current().type == TokenType.STRUCT:
+            self._advance()
+            return "Struct"
 
         # Handle _.TypeName (library reference)
         if self._current().type == TokenType.IDENTIFIER and self._current().value == "_":
@@ -1123,11 +1148,27 @@ class SCLParser:
         block.name = name
         udt = UserDataType(name=name, is_safety=is_safety)
 
-        # Parse struct fields
+        # Parse struct fields. `parents` tracks the dotted path of any inline
+        # Struct currently open (mirrors `_parse_variable_section`); the
+        # outer STRUCT/END_STRUCT pair (already consumed above / handled at
+        # the loop's end) never enters this stack.
         pending_mlc = ""
-        while self._current().type != TokenType.END_STRUCT:
+        parents: list[str] = []
+        while True:
             if self._current().type == TokenType.EOF:
                 break
+
+            if self._current().type == TokenType.END_STRUCT:
+                if not parents:
+                    break  # the UDT's own END_STRUCT
+                # `END_STRUCT;` closes the innermost inline Struct.
+                self._advance()
+                self._skip_newlines()
+                if self._current().type == TokenType.SEMICOLON:
+                    self._advance()
+                parents.pop()
+                self._skip_newlines()
+                continue
 
             # MLC pragma for field
             if self._current().type == TokenType.PRAGMA_START:
@@ -1168,9 +1209,12 @@ class SCLParser:
                     name=field_name,
                     data_type=field_type,
                     mlc_id=pending_mlc,
+                    parent=".".join(parents),
                 )
                 udt.fields.append(field)
                 pending_mlc = ""
+                if field_type == "Struct":
+                    parents.append(field_name)
             else:
                 # Skip unknown token to prevent infinite loop
                 self._advance()
