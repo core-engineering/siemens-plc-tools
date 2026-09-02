@@ -7,6 +7,7 @@ finding is the result. Nothing here reads the file system; the runner does.
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -329,3 +330,69 @@ def check_text(path: Path, text: str) -> list[Finding]:
         msg = f"{header.kind} header lacks S7_Optimized"
         findings.append(Finding(path, header.line, "F021", "WARNING", msg))
     return findings
+
+
+def check_xml(path: Path, text: str) -> list[Finding]:
+    """F030 for a tag table that TIA cannot import, F031 for an XML that is not a tag table.
+
+    Parameters
+    ----------
+    path : Path
+        File path (examined for "PLC tags" directory to determine severity).
+    text : str
+        XML document text.
+
+    Returns
+    -------
+    list[Finding]
+        List of findings (empty if clean).
+    """
+    under_plc_tags = any(part.lower() == "plc tags" for part in path.parts)
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        if under_plc_tags:
+            return [
+                Finding(
+                    path,
+                    None,
+                    "F030",
+                    "ERROR",
+                    f"tag table XML is not well-formed: {exc}",
+                )
+            ]
+        return [Finding(path, None, "F031", "WARNING", f"XML is not well-formed: {exc}")]
+    is_tag_table = root.find(".//SW.Tags.PlcTagTable") is not None
+    engineering = root.find("Engineering")
+    has_version = engineering is not None and bool(engineering.get("version"))
+    if is_tag_table:
+        if not has_version:
+            return [
+                Finding(
+                    path,
+                    None,
+                    "F030",
+                    "ERROR",
+                    "tag table lacks <Engineering version=...>",
+                )
+            ]
+        return []
+    if under_plc_tags:
+        return [
+            Finding(
+                path,
+                None,
+                "F030",
+                "ERROR",
+                "not a SW.Tags.PlcTagTable document",
+            )
+        ]
+    return [
+        Finding(
+            path,
+            None,
+            "F031",
+            "WARNING",
+            "XML is not a SW.Tags.PlcTagTable document",
+        )
+    ]

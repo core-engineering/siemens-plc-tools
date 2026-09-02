@@ -6,7 +6,7 @@ from pathlib import Path
 
 from s7dcl_helpers import write_s7dcl
 
-from plc_code.formatcheck.checks import check_bytes, check_text, scan_block
+from plc_code.formatcheck.checks import check_bytes, check_text, check_xml, scan_block
 
 FB = (
     '{\n    S7_EditorMode := "SCL";\n    S7_Optimized := "TRUE";\n'
@@ -148,3 +148,37 @@ def test_scan_block_ignores_struct_in_pragma_string(tmp_path: Path) -> None:
     header = scan_block(text)
     assert header is not None
     assert (header.kind, header.name) == ("TYPE", "typeProbe")
+
+
+TAGS = (
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    "<Document>\n"
+    '  <Engineering version="V21" />\n'
+    '  <SW.Tags.PlcTagTable ID="0">\n'
+    "    <AttributeList><Name>Probe</Name></AttributeList>\n"
+    "  </SW.Tags.PlcTagTable>\n"
+    "</Document>\n"
+)
+
+
+def test_clean_tag_table_has_no_findings(tmp_path: Path) -> None:
+    assert check_xml(tmp_path / "PLC tags" / "Probe.xml", TAGS) == []
+
+
+def test_malformed_xml_under_plc_tags_is_f030(tmp_path: Path) -> None:
+    findings = check_xml(tmp_path / "PLC tags" / "Probe.xml", "<Document><Engineering")
+    assert [f.code for f in findings] == ["F030"]
+
+
+def test_missing_engineering_version_is_f030(tmp_path: Path) -> None:
+    text = TAGS.replace('  <Engineering version="V21" />\n', "")
+    assert [f.code for f in check_xml(tmp_path / "PLC tags" / "Probe.xml", text)] == ["F030"]
+
+
+def test_xml_outside_plc_tags_that_is_not_a_tag_table_is_f031(tmp_path: Path) -> None:
+    findings = check_xml(tmp_path / "other" / "Probe.xml", "<Document><Other/></Document>")
+    assert [(f.code, f.severity) for f in findings] == [("F031", "WARNING")]
+
+
+def test_tag_table_outside_plc_tags_is_fine(tmp_path: Path) -> None:
+    assert check_xml(tmp_path / "other" / "Probe.xml", TAGS) == []
