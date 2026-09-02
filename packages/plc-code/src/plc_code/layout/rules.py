@@ -10,9 +10,9 @@ Rules (see the design spec):
 6. Struct and UDT lay out recursively from an even byte, then pad to even;
 7. the total is rounded up to an even byte.
 
-Arrays, inline Structs and UDTs are out of scope for this module: `_place` raises
-`NotImplementedError` for them. A later pass completes those rules and rewrites
-`_place` accordingly.
+Array elements carry indexed paths (``a[0]``, and ``a[1,0]`` for several
+dimensions, row-major); Struct, UDT and Array members are emitted as their own
+non-leaf entry carrying the whole extent, followed by their leaves.
 """
 
 from __future__ import annotations
@@ -211,25 +211,105 @@ def _tree(fields: Sequence[FieldLike]) -> list[_Node]:
         path = f"{f.parent}.{f.name}" if f.parent else f.name
         by_path[path] = node
         if f.parent:
-            by_path[f.parent].children.append(node)
+            parent = by_path.get(f.parent)
+            if parent is None:
+                raise ValueError(f"{f.name}: unknown parent path {f.parent!r}")
+            parent.children.append(node)
         else:
             roots.append(node)
     return roots
 
 
 def _place(node: _Node, prefix: str, cursor: _Cursor, registry: TypeRegistry, out: list[Member]) -> None:
-    """Place one node's leaf member(s) into `out`, advancing `cursor`.
+    """Place one node into `out`, advancing `cursor`.
 
-    Only elementary scalars, String and WString are handled here; arrays, inline
-    Structs and UDTs raise `NotImplementedError` (they land in a later pass).
+    Parameters
+    ----------
+    node : _Node
+        The declaration to place, with its inline-Struct children.
+    prefix : str
+        Dotted path prefix of the enclosing Struct/UDT ("" at top level).
+    cursor : _Cursor
+        Write position, advanced in place.
+    registry : TypeRegistry
+        UDT definitions, consulted for non-elementary base types.
+    out : list[Member]
+        Members are appended here in declaration order.
+
+    Raises
+    ------
+    UnknownTypeError
+        If the base type is neither elementary nor a registered UDT.
     """
     path = f"{prefix}{node.name}"
     spec = parse_type_spec(node.data_type)
     if spec.is_array:
-        raise NotImplementedError(f"{path}: array layout is not implemented yet")
-    if spec.is_struct or (elementary_size(spec.base) is None and spec.string_length is None):
-        raise NotImplementedError(f"{path}: Struct/UDT layout is not implemented yet")
-    _place_scalar(path, spec, node.data_type, cursor, out)
+        _place_array(path, prefix, node, spec, cursor, registry, out)
+    elif spec.is_struct:
+        _place_composite(path, node.data_type, node.children, cursor, registry, out)
+    elif spec.string_length is not None or elementary_size(spec.base) is not None:
+        _place_scalar(path, spec, node.data_type, cursor, out)
+    else:
+        udt = registry.get(spec.base)
+        _place_composite(path, node.data_type, _tree(udt.fields), cursor, registry, out)
+
+
+def _place_composite(
+    path: str,
+    data_type: str,
+    children: list[_Node],
+    cursor: _Cursor,
+    registry: TypeRegistry,
+    out: list[Member],
+) -> None:
+    """Struct or UDT: even start, members recursively, even end."""
+    cursor.align_even()
+    start = cursor.byte
+    slot = len(out)
+    out.append(Member(path, data_type, start, 0, 0, 0, False))  # size filled once the extent is known
+    for child in children:
+        _place(child, f"{path}.", cursor, registry, out)
+    cursor.align_even()
+    out[slot] = Member(path, data_type, start, 0, cursor.byte - start, (cursor.byte - start) * 8, False)
+
+
+def _place_array(
+    path: str,
+    prefix: str,
+    node: _Node,
+    spec: TypeSpec,
+    cursor: _Cursor,
+    registry: TypeRegistry,
+    out: list[Member],
+) -> None:
+    """Contiguous elements by the element rule, then pad to even. Element paths are ``a[i]`` / ``a[i,j]``."""
+    cursor.align_even()
+    start = cursor.byte
+    slot = len(out)
+    out.append(Member(path, node.data_type, start, 0, 0, 0, False))
+    element_type = _element_type_text(spec)
+    for index in _indices(spec):
+        element = _Node(f"{node.name}[{index}]", element_type, node.children)
+        _place(element, prefix, cursor, registry, out)
+    cursor.align_even()
+    out[slot] = Member(path, node.data_type, start, 0, cursor.byte - start, (cursor.byte - start) * 8, False)
+
+
+def _element_type_text(spec: TypeSpec) -> str:
+    """Render the element type of an array spec back as a declaration string."""
+    if spec.is_struct:
+        return "Struct"
+    if spec.string_length is not None:
+        return f"{spec.base}[{spec.string_length}]"
+    return spec.base
+
+
+def _indices(spec: TypeSpec) -> list[str]:
+    """Row-major index strings: ``0``, ``1`` ... or ``1,0``, ``1,1`` ... for several dimensions."""
+    result: list[list[int]] = [[]]
+    for lo, hi in spec.dims:
+        result = [combo + [i] for combo in result for i in range(lo, hi + 1)]
+    return [",".join(str(i) for i in combo) for combo in result]
 
 
 def _place_scalar(path: str, spec: TypeSpec, data_type: str, cursor: _Cursor, out: list[Member]) -> None:
