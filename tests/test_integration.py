@@ -4,6 +4,14 @@ These tests verify that all packages work together correctly
 and the plugin system functions as expected.
 """
 
+import re
+import tomllib
+from pathlib import Path
+
+#: The workspace version pinned in the root pyproject; every package must report the same one.
+_ROOT_PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
+WORKSPACE_VERSION = tomllib.loads(_ROOT_PYPROJECT.read_text())["project"]["version"]
+
 
 class TestPackageImports:
     """Test that all packages can be imported."""
@@ -12,20 +20,21 @@ class TestPackageImports:
         """Test plc_tools main package import."""
         import plc_tools
 
-        assert plc_tools.__version__ == "0.3.0"
+        assert re.fullmatch(r"\d+\.\d+\.\d+", plc_tools.__version__)
+        assert plc_tools.__version__ == WORKSPACE_VERSION
 
     def test_plc_core_import(self) -> None:
         """Test plc_core package import."""
         from plc_core import __version__
 
-        assert __version__ == "0.3.0"
+        assert __version__ == WORKSPACE_VERSION
 
     def test_plc_code_import(self) -> None:
         """Test plc_code package import."""
         from plc_code import __version__
         from plc_code.cli import code_group
 
-        assert __version__ == "0.3.0"
+        assert __version__ == WORKSPACE_VERSION
         assert code_group.name == "code"
 
     def test_plc_iol_import(self) -> None:
@@ -33,7 +42,7 @@ class TestPackageImports:
         from plc_iol import __version__
         from plc_iol.cli import iol_group
 
-        assert __version__ == "0.3.0"
+        assert __version__ == WORKSPACE_VERSION
         assert iol_group.name == "iol"
 
 
