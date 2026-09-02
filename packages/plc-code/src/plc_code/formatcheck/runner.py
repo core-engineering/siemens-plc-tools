@@ -44,10 +44,9 @@ class Report:
 def check_file(path: Path) -> list[Finding]:
     """Check one file: byte checks first, text checks only when the bytes decode.
 
-    UTF-8 BOM (F001) and CRLF (F002) are import requirements for ``.s7dcl``
-    sources only; a tag table XML only needs to decode and be well-formed
-    (checked by :func:`check_xml`), so those two codes are dropped for XML
-    files while F003 (undecodable bytes) still applies to both.
+    TIA Portal exports both ``.s7dcl`` sources and tag table XML with a UTF-8
+    BOM and CRLF line endings, so F001/F002/F003 apply to every file the same
+    way; only the text-level check dispatched afterwards differs by suffix.
 
     Parameters
     ----------
@@ -61,14 +60,11 @@ def check_file(path: Path) -> list[Finding]:
         XML checks are skipped since neither can run on undecodable bytes.
     """
     data = path.read_bytes()
-    is_xml = path.suffix.lower() == ".xml"
     findings = check_bytes(path, data)
-    if is_xml:
-        findings = [f for f in findings if f.code == "F003"]
     if any(f.code == "F003" for f in findings):
         return findings
     text = data.decode("utf-8-sig")
-    if is_xml:
+    if path.suffix.lower() == ".xml":
         return findings + check_xml(path, text)
     return findings + check_text(path, text)
 

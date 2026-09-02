@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from s7dcl_helpers import write_s7dcl
+from s7dcl_helpers import write_s7dcl, write_xml
 from test_formatcheck_checks import DB, FB, TAGS, UDT
 
 from plc_code.formatcheck.runner import check_file, check_path
@@ -25,12 +25,16 @@ def test_check_path_walks_s7dcl_and_xml(tmp_path: Path) -> None:
     write_s7dcl(tmp_path / "Program blocks" / "100 - Process", "Probe.s7dcl", FB)
     write_s7dcl(tmp_path / "Program blocks", "Probe.s7dcl", DB)
     write_s7dcl(tmp_path / "PLC data types", "typeProbe.s7dcl", UDT)
-    (tmp_path / "PLC tags").mkdir()
-    (tmp_path / "PLC tags" / "Probe.xml").write_text(TAGS, encoding="utf-8")
+    write_xml(tmp_path / "PLC tags", "Probe.xml", TAGS)
     report = check_path(tmp_path)
     assert report.files == 4
     assert report.findings == []
     assert report.passed
+
+
+def test_xml_without_bom_is_f001(tmp_path: Path) -> None:
+    p = write_xml(tmp_path / "PLC tags", "Probe.xml", TAGS, bom=False)
+    assert [f.code for f in check_file(p)] == ["F001"]
 
 
 def test_report_counts_and_passed(tmp_path: Path) -> None:

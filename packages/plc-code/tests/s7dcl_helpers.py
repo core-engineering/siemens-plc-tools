@@ -40,3 +40,31 @@ def write_s7dcl(directory: Path, name: str, text: str, *, bom: bool = True, crlf
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return path
+
+
+def write_xml(directory: Path, name: str, text: str, *, bom: bool = True, crlf: bool = True) -> Path:
+    """Write text as a tag table XML file with TIA Portal's encoding or variants.
+
+    Same encoding rules as :func:`write_s7dcl` (TIA exports both file kinds
+    with a UTF-8 BOM and CRLF by default); kept as a separate name so tests
+    read clearly by file kind.
+
+    Parameters
+    ----------
+    directory : Path
+        Target directory; created if it does not exist.
+    name : str
+        Filename (e.g., "Probe.xml").
+    text : str
+        Text content (internal line endings normalized to LF first).
+    bom : bool, optional
+        Include UTF-8 BOM (default: True, matching TIA Portal).
+    crlf : bool, optional
+        Convert LF to CRLF (default: True, matching TIA Portal).
+
+    Returns
+    -------
+    Path
+        Absolute path to the written file.
+    """
+    return write_s7dcl(directory, name, text, bom=bom, crlf=crlf)
