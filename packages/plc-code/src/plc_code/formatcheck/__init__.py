@@ -1,5 +1,5 @@
 """Import-readiness checks for SIMATIC SD sources (``plc code check-format``)."""
 
-from plc_code.formatcheck.checks import Finding, check_bytes
+from plc_code.formatcheck.checks import BlockHeader, Finding, check_bytes, check_text, scan_block
 
-__all__ = ["Finding", "check_bytes"]
+__all__ = ["Finding", "BlockHeader", "check_bytes", "check_text", "scan_block"]

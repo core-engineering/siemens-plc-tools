@@ -6,13 +6,24 @@ from pathlib import Path
 
 from s7dcl_helpers import write_s7dcl
 
-from plc_code.formatcheck.checks import check_bytes
+from plc_code.formatcheck.checks import check_bytes, check_text, scan_block
 
 FB = (
     '{\n    S7_EditorMode := "SCL";\n    S7_Optimized := "TRUE";\n'
     '    S7_Version := "0.1"\n}\nFUNCTION_BLOCK "Probe"\n'
     '    { S7_Language := "SCL" }\n    NETWORK\n    END_NETWORK\n'
     "END_FUNCTION_BLOCK\n"
+)
+DB = (
+    '{\n    S7_Optimized := "TRUE";\n    S7_StandardRetain := "FALSE";\n'
+    '    S7_Version := "0.1"\n}\nDATA_BLOCK Probe\n'
+    "    VAR\n        a : Int;\n    END_VAR\nEND_DATA_BLOCK\n"
+)
+UDT = "TYPE\n    typeProbe : STRUCT\n        a : Int;\n    END_STRUCT;\nEND_TYPE\n"
+EXTERNAL = (
+    "FUNCTION_BLOCK \"Probe\"\nTITLE = 'Probe'\n"
+    "{ S7_Optimized_Access := 'TRUE' }\nVERSION : 0.1\n"
+    "BEGIN\nEND_FUNCTION_BLOCK\n"
 )
 
 
@@ -52,3 +63,58 @@ def test_invalid_utf8_is_f003_and_stops(tmp_path: Path) -> None:
 def test_missing_bom_and_lf_report_both(tmp_path: Path) -> None:
     p = write_s7dcl(tmp_path, "Probe.s7dcl", FB, bom=False, crlf=False)
     assert _codes(check_bytes(p, p.read_bytes())) == ["F001", "F002"]
+
+
+def test_scan_block_reads_kind_name_and_pragma() -> None:
+    header = scan_block(FB)
+    assert header is not None
+    assert (header.kind, header.name) == ("FUNCTION_BLOCK", "Probe")
+    assert header.pragma["S7_EditorMode"] == "SCL"
+    assert header.line == 6
+
+
+def test_scan_block_reads_unquoted_db_and_udt_names() -> None:
+    assert scan_block(DB).name == "Probe"  # type: ignore[union-attr]
+    udt = scan_block(UDT)
+    assert udt is not None and (udt.kind, udt.name) == ("TYPE", "typeProbe")
+
+
+def test_clean_fb_db_udt_have_no_text_findings(tmp_path: Path) -> None:
+    for name, text in (("Probe.s7dcl", FB), ("Probe.s7dcl", DB), ("typeProbe.s7dcl", UDT)):
+        assert check_text(tmp_path / name, text) == []
+
+
+def test_external_source_form_is_f010_only(tmp_path: Path) -> None:
+    findings = check_text(tmp_path / "Other.s7dcl", EXTERNAL)
+    assert [f.code for f in findings] == ["F010"]
+
+
+def test_two_blocks_in_one_file_is_f011(tmp_path: Path) -> None:
+    findings = check_text(tmp_path / "Probe.s7dcl", FB + FB)
+    assert "F011" in [f.code for f in findings]
+
+
+def test_file_stem_must_match_block_name(tmp_path: Path) -> None:
+    findings = check_text(tmp_path / "Wrong.s7dcl", FB)
+    assert [f.code for f in findings] == ["F012"]
+    assert "Probe" in findings[0].message and "Wrong" in findings[0].message
+
+
+def test_fb_without_editor_mode_is_f020(tmp_path: Path) -> None:
+    text = FB.replace('    S7_EditorMode := "SCL";\n', "")
+    assert [f.code for f in check_text(tmp_path / "Probe.s7dcl", text)] == ["F020"]
+
+
+def test_db_without_standard_retain_is_f020(tmp_path: Path) -> None:
+    text = DB.replace('    S7_StandardRetain := "FALSE";\n', "")
+    assert [f.code for f in check_text(tmp_path / "Probe.s7dcl", text)] == ["F020"]
+
+
+def test_missing_optimized_is_f021_warning(tmp_path: Path) -> None:
+    text = FB.replace('    S7_Optimized := "TRUE";\n', "")
+    findings = check_text(tmp_path / "Probe.s7dcl", text)
+    assert [(f.code, f.severity) for f in findings] == [("F021", "WARNING")]
+
+
+def test_udt_needs_no_pragma(tmp_path: Path) -> None:
+    assert check_text(tmp_path / "typeProbe.s7dcl", UDT) == []
