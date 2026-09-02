@@ -17,7 +17,21 @@ BOM = b"\xef\xbb\xbf"
 
 @dataclass(frozen=True)
 class Finding:
-    """One violation of the import contract."""
+    """One violation of the import contract.
+
+    Attributes
+    ----------
+    path : Path
+        File path where the violation occurs.
+    line : int | None
+        1-based line number (None for file-level violations like F001, F003).
+    code : str
+        Unique violation code (e.g., "F001", "F002", "F003").
+    severity : Severity
+        Violation severity level ("ERROR" or "WARNING").
+    message : str
+        Human-readable violation message.
+    """
 
     path: Path
     line: int | None
@@ -27,9 +41,23 @@ class Finding:
 
 
 def check_bytes(path: Path, data: bytes) -> list[Finding]:
-    """F001 (BOM), F002 (bare LF), F003 (UTF-8) on the raw bytes.
+    """Check raw bytes of a SIMATIC SD file for import-readiness violations.
 
+    Validates F001 (UTF-8 BOM), F002 (bare LF line endings), and F003 (UTF-8
+    encoding). Never raises on bad input; violations are returned as findings.
     F003 short-circuits: undecodable bytes make line counting meaningless.
+
+    Parameters
+    ----------
+    path : Path
+        File path (used in Finding output; file is not read).
+    data : bytes
+        Raw file contents to check.
+
+    Returns
+    -------
+    list[Finding]
+        List of violations found. Empty list if all checks pass.
     """
     findings: list[Finding] = []
     if not data.startswith(BOM):
