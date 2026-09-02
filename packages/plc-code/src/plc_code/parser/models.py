@@ -70,11 +70,17 @@ class VariableAttributes:
         Visibility (S7_Visibility), e.g., "Hidden := External".
     mlc_id : str
         Multi-language comment reference (S7_MLC).
+    setpoint : str
+        S7_Setpoint value ("True"/"False") on a DB member.
+    extra : dict[str, str]
+        pragma keys the model has no field for.
     """
 
     access: str = ""
     visibility: str = ""
     mlc_id: str = ""
+    setpoint: str = ""
+    extra: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -93,6 +99,9 @@ class VariableDeclaration:
         Variable attributes from pragmas.
     comment : str
         Inline comment if present.
+    parent : str
+        dotted path of the enclosing inline Struct ("" at top level); the flat
+        list stays flat, this records nesting.
     """
 
     name: str
@@ -100,6 +109,7 @@ class VariableDeclaration:
     default_value: str | None = None
     attributes: VariableAttributes = field(default_factory=VariableAttributes)
     comment: str = ""
+    parent: str = ""
 
 
 @dataclass
@@ -321,12 +331,16 @@ class StructField:
         MLC reference for description.
     comment : str
         Resolved comment from MLC.
+    parent : str
+        dotted path of the enclosing inline Struct ("" at top level); the flat
+        list stays flat, this records nesting.
     """
 
     name: str
     data_type: str
     mlc_id: str = ""
     comment: str = ""
+    parent: str = ""
 
 
 @dataclass
@@ -378,6 +392,9 @@ class Block:
         Associated .s7res file if present.
     user_data_type : UserDataType | None
         For TYPE blocks, the parsed UDT structure.
+    initial_values : dict[str, str]
+        typed/instance DATA_BLOCK start values, path as written to literal as
+        written, in source order.
     """
 
     name: str
@@ -392,6 +409,7 @@ class Block:
     source_file: str = ""
     resource_file: ResourceFile | None = None
     user_data_type: UserDataType | None = None
+    initial_values: dict[str, str] = field(default_factory=dict)
 
     def get_variables_by_section(self, section_type: VarSection) -> list[VariableDeclaration]:
         """Get all variables from a specific section type.
