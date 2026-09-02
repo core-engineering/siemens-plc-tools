@@ -102,15 +102,82 @@ _BLOCK_RE = re.compile(
     r"^\s*(FUNCTION_BLOCK|FUNCTION|ORGANIZATION_BLOCK|DATA_BLOCK|TYPE)\b\s*(?:\"([^\"]+)\"|([A-Za-z_][\w]*))?",
     re.MULTILINE,
 )
-_UDT_NAME_RE = re.compile(r"\n\s*([A-Za-z_]\w*)\s*:\s*STRUCT\b", re.IGNORECASE)
+_UDT_NAME_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*:\s*STRUCT\b", re.MULTILINE | re.IGNORECASE)
 _PRAGMA_ITEM_RE = re.compile(r"(S7_\w+)\s*:=\s*\"([^\"]*)\"")
-_EXTERNAL_MARKERS = (
-    re.compile(r"S7_Optimized_Access"),
-    re.compile(r"^\s*TITLE\s*=", re.MULTILINE),
-    re.compile(r"^\s*BEGIN\s*$", re.MULTILINE),
-)
+_S7_OPTIMIZED_ACCESS_RE = re.compile(r"S7_Optimized_Access")
+_TITLE_RE = re.compile(r"^\s*TITLE\s*=", re.MULTILINE)
+_BEGIN_RE = re.compile(r"^\s*BEGIN\s*$", re.MULTILINE)
 
 CODE_KINDS = ("FUNCTION_BLOCK", "FUNCTION", "ORGANIZATION_BLOCK")
+
+
+def _strip_comments_and_strings(text: str) -> str:
+    """Remove comments and string literals from text, replacing with spaces.
+
+    Removes:
+    - Single-quoted strings: 'text'
+    - Double-quoted strings: "text"
+    - Line comments: // to end of line
+    - Block comments: (* ... *)
+
+    Replaces each removed section with spaces to preserve line numbers.
+
+    Parameters
+    ----------
+    text : str
+        Source text to clean.
+
+    Returns
+    -------
+    str
+        Text with comments and strings replaced by spaces.
+    """
+    result: list[str] = []
+    i = 0
+    while i < len(text):
+        # Check for single-quoted string
+        if text[i] == "'":
+            start = i
+            i += 1
+            while i < len(text):
+                if text[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            result.append(" " * (i - start))
+        # Check for double-quoted string
+        elif text[i] == '"':
+            start = i
+            i += 1
+            while i < len(text):
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            result.append(" " * (i - start))
+        # Check for line comment
+        elif i + 1 < len(text) and text[i : i + 2] == "//":
+            start = i
+            while i < len(text) and text[i] != "\n":
+                i += 1
+            result.append(" " * (i - start))
+        # Check for block comment
+        elif i + 1 < len(text) and text[i : i + 2] == "(*":
+            start = i
+            i += 2
+            while i + 1 < len(text):
+                if text[i : i + 2] == "*)":
+                    i += 2
+                    break
+                i += 1
+            else:
+                # Unclosed block comment, consume to end
+                i = len(text)
+            result.append(" " * (i - start))
+        else:
+            result.append(text[i])
+            i += 1
+    return "".join(result)
 
 
 @dataclass(frozen=True)
@@ -157,11 +224,59 @@ def scan_block(text: str) -> BlockHeader | None:
     kind = match.group(1)
     name = match.group(2) or match.group(3) or ""
     if kind == "TYPE":
-        udt = _UDT_NAME_RE.search(text)
-        name = udt.group(1) if udt else ""
+        # Find first UDT name (name : STRUCT) after the TYPE keyword
+        for m in _UDT_NAME_RE.finditer(text):
+            if m.start() > match.end():
+                name = m.group(1)
+                break
     pragma = dict(_PRAGMA_ITEM_RE.findall(text[: match.start()]))
     line = text.count("\n", 0, match.start()) + 1
     return BlockHeader(kind=kind, name=name, pragma=pragma, line=line)
+
+
+def _has_external_markers(text: str) -> bool:
+    """Check if text contains external-source form markers (outside comments/strings).
+
+    Looks for:
+    - S7_Optimized_Access inside pragma blocks { ... }
+    - TITLE = at line start
+    - BEGIN on its own line
+
+    Parameters
+    ----------
+    text : str
+        File text to check.
+
+    Returns
+    -------
+    bool
+        True if external-source markers detected.
+    """
+    cleaned = _strip_comments_and_strings(text)
+
+    # Check for TITLE = at line start
+    if _TITLE_RE.search(cleaned):
+        return True
+
+    # Check for BEGIN on its own line
+    if _BEGIN_RE.search(cleaned):
+        return True
+
+    # Check for S7_Optimized_Access inside pragma blocks { ... }
+    i = 0
+    while i < len(cleaned):
+        brace_pos = cleaned.find("{", i)
+        if brace_pos == -1:
+            break
+        close_brace = cleaned.find("}", brace_pos)
+        if close_brace == -1:
+            break
+        pragma_block = cleaned[brace_pos : close_brace + 1]
+        if _S7_OPTIMIZED_ACCESS_RE.search(pragma_block):
+            return True
+        i = close_brace + 1
+
+    return False
 
 
 def check_text(path: Path, text: str) -> list[Finding]:
@@ -179,7 +294,7 @@ def check_text(path: Path, text: str) -> list[Finding]:
     list[Finding]
         List of violations found. Empty list if all checks pass.
     """
-    if any(marker.search(text) for marker in _EXTERNAL_MARKERS):
+    if _has_external_markers(text):
         return [
             Finding(
                 path,

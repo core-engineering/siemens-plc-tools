@@ -118,3 +118,33 @@ def test_missing_optimized_is_f021_warning(tmp_path: Path) -> None:
 
 def test_udt_needs_no_pragma(tmp_path: Path) -> None:
     assert check_text(tmp_path / "typeProbe.s7dcl", UDT) == []
+
+
+def test_f010_ignores_s7_optimized_access_in_line_comment(tmp_path: Path) -> None:
+    text = FB.replace('    S7_Optimized := "TRUE";\n', "")
+    text = text.replace("}\n", "}\n    // migrated from S7_Optimized_Access form\n")
+    findings = check_text(tmp_path / "Probe.s7dcl", text)
+    assert [f.code for f in findings] == ["F021"]
+
+
+def test_f010_ignores_begin_in_block_comment(tmp_path: Path) -> None:
+    text = FB.replace("NETWORK", "(* TODO: BEGIN here to split blocks *)\n    NETWORK")
+    findings = check_text(tmp_path / "Probe.s7dcl", text)
+    codes = [f.code for f in findings]
+    assert "F010" not in codes
+
+
+def test_f010_detects_real_external_source(tmp_path: Path) -> None:
+    findings = check_text(tmp_path / "Other.s7dcl", EXTERNAL)
+    assert [f.code for f in findings] == ["F010"]
+
+
+def test_scan_block_ignores_struct_in_pragma_string(tmp_path: Path) -> None:
+    text = (
+        '{\n    S7_Optimized := "TRUE";\n    s7_note := "see x : STRUCT in spec";\n'
+        '    S7_Version := "0.1"\n}\nTYPE\n    typeProbe : STRUCT\n'
+        "        a : Int;\n    END_STRUCT;\nEND_TYPE\n"
+    )
+    header = scan_block(text)
+    assert header is not None
+    assert (header.kind, header.name) == ("TYPE", "typeProbe")
