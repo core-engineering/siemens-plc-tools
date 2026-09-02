@@ -47,6 +47,14 @@ EDGE_CASES = HEADER + (
     "END_DATA_BLOCK\n"
 )
 
+STRAY_BRACKET = HEADER + (
+    "DATA_BLOCK ProbeStrayBracket : typeProbeParameter\n    a := 1];\n    b := 2;\nEND_DATA_BLOCK\n"
+)
+
+PATH_COMMENT = HEADER + (
+    "DATA_BLOCK ProbePathComment : typeProbeParameter\n    count (* legacy *) := 3;\nEND_DATA_BLOCK\n"
+)
+
 
 def _parse(tmp_path: Path, name: str, text: str):
     return parse_scl_file(write_s7dcl(tmp_path, name, text))
@@ -116,3 +124,13 @@ def test_a_multi_line_array_literal_is_joined_on_one_line(tmp_path: Path) -> Non
 def test_a_quoted_path_segment_is_unquoted_in_the_key(tmp_path: Path) -> None:
     block = _parse(tmp_path, "ProbeEdgeCases.s7dcl", EDGE_CASES)
     assert block.initial_values["Motor.speed"] == "1"
+
+
+def test_a_stray_closing_bracket_does_not_swallow_the_next_line(tmp_path: Path) -> None:
+    block = _parse(tmp_path, "ProbeStrayBracket.s7dcl", STRAY_BRACKET)
+    assert block.initial_values == {"a": "1]", "b": "2"}
+
+
+def test_a_comment_inside_a_path_is_dropped(tmp_path: Path) -> None:
+    block = _parse(tmp_path, "ProbePathComment.s7dcl", PATH_COMMENT)
+    assert block.initial_values == {"count": "3"}

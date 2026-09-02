@@ -384,8 +384,8 @@ class SCLParser:
         tuple[str, str]
             The path joined as written (e.g. ``axes[1].absKind``), with each
             quoted segment (``"Motor".speed``) unquoted per-token rather than on
-            the joined string; and its literal value. Both empty when the line
-            has no ``:=`` (a malformed or empty line).
+            the joined string, and comments dropped; and its literal value. Both
+            empty when the line has no ``:=`` (a malformed or empty line).
         """
         parts: list[str] = []
         while self._current().type not in (
@@ -395,6 +395,9 @@ class SCLParser:
             TokenType.EOF,
         ):
             token = self._current()
+            if token.type in (TokenType.COMMENT, TokenType.BLOCK_COMMENT):
+                self._advance()
+                continue
             parts.append(token.value.strip('"') if token.type == TokenType.STRING else token.value)
             self._advance()
         path = "".join(parts)
@@ -415,7 +418,9 @@ class SCLParser:
         Comments (``// ...`` and ``(* ... *)``) are dropped rather than ending the
         literal. Bracket depth is tracked so a newline inside an array literal (a
         multi-line ``[1, 2,\\n    3, 4]``) is skipped instead of ending the value;
-        a newline at depth 0 still ends it, same as before.
+        a newline at depth 0 still ends it, same as before. Depth is clamped at 0
+        so a stray closing bracket cannot drive it negative and swallow the next
+        line's newline terminator.
 
         Returns
         -------
@@ -439,7 +444,7 @@ class SCLParser:
             if token.type == TokenType.LBRACKET:
                 depth += 1
             elif token.type == TokenType.RBRACKET:
-                depth -= 1
+                depth = max(0, depth - 1)
             parts.append(", " if token.type == TokenType.COMMA else token.value)
             self._advance()
         return "".join(parts).strip()
