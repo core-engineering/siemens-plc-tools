@@ -169,8 +169,7 @@ class SCLParser:
         token = self._current()
         if token.type != token_type:
             raise ParseError(
-                f"Expected {token_type.name} at line {token.line}, "
-                f"got {token.type.name} ({token.value!r})"
+                f"Expected {token_type.name} at line {token.line}, got {token.type.name} ({token.value!r})"
             )
         return self._advance()
 
@@ -296,7 +295,7 @@ class SCLParser:
                 base_type=base_type,
             )
 
-        raise ParseError(f"Expected block declaration at line {token.line}, " f"got {token.type.name}")
+        raise ParseError(f"Expected block declaration at line {token.line}, got {token.type.name}")
 
     def _parse_block_name(self) -> str:
         """Parse block name from string token.
@@ -354,6 +353,78 @@ class SCLParser:
                 return token.value
         return None
 
+    def _parse_data_block_body(self, block: Block) -> None:
+        """Fill a DATA_BLOCK: inline members into a VAR section, start values into ``initial_values``.
+
+        Parameters
+        ----------
+        block : Block
+            DATA_BLOCK to fill; mutated in place.
+        """
+        while self._current().type != TokenType.EOF:
+            token = self._current()
+            if token.type == TokenType.END_DATA_BLOCK:
+                self._advance()
+                return
+            if token.type == TokenType.VAR:
+                block.variable_sections.append(self._parse_variable_section())
+            elif token.type in (TokenType.IDENTIFIER, TokenType.STRING):
+                path, value = self._parse_db_assignment()
+                if path:
+                    block.initial_values[path] = value
+            else:
+                self._advance()
+            self._skip_newlines()
+
+    def _parse_db_assignment(self) -> tuple[str, str]:
+        """Read one ``path := literal;`` line.
+
+        Returns
+        -------
+        tuple[str, str]
+            The path joined as written (e.g. ``axes[1].absKind``) and its literal
+            value; both empty when the line has no ``:=`` (a malformed or empty line).
+        """
+        parts: list[str] = []
+        while self._current().type not in (
+            TokenType.ASSIGN,
+            TokenType.SEMICOLON,
+            TokenType.NEWLINE,
+            TokenType.EOF,
+        ):
+            parts.append(self._current().value)
+            self._advance()
+        path = "".join(parts).strip('"')
+        if self._current().type != TokenType.ASSIGN:
+            return "", ""
+        self._advance()
+        self._skip_newlines()
+        value = self._parse_literal_value()
+        if self._current().type == TokenType.SEMICOLON:
+            self._advance()
+        return path, value
+
+    def _parse_literal_value(self) -> str:
+        """Read the tokens of a start-value literal up to the semicolon.
+
+        Re-spaces the way TIA writes them (``[1, 2, 3]``, ``-45.0``): every token's
+        raw value is concatenated as-is except a comma, which gets a trailing space.
+
+        Returns
+        -------
+        str
+            The literal exactly as it would read in the source.
+        """
+        parts: list[str] = []
+        while self._current().type not in (TokenType.SEMICOLON, TokenType.NEWLINE, TokenType.EOF):
+            token = self._current()
+            if token.type == TokenType.COMMA:
+                parts.append(", ")
+            else:
+                parts.append(token.value)
+            self._advance()
+        return "".join(parts).strip()
+
     def _parse_block_content(self, block: Block) -> None:
         """Parse the content of a block.
 
@@ -369,13 +440,10 @@ class SCLParser:
             self._parse_udt(block)
             return
 
-        # For DATA_BLOCK, skip to END_DATA_BLOCK (content is initial values)
+        # DATA_BLOCK: an inline VAR section, or `path := literal;` start values
+        # for a typed/instance DB. Anything else up to END_DATA_BLOCK is ignored.
         if block.block_type == "DATA_BLOCK":
-            while self._current().type != TokenType.EOF:
-                if self._current().type == TokenType.END_DATA_BLOCK:
-                    self._advance()
-                    return
-                self._advance()
+            self._parse_data_block_body(block)
             return
 
         # Parse variable sections and networks
@@ -503,6 +571,10 @@ class SCLParser:
                     attrs.visibility = value
                 elif key == "S7_MLC":
                     attrs.mlc_id = value
+                elif key == "S7_Setpoint":
+                    attrs.setpoint = value
+                else:
+                    attrs.extra[key] = value
 
         if self._current().type == TokenType.PRAGMA_END:
             self._advance()
