@@ -6,7 +6,13 @@ from pathlib import Path
 
 from s7dcl_helpers import write_s7dcl
 
-from plc_code.formatcheck.checks import check_bytes, check_text, check_xml, scan_block
+from plc_code.formatcheck.checks import (
+    _strip_comments_and_strings,
+    check_bytes,
+    check_text,
+    check_xml,
+    scan_block,
+)
 
 FB = (
     '{\n    S7_EditorMode := "SCL";\n    S7_Optimized := "TRUE";\n'
@@ -20,6 +26,10 @@ DB = (
     "    VAR\n        a : Int;\n    END_VAR\nEND_DATA_BLOCK\n"
 )
 UDT = "TYPE\n    typeProbe : STRUCT\n        a : Int;\n    END_STRUCT;\nEND_TYPE\n"
+UDT_WITH_INLINE_STRUCT = (
+    "TYPE\n    typeAxis : STRUCT\n        cfg : Struct\n            a : Int;\n"
+    "        END_STRUCT;\n    END_STRUCT;\nEND_TYPE\n"
+)
 EXTERNAL = (
     "FUNCTION_BLOCK \"Probe\"\nTITLE = 'Probe'\n"
     "{ S7_Optimized_Access := 'TRUE' }\nVERSION : 0.1\n"
@@ -79,6 +89,15 @@ def test_scan_block_reads_unquoted_db_and_udt_names() -> None:
     assert udt is not None and (udt.kind, udt.name) == ("TYPE", "typeProbe")
 
 
+def test_scan_block_picks_udt_name_not_inline_struct_member(tmp_path: Path) -> None:
+    # Regression: a UDT whose STRUCT holds an inline `Struct` member used to
+    # be picked up as if `cfg` (the member) were the UDT's own name.
+    header = scan_block(UDT_WITH_INLINE_STRUCT)
+    assert header is not None
+    assert (header.kind, header.name) == ("TYPE", "typeAxis")
+    assert check_text(tmp_path / "typeAxis.s7dcl", UDT_WITH_INLINE_STRUCT) == []
+
+
 def test_clean_fb_db_udt_have_no_text_findings(tmp_path: Path) -> None:
     for name, text in (("Probe.s7dcl", FB), ("Probe.s7dcl", DB), ("typeProbe.s7dcl", UDT)):
         assert check_text(tmp_path / name, text) == []
@@ -92,6 +111,14 @@ def test_external_source_form_is_f010_only(tmp_path: Path) -> None:
 def test_two_blocks_in_one_file_is_f011(tmp_path: Path) -> None:
     findings = check_text(tmp_path / "Probe.s7dcl", FB + FB)
     assert "F011" in [f.code for f in findings]
+
+
+def test_f011_ignores_block_keyword_in_block_comment(tmp_path: Path) -> None:
+    # A change-history note quoting a block keyword must not read as a
+    # second block.
+    text = FB.replace("NETWORK", "(* history:\nDATA_BLOCK was here\n*)\n    NETWORK")
+    findings = check_text(tmp_path / "Probe.s7dcl", text)
+    assert "F011" not in [f.code for f in findings]
 
 
 def test_file_stem_must_match_block_name(tmp_path: Path) -> None:
@@ -128,7 +155,9 @@ def test_f010_ignores_s7_optimized_access_in_line_comment(tmp_path: Path) -> Non
 
 
 def test_f010_ignores_begin_in_block_comment(tmp_path: Path) -> None:
-    text = FB.replace("NETWORK", "(* TODO: BEGIN here to split blocks *)\n    NETWORK")
+    # A standalone `BEGIN` line (what _BEGIN_RE actually matches) inside a
+    # block comment, not `BEGIN` as a word mid-sentence.
+    text = FB.replace("NETWORK", "(* history:\nBEGIN\n*)\n    NETWORK")
     findings = check_text(tmp_path / "Probe.s7dcl", text)
     codes = [f.code for f in findings]
     assert "F010" not in codes
@@ -139,15 +168,26 @@ def test_f010_detects_real_external_source(tmp_path: Path) -> None:
     assert [f.code for f in findings] == ["F010"]
 
 
-def test_scan_block_ignores_struct_in_pragma_string(tmp_path: Path) -> None:
+def test_scan_block_ignores_struct_name_in_block_comment(tmp_path: Path) -> None:
+    # A `name : STRUCT` line standing alone inside a `(* ... *)` comment,
+    # between the TYPE keyword and the UDT's real STRUCT line, must not be
+    # picked up as the UDT name.
     text = (
-        '{\n    S7_Optimized := "TRUE";\n    s7_note := "see x : STRUCT in spec";\n'
-        '    S7_Version := "0.1"\n}\nTYPE\n    typeProbe : STRUCT\n'
-        "        a : Int;\n    END_STRUCT;\nEND_TYPE\n"
+        "TYPE\n    (* fakeUdt : STRUCT\n       old name, see history\n    *)\n"
+        "    typeProbe : STRUCT\n        a : Int;\n    END_STRUCT;\nEND_TYPE\n"
     )
     header = scan_block(text)
     assert header is not None
     assert (header.kind, header.name) == ("TYPE", "typeProbe")
+
+
+def test_strip_comments_and_strings_keeps_newline_count() -> None:
+    text = (
+        '{\n    S7_Optimized := "TRUE";\n}\n(* multi\n    line\n    comment *)\n'
+        'FUNCTION_BLOCK "Probe"\nEND_FUNCTION_BLOCK\n'
+    )
+    stripped = _strip_comments_and_strings(text)
+    assert stripped.count("\n") == text.count("\n")
 
 
 TAGS = (

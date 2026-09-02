@@ -356,32 +356,42 @@ def check_format(output_format: str, path: Path) -> None:
     """
     from plc_code.formatcheck import check_path
 
-    report = check_path(path)
-    if output_format == "json":
-        payload = {
-            "files": report.files,
-            "errors": report.errors,
-            "warnings": report.warnings,
-            "findings": [
-                {
-                    "path": str(f.path),
-                    "line": f.line,
-                    "code": f.code,
-                    "severity": f.severity,
-                    "message": f.message,
-                }
-                for f in report.findings
-            ],
-        }
-        print(json.dumps(payload, indent=2))
-    else:
-        for f in report.findings:
-            where = f"{f.path}:{f.line}" if f.line is not None else str(f.path)
-            colour = "red" if f.severity == "ERROR" else "yellow"
-            console.print(f"{escape(where)}: [{colour}]{f.code} {f.severity}[/{colour}] {escape(f.message)}")
-        plural = "file" if report.files == 1 else "files"
-        console.print(f"{report.files} {plural} checked, {report.errors} errors, {report.warnings} warnings")
-    raise SystemExit(0 if report.passed else 1)
+    try:
+        report = check_path(path)
+        if output_format == "json":
+            payload = {
+                "files": report.files,
+                "errors": report.errors,
+                "warnings": report.warnings,
+                "findings": [
+                    {
+                        "path": str(f.path),
+                        "line": f.line,
+                        "code": f.code,
+                        "severity": f.severity,
+                        "message": f.message,
+                    }
+                    for f in report.findings
+                ],
+            }
+            print(json.dumps(payload, indent=2))
+        else:
+            for f in report.findings:
+                where = f"{f.path}:{f.line}" if f.line is not None else str(f.path)
+                colour = "red" if f.severity == "ERROR" else "yellow"
+                console.print(
+                    f"{escape(where)}: [{colour}]{f.code} {f.severity}[/{colour}] {escape(f.message)}"
+                )
+            plural = "file" if report.files == 1 else "files"
+            console.print(
+                f"{report.files} {plural} checked, {report.errors} errors, {report.warnings} warnings"
+            )
+        raise SystemExit(0 if report.passed else 1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        console_err.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1) from e
 
 
 @code_group.command(name="layout")

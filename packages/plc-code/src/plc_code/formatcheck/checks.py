@@ -103,7 +103,12 @@ _BLOCK_RE = re.compile(
     r"^\s*(FUNCTION_BLOCK|FUNCTION|ORGANIZATION_BLOCK|DATA_BLOCK|TYPE)\b\s*(?:\"([^\"]+)\"|([A-Za-z_][\w]*))?",
     re.MULTILINE,
 )
-_UDT_NAME_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*:\s*STRUCT\b", re.MULTILINE | re.IGNORECASE)
+# Case-sensitive: TIA always writes the block/UDT keywords exactly as shown here
+# (upper-case STRUCT for the "name : STRUCT" line that opens a UDT). An inline
+# Struct *member* is written "Struct" (mixed case) by TIA and must never match
+# this regex — that mismatch is what previously let a member's ": Struct" line
+# be picked up as if it were the UDT's own "name : STRUCT" line.
+_UDT_NAME_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*:\s*STRUCT\b", re.MULTILINE)
 _PRAGMA_ITEM_RE = re.compile(r"(S7_\w+)\s*:=\s*\"([^\"]*)\"")
 _S7_OPTIMIZED_ACCESS_RE = re.compile(r"S7_Optimized_Access")
 _TITLE_RE = re.compile(r"^\s*TITLE\s*=", re.MULTILINE)
@@ -121,7 +126,10 @@ def _strip_comments_and_strings(text: str) -> str:
     - Line comments: // to end of line
     - Block comments: (* ... *)
 
-    Replaces each removed section with spaces to preserve line numbers.
+    Replaces each removed section with spaces to preserve line numbers and
+    column positions; any ``"\\n"`` inside a removed span is kept as-is (not
+    blanked), so the line count of the result always matches the input's,
+    even across a multi-line block comment or an unterminated string.
 
     Parameters
     ----------
@@ -131,8 +139,12 @@ def _strip_comments_and_strings(text: str) -> str:
     Returns
     -------
     str
-        Text with comments and strings replaced by spaces.
+        Text with comments and strings replaced by spaces (newlines kept).
     """
+
+    def _blank(span: str) -> str:
+        return "".join(c if c == "\n" else " " for c in span)
+
     result: list[str] = []
     i = 0
     while i < len(text):
@@ -145,7 +157,7 @@ def _strip_comments_and_strings(text: str) -> str:
                     i += 1
                     break
                 i += 1
-            result.append(" " * (i - start))
+            result.append(_blank(text[start:i]))
         # Check for double-quoted string
         elif text[i] == '"':
             start = i
@@ -155,13 +167,13 @@ def _strip_comments_and_strings(text: str) -> str:
                     i += 1
                     break
                 i += 1
-            result.append(" " * (i - start))
+            result.append(_blank(text[start:i]))
         # Check for line comment
         elif i + 1 < len(text) and text[i : i + 2] == "//":
             start = i
             while i < len(text) and text[i] != "\n":
                 i += 1
-            result.append(" " * (i - start))
+            result.append(_blank(text[start:i]))
         # Check for block comment
         elif i + 1 < len(text) and text[i : i + 2] == "(*":
             start = i
@@ -174,7 +186,7 @@ def _strip_comments_and_strings(text: str) -> str:
             else:
                 # Unclosed block comment, consume to end
                 i = len(text)
-            result.append(" " * (i - start))
+            result.append(_blank(text[start:i]))
         else:
             result.append(text[i])
             i += 1
@@ -203,11 +215,43 @@ class BlockHeader:
     line: int
 
 
+def _iter_block_matches(text: str, stripped: str) -> list[re.Match[str]]:
+    """``_BLOCK_RE`` matches whose keyword is real code, not comment/string text.
+
+    Matches (and their quoted-name capture, when present) are taken from
+    ``text`` — stripping blanks the quote characters themselves, which would
+    otherwise destroy a quoted block name like ``FUNCTION_BLOCK "Probe"``.
+    A match is kept only if its keyword (group 1) is unchanged at the same
+    position in ``stripped``: a keyword inside a ``(* ... *)`` comment (or a
+    string) is replaced by spaces there, so the comparison excludes it.
+
+    Parameters
+    ----------
+    text : str
+        Raw file text.
+    stripped : str
+        ``text`` with comments and strings blanked (``_strip_comments_and_strings``);
+        same length and newline positions as ``text``.
+
+    Returns
+    -------
+    list[re.Match[str]]
+        Matches whose keyword is not inside a comment or string, in order.
+    """
+    return [m for m in _BLOCK_RE.finditer(text) if stripped[m.start(1) : m.end(1)] == m.group(1)]
+
+
 def scan_block(text: str) -> BlockHeader | None:
     """Locate the first block keyword, its name and the pragma that precedes it.
 
     A regex scan, not the parser: a file that does not parse still gets its
     format verdict. ``TYPE`` names sit inside the block (``name : STRUCT``).
+
+    The block keyword and the UDT name are matched with comments and strings
+    blanked out first, so a keyword or ``name : STRUCT`` line written inside a
+    ``(* ... *)`` comment is never mistaken for a real one. A quoted block name
+    (e.g. ``FUNCTION_BLOCK "Probe"``) is still read from the raw text, since
+    stripping blanks the quote characters themselves.
 
     Parameters
     ----------
@@ -219,15 +263,25 @@ def scan_block(text: str) -> BlockHeader | None:
     BlockHeader | None
         Header information for the first block, or None if no block found.
     """
-    match = _BLOCK_RE.search(text)
-    if match is None:
+    stripped = _strip_comments_and_strings(text)
+    blocks = _iter_block_matches(text, stripped)
+    if not blocks:
         return None
+    match = blocks[0]
     kind = match.group(1)
     name = match.group(2) or match.group(3) or ""
     if kind == "TYPE":
-        # Find first UDT name (name : STRUCT) after the TYPE keyword
-        for m in _UDT_NAME_RE.finditer(text):
-            if m.start() > match.end():
+        # First UDT name (name : STRUCT) at or after the TYPE keyword. Using
+        # match.start() (not match.end()) matters: when _BLOCK_RE already
+        # captured the name itself (the common unquoted case), match.end()
+        # sits mid-line, after the name and before " : STRUCT" — a `>` guard
+        # against match.end() then skips that very line (its `^\s*` start is
+        # to the left of match.end()) and falls through to the first inline
+        # `member : Struct` line instead, which is a false match. UDT/member
+        # names are always bare identifiers (never quoted), so matching
+        # directly against the stripped text is safe here.
+        for m in _UDT_NAME_RE.finditer(stripped):
+            if m.start() >= match.start():
                 name = m.group(1)
                 break
     pragma = dict(_PRAGMA_ITEM_RE.findall(text[: match.start()]))
@@ -309,7 +363,10 @@ def check_text(path: Path, text: str) -> list[Finding]:
             )
         ]
     findings: list[Finding] = []
-    blocks = list(_BLOCK_RE.finditer(text))
+    # Comments and strings blanked first so a block keyword written inside a
+    # `(* ... *)` comment (e.g. change history) is never counted as a second
+    # block; see _iter_block_matches.
+    blocks = _iter_block_matches(text, _strip_comments_and_strings(text))
     if len(blocks) > 1:
         line = text.count("\n", 0, blocks[1].start()) + 1
         msg = f"{len(blocks)} blocks in one file; TIA writes one block per file"

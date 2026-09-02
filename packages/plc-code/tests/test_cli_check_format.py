@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 from s7dcl_helpers import write_s7dcl
 from test_formatcheck_checks import FB
@@ -47,3 +48,15 @@ def test_text_output_escapes_rich_markup(tmp_path: Path) -> None:
     result = CliRunner().invoke(cli, ["check-format", str(tmp_path)])
     assert result.exit_code == 1
     assert "Pro[be]" in result.output
+
+
+def test_unexpected_error_is_reported_and_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_s7dcl(tmp_path, "Probe.s7dcl", FB)
+
+    def _boom(path: Path) -> None:
+        raise RuntimeError("disk exploded")
+
+    monkeypatch.setattr("plc_code.formatcheck.check_path", _boom)
+    result = CliRunner().invoke(cli, ["check-format", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "disk exploded" in result.output
