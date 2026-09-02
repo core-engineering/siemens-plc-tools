@@ -40,3 +40,10 @@ def test_json_output_is_parseable(tmp_path: Path) -> None:
     assert payload["files"] == 1 and payload["errors"] == 1 and payload["warnings"] == 0
     assert payload["findings"][0]["code"] == "F001"
     assert payload["findings"][0]["line"] is None
+
+
+def test_text_output_escapes_rich_markup(tmp_path: Path) -> None:
+    write_s7dcl(tmp_path, "Pro[be].s7dcl", FB)
+    result = CliRunner().invoke(cli, ["check-format", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "Pro[be]" in result.output

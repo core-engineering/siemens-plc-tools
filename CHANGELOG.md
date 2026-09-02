@@ -8,10 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **plc-code (CLI)** — `plc code check-format PATH`: import-readiness check of
-  SIMATIC SD files (UTF-8 BOM, CRLF, one block per file named like the block,
-  expected header attributes per block kind, well-formed tag tables). Codes
-  F001–F031, `--format json`, exit 1 on error. Independent of the style rules
-  of `lint`.
+  SIMATIC SD files (UTF-8 BOM and CRLF on every file, `.s7dcl` and tag-table
+  `.xml` alike, one block per file named like the block, expected header
+  attributes per block kind, well-formed tag tables). Codes F001–F031,
+  `--format json`, exit 1 on error. Independent of the style rules of `lint`.
 
 ## [0.4.0] - 2026-08-24
 

@@ -43,7 +43,7 @@ See [`examples/demo-project/`](examples/demo-project/) for a runnable example:
 ```bash
 cd examples/demo-project
 plc code lint
-plc code check-format "PLC_1"     # BOM, CRLF, one block per file, header attributes, tag tables
+plc code check-format "PLC_1"     # UTF-8 BOM and CRLF on every file (.s7dcl and tag-table .xml alike), one block per file, header attributes, well-formed tag tables
 plc code docs
 plc code test --coverage         # block tests + SCL line coverage
 plc code diff old-export/ new-export/   # semantic diff, formatting-blind

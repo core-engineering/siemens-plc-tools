@@ -20,6 +20,7 @@ from typing import Any
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from plc_code import __version__
 from plc_code.docmap.loader import load_docmap
@@ -377,7 +378,7 @@ def check_format(output_format: str, path: Path) -> None:
         for f in report.findings:
             where = f"{f.path}:{f.line}" if f.line is not None else str(f.path)
             colour = "red" if f.severity == "ERROR" else "yellow"
-            console.print(f"{where}: [{colour}]{f.code} {f.severity}[/{colour}] {f.message}")
+            console.print(f"{escape(where)}: [{colour}]{f.code} {f.severity}[/{colour}] {escape(f.message)}")
         plural = "file" if report.files == 1 else "files"
         console.print(f"{report.files} {plural} checked, {report.errors} errors, {report.warnings} warnings")
     raise SystemExit(0 if report.passed else 1)
