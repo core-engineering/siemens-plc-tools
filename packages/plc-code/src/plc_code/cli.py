@@ -406,7 +406,7 @@ def layout(type_dirs: tuple[Path, ...], output_format: str, force: bool, path: P
     """
     import csv
 
-    from plc_code.layout import OptimizedBlockError, TypeRegistry, UnknownTypeError, compute_layout
+    from plc_code.layout import TypeRegistry, UnknownTypeError, compute_layout
     from plc_code.parser import ParseError, parse_scl_file
 
     registry = TypeRegistry.from_directories(*type_dirs)
@@ -418,14 +418,14 @@ def layout(type_dirs: tuple[Path, ...], output_format: str, force: bool, path: P
         result = compute_layout(block, registry, force=force)
     except UnknownTypeError as exc:
         if exc.name == block.base_type:
-            console_err.print(
-                f"[red]Error:[/red] {escape(exc.name)!r} is not a user data type: "
-                "an instance DB has no standard layout from source"
+            message = (
+                f"'{exc.name}' is not a user data type: an instance DB has no standard layout from source"
             )
         else:
-            console_err.print(f"[red]Error:[/red] {escape(str(exc))}")
+            message = str(exc)
+        console_err.print(f"[red]Error:[/red] {escape(message)}")
         raise SystemExit(1) from None
-    except (OptimizedBlockError, ParseError, ValueError) as exc:
+    except (ParseError, ValueError) as exc:
         console_err.print(f"[red]Error:[/red] {escape(str(exc))}")
         raise SystemExit(1) from None
 
@@ -449,15 +449,16 @@ def layout(type_dirs: tuple[Path, ...], output_format: str, force: bool, path: P
     else:
         from rich.table import Table
 
-        title = f"{result.block} ({'optimized, not guaranteed' if result.optimized else 'standard access'})"
+        access = "optimized, not guaranteed" if result.optimized else "standard access"
+        title = f"{escape(result.block)} ({access})"
         table = Table(title=title)
         for column in ("Path", "Type", "Offset", "Size"):
             table.add_column(column)
         for m in result.members:
             size = f"{m.size_bits} bit" if m.is_leaf and m.size_bytes == 0 else f"{m.size_bytes}"
             table.add_row(
-                m.path,
-                m.data_type,
+                escape(m.path),
+                escape(m.data_type),
                 f"{m.byte_offset}.{m.bit_offset}",
                 size,
                 style=None if m.is_leaf else "dim",

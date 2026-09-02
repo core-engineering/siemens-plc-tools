@@ -96,3 +96,12 @@ def test_registry_problems_are_warned_and_do_not_block(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "Warning: skipped" in result.output
     assert "Broken.s7dcl" in result.output
+
+
+def test_table_output_escapes_rich_markup(tmp_path: Path) -> None:
+    body = "DATA_BLOCK Zoo\n    VAR\n        x : Array[0..1] of Int;\n    END_VAR\nEND_DATA_BLOCK\n"
+    db = write_s7dcl(tmp_path, "Zoo.s7dcl", STD + body)
+    result = CliRunner().invoke(cli, ["layout", str(db)])
+    assert result.exit_code == 0, result.output
+    assert "x[0]" in result.output
+    assert "x[1]" in result.output
