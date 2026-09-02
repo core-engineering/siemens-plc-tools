@@ -132,6 +132,16 @@ def test_fb_without_editor_mode_is_f020(tmp_path: Path) -> None:
     assert [f.code for f in check_text(tmp_path / "Probe.s7dcl", text)] == ["F020"]
 
 
+def test_lad_block_with_preferred_language_is_not_f020(tmp_path: Path) -> None:
+    # LAD/FBD (and safety) blocks carry S7_PreferredLanguage, never
+    # S7_EditorMode; F020 must accept either.
+    text = FB.replace(
+        '    S7_EditorMode := "SCL";\n',
+        '    S7_PreferredLanguage := "LAD";\n    S7_Safety := "TRUE";\n',
+    )
+    assert check_text(tmp_path / "Probe.s7dcl", text) == []
+
+
 def test_db_without_standard_retain_is_f020(tmp_path: Path) -> None:
     text = DB.replace('    S7_StandardRetain := "FALSE";\n', "")
     assert [f.code for f in check_text(tmp_path / "Probe.s7dcl", text)] == ["F020"]

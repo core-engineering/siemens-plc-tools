@@ -377,8 +377,15 @@ def check_text(path: Path, text: str) -> list[Finding]:
     if header.name and header.name != path.stem:
         msg = f"block '{header.name}' in a file named '{path.stem}'"
         findings.append(Finding(path, header.line, "F012", "ERROR", msg))
-    if header.kind in CODE_KINDS and "S7_EditorMode" not in header.pragma:
-        msg = f"{header.kind} header lacks S7_EditorMode"
+    if (
+        header.kind in CODE_KINDS
+        and "S7_EditorMode" not in header.pragma
+        and "S7_PreferredLanguage" not in header.pragma
+    ):
+        # SCL blocks carry S7_EditorMode; LAD/FBD blocks (including safety
+        # ones, which add S7_Safety) carry S7_PreferredLanguage instead and
+        # never S7_EditorMode. Either one satisfies the header.
+        msg = f"{header.kind} header lacks S7_EditorMode (SCL) or S7_PreferredLanguage (LAD/FBD)"
         findings.append(Finding(path, header.line, "F020", "ERROR", msg))
     if header.kind == "DATA_BLOCK" and "S7_StandardRetain" not in header.pragma:
         msg = "DATA_BLOCK header lacks S7_StandardRetain"
