@@ -121,6 +121,14 @@ def diff_blocks(old: Block, new: Block) -> BlockDiff:
         diff.notes.append(f"return type: {old.return_type} -> {new.return_type}")
     if old.base_type != new.base_type:
         diff.notes.append(f"base type: {old.base_type} -> {new.base_type}")
+    for path, value in old.initial_values.items():
+        if path not in new.initial_values:
+            diff.notes.append(f"start value {path} removed")
+        elif new.initial_values[path] != value:
+            diff.notes.append(f"start value {path}: {value} -> {new.initial_values[path]}")
+    for path in new.initial_values:
+        if path not in old.initial_values:
+            diff.notes.append(f"start value {path} added")
     diff.interface = _diff_interface(old, new, diff.parse_problems)
     diff.statements = _diff_bodies(old, new, diff.parse_problems)
     if not diff.is_change and _opaque(old) and _opaque(new) and _raw_differs(old, new):
@@ -133,8 +141,10 @@ def diff_blocks(old: Block, new: Block) -> BlockDiff:
 
 def _opaque(block: Block) -> bool:
     """A block the parser exposes no members or code for (an instance DB, some TYPEs)."""
-    has_members = any(section.variables for section in block.variable_sections) or (
-        block.user_data_type is not None and block.user_data_type.fields
+    has_members = (
+        any(section.variables for section in block.variable_sections)
+        or (block.user_data_type is not None and bool(block.user_data_type.fields))
+        or bool(block.initial_values)
     )
     has_code = any(network.tokens or network.regions or network.ladder_elements for network in block.networks)
     return block.block_type in ("TYPE", "DATA_BLOCK") and not has_members and not has_code
