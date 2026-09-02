@@ -182,3 +182,20 @@ def test_xml_outside_plc_tags_that_is_not_a_tag_table_is_f031(tmp_path: Path) ->
 
 def test_tag_table_outside_plc_tags_is_fine(tmp_path: Path) -> None:
     assert check_xml(tmp_path / "other" / "Probe.xml", TAGS) == []
+
+
+def test_tag_table_outside_plc_tags_without_version_is_f030(tmp_path: Path) -> None:
+    text = TAGS.replace('  <Engineering version="V21" />\n', "")
+    assert [f.code for f in check_xml(tmp_path / "other" / "Probe.xml", text)] == ["F030"]
+
+
+def test_non_tag_table_under_plc_tags_with_version_is_f030(tmp_path: Path) -> None:
+    text = '<Document><Engineering version="V21" /><Other/></Document>'
+    findings = check_xml(tmp_path / "PLC tags" / "Probe.xml", text)
+    assert [f.code for f in findings] == ["F030"]
+    assert "SW.Tags.PlcTagTable" in findings[0].message
+
+
+def test_malformed_xml_outside_plc_tags_is_f031_warning(tmp_path: Path) -> None:
+    findings = check_xml(tmp_path / "other" / "Probe.xml", "<Document><Engineering")
+    assert [(f.code, f.severity) for f in findings] == [("F031", "WARNING")]
