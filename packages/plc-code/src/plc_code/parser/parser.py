@@ -382,8 +382,10 @@ class SCLParser:
         Returns
         -------
         tuple[str, str]
-            The path joined as written (e.g. ``axes[1].absKind``) and its literal
-            value; both empty when the line has no ``:=`` (a malformed or empty line).
+            The path joined as written (e.g. ``axes[1].absKind``), with each
+            quoted segment (``"Motor".speed``) unquoted per-token rather than on
+            the joined string; and its literal value. Both empty when the line
+            has no ``:=`` (a malformed or empty line).
         """
         parts: list[str] = []
         while self._current().type not in (
@@ -392,9 +394,10 @@ class SCLParser:
             TokenType.NEWLINE,
             TokenType.EOF,
         ):
-            parts.append(self._current().value)
+            token = self._current()
+            parts.append(token.value.strip('"') if token.type == TokenType.STRING else token.value)
             self._advance()
-        path = "".join(parts).strip('"')
+        path = "".join(parts)
         if self._current().type != TokenType.ASSIGN:
             return "", ""
         self._advance()
@@ -409,6 +412,10 @@ class SCLParser:
 
         Re-spaces the way TIA writes them (``[1, 2, 3]``, ``-45.0``): every token's
         raw value is concatenated as-is except a comma, which gets a trailing space.
+        Comments (``// ...`` and ``(* ... *)``) are dropped rather than ending the
+        literal. Bracket depth is tracked so a newline inside an array literal (a
+        multi-line ``[1, 2,\\n    3, 4]``) is skipped instead of ending the value;
+        a newline at depth 0 still ends it, same as before.
 
         Returns
         -------
@@ -416,12 +423,24 @@ class SCLParser:
             The literal exactly as it would read in the source.
         """
         parts: list[str] = []
-        while self._current().type not in (TokenType.SEMICOLON, TokenType.NEWLINE, TokenType.EOF):
+        depth = 0
+        while True:
             token = self._current()
-            if token.type == TokenType.COMMA:
-                parts.append(", ")
-            else:
-                parts.append(token.value)
+            if token.type in (TokenType.SEMICOLON, TokenType.EOF):
+                break
+            if token.type == TokenType.NEWLINE:
+                if depth == 0:
+                    break
+                self._advance()
+                continue
+            if token.type in (TokenType.COMMENT, TokenType.BLOCK_COMMENT):
+                self._advance()
+                continue
+            if token.type == TokenType.LBRACKET:
+                depth += 1
+            elif token.type == TokenType.RBRACKET:
+                depth -= 1
+            parts.append(", " if token.type == TokenType.COMMA else token.value)
             self._advance()
         return "".join(parts).strip()
 

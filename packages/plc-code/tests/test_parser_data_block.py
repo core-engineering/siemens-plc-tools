@@ -38,6 +38,15 @@ TYPED = HEADER + (
 
 INSTANCE = HEADER + "DATA_BLOCK ProbeInstance : Probe\nEND_DATA_BLOCK\n"
 
+EDGE_CASES = HEADER + (
+    "DATA_BLOCK ProbeEdgeCases : typeProbeParameter\n"
+    "    count := 3 (* initial *);\n"
+    "    flag := 1; // trailing note\n"
+    "    hist := [1, 2,\n        3, 4];\n"
+    '    "Motor".speed := 1;\n'
+    "END_DATA_BLOCK\n"
+)
+
 
 def _parse(tmp_path: Path, name: str, text: str):
     return parse_scl_file(write_s7dcl(tmp_path, name, text))
@@ -91,3 +100,19 @@ def test_typed_db_initial_values_in_source_order(tmp_path: Path) -> None:
 def test_instance_db_has_base_type_and_nothing_else(tmp_path: Path) -> None:
     block = _parse(tmp_path, "ProbeInstance.s7dcl", INSTANCE)
     assert block.base_type == "Probe" and block.initial_values == {} and block.variable_sections == []
+
+
+def test_a_comment_inside_a_start_value_is_dropped(tmp_path: Path) -> None:
+    block = _parse(tmp_path, "ProbeEdgeCases.s7dcl", EDGE_CASES)
+    assert block.initial_values["count"] == "3"
+    assert block.initial_values["flag"] == "1"
+
+
+def test_a_multi_line_array_literal_is_joined_on_one_line(tmp_path: Path) -> None:
+    block = _parse(tmp_path, "ProbeEdgeCases.s7dcl", EDGE_CASES)
+    assert block.initial_values["hist"] == "[1, 2, 3, 4]"
+
+
+def test_a_quoted_path_segment_is_unquoted_in_the_key(tmp_path: Path) -> None:
+    block = _parse(tmp_path, "ProbeEdgeCases.s7dcl", EDGE_CASES)
+    assert block.initial_values["Motor.speed"] == "1"
