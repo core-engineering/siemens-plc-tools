@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from plc_code.formatcheck.checks import Finding, check_bytes, check_text, check_xml
+from plc_code.formatcheck.safety_grammar import check_s7res_pair, check_safety_grammar
 
 PATTERNS = ("**/*.s7dcl", "**/*.xml")
 
@@ -66,7 +67,17 @@ def check_file(path: Path) -> list[Finding]:
     text = data.decode("utf-8-sig")
     if path.suffix.lower() == ".xml":
         return findings + check_xml(path, text)
-    return findings + check_text(path, text)
+    # Les regles S0xx viennent d'imports reels en TIA V21 : elles refusent ce que l'importeur refuse,
+    # message a l'appui (voir safety_grammar.py). Le compagnon .s7res est lu ici parce qu'un MLCID
+    # n'a de sens qu'en paire — un identifiant sans texte s'affiche nu dans l'editeur.
+    res_path = path.with_suffix(".s7res")
+    res_text = res_path.read_text(encoding="utf-8-sig") if res_path.is_file() else None
+    return (
+        findings
+        + check_text(path, text)
+        + check_safety_grammar(path, text)
+        + check_s7res_pair(path, text, res_text)
+    )
 
 
 def check_path(path: Path) -> Report:
