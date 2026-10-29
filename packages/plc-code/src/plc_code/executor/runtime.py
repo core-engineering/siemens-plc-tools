@@ -18,20 +18,25 @@ from typing import Any
 from plc_code.executor.models import python_identifier
 from plc_code.parser.models import BlockType
 
-# Matches a scalar constant declaration inside a DATA_BLOCK VAR section:
-#   NAME : Type := value;
-_DB_CONST_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*:\s*\w+\s*:=\s*([^;]+);", re.MULTILINE)
+# An array member type with one dimension: ``Array[lo..hi] of Type``.
+_DB_ARRAY_TYPE_RE = re.compile(r"^Array\[\s*(-?\d+)\s*\.\.\s*(-?\d+)\s*\]\s*of\s+(\w+)$", re.IGNORECASE)
 
-# Matches an array member declaration with bounds:
-#   NAME : Array[lo..hi] of Type;
-_DB_ARRAY_DECL_RE = re.compile(
-    r"^\s*([A-Za-z_]\w*)\s*:\s*Array\[\s*(-?\d+)\s*\.\.\s*(-?\d+)\s*\]\s*of\s+\w+\s*;",
-    re.MULTILINE | re.IGNORECASE,
-)
+# One segment of a start-value path: ``NAME`` or ``NAME[idx]``.
+_DB_PATH_SEGMENT_RE = re.compile(r"^(\w+)(?:\[\s*(-?\d+)\s*\])?$")
 
-# Matches an array element initialiser:
-#   NAME[idx] := value;
-_DB_ARRAY_ELEM_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*\[\s*(-?\d+)\s*\]\s*:=\s*([^;]+);", re.MULTILINE)
+# Zero value of the elementary types a DB member starts from when it has no start value.
+_DB_ZERO_BY_TYPE: dict[str, Any] = {
+    **dict.fromkeys(("bool",), False),
+    **dict.fromkeys(("real", "lreal"), 0.0),
+    **dict.fromkeys(("string", "wstring", "char", "wchar"), ""),
+    **dict.fromkeys(
+        (
+            "byte", "word", "dword", "lword",
+            "sint", "int", "dint", "lint", "usint", "uint", "udint", "ulint",
+        ),
+        0,
+    ),
+}  # fmt: skip
 
 
 def _convert_db_literal(raw: str) -> Any:
@@ -52,14 +57,60 @@ def _convert_db_literal(raw: str) -> Any:
         return value.strip('"')
 
 
+def _db_zero_value(data_type: str) -> Any:
+    """Start value of a member declared without one, or ``None`` for a type with no model here."""
+    data_type = data_type.strip()
+    array = _DB_ARRAY_TYPE_RE.match(data_type)
+    if array:
+        element = _db_zero_value(array.group(3))
+        return None if element is None else [element] * (int(array.group(2)) + 1)
+    if data_type.lower() == "struct":
+        return SimpleNamespace()
+    return _DB_ZERO_BY_TYPE.get(data_type.lower())
+
+
+def _db_set_path(root: SimpleNamespace, path: str, value: Any) -> None:
+    """Write ``value`` at a start-value path (``A``, ``A[3]``, ``S.A``, ``S.A[3]``).
+
+    Missing structs and arrays are created on the way. A path outside that shape
+    (multi-dimensional index, array of structs) is left unset, so a read of that
+    member fails at its point of use instead of returning a made-up value.
+    """
+    segments = [_DB_PATH_SEGMENT_RE.match(part.strip()) for part in path.split(".")]
+    if any(seg is None for seg in segments) or any(seg.group(2) for seg in segments[:-1]):  # type: ignore[union-attr]
+        return
+    container = root
+    for seg in segments[:-1]:
+        name = seg.group(1)  # type: ignore[union-attr]
+        if not isinstance(getattr(container, name, None), SimpleNamespace):
+            setattr(container, name, SimpleNamespace())
+        container = getattr(container, name)
+    name, index = segments[-1].group(1), segments[-1].group(2)  # type: ignore[union-attr]
+    if index is None:
+        setattr(container, name, value)
+        return
+    array = getattr(container, name, None)
+    if not isinstance(array, list):
+        # Initialiser without a matching declaration: size to the max index seen.
+        array = []
+        setattr(container, name, array)
+    position = int(index)
+    if position >= len(array):
+        array.extend([0] * (position + 1 - len(array)))
+    array[position] = value
+
+
 def load_data_block(path: str | Path) -> SimpleNamespace:
     """Load a constant ``DATA_BLOCK`` ``.s7dcl`` file into an attribute namespace.
 
-    Each ``NAME : Type := value;`` scalar declaration in the block's ``VAR``
-    section becomes an attribute with its converted Python value. Array members
-    declared as ``NAME : Array[lo..hi] of Type;`` and filled by ``NAME[idx] :=
-    value;`` initialisers become a 0-based Python ``list`` (so that
-    ``"DbName".MEMBER`` and ``RD_ARRAY_DI`` can read them at execution time).
+    Every member declared in the block's ``VAR`` section becomes an attribute:
+    its declared default when it has one, else the zero of its type. An
+    ``Array[lo..hi] of Type`` member becomes a 0-based Python ``list`` of
+    ``hi + 1`` elements, and an inline ``Struct`` a nested namespace (so that
+    ``"DbName".MEMBER``, ``"DbName".S.MEMBER`` and ``RD_ARRAY_DI`` can read them
+    at execution time). The start values written after ``END_VAR``
+    (``MEMBER := value;``, ``MEMBER[idx] := value;``, ``S.MEMBER := value;``),
+    the form TIA exports, are then applied over those defaults.
 
     Parameters
     ----------
@@ -69,27 +120,25 @@ def load_data_block(path: str | Path) -> SimpleNamespace:
     Returns
     -------
     SimpleNamespace
-        Namespace exposing each scalar constant and array member as an attribute.
+        Namespace exposing each member as an attribute.
     """
-    text = Path(path).read_text(encoding="utf-8-sig")
-    members: dict[str, Any] = {name: _convert_db_literal(raw) for name, raw in _DB_CONST_RE.findall(text)}
+    from plc_code.parser import parse_scl_file  # noqa: PLC0415
 
-    # Array members: the declaration gives the (0-based) size, the element
-    # initialisers give the values. Missing elements default to 0.
-    arrays: dict[str, list[Any]] = {}
-    for name, _lo, hi in _DB_ARRAY_DECL_RE.findall(text):
-        arrays[name] = [0] * (int(hi) + 1)
-    for name, idx, raw in _DB_ARRAY_ELEM_RE.findall(text):
-        index = int(idx)
-        if name not in arrays:
-            # Initialiser without a matching declaration: size to the max index seen.
-            arrays[name] = []
-        if index >= len(arrays[name]):
-            arrays[name].extend([0] * (index + 1 - len(arrays[name])))
-        arrays[name][index] = _convert_db_literal(raw)
-    members.update(arrays)
-
-    return SimpleNamespace(**members)
+    block = parse_scl_file(path)
+    root = SimpleNamespace()
+    for section in block.variable_sections:
+        for var in section.variables:
+            member = f"{var.parent}.{var.name}" if var.parent else var.name
+            if var.default_value is not None:
+                value = _convert_db_literal(var.default_value)
+            else:
+                value = _db_zero_value(var.data_type)
+                if value is None:
+                    continue
+            _db_set_path(root, member, value)
+    for member, raw in block.initial_values.items():
+        _db_set_path(root, member, _convert_db_literal(raw))
+    return root
 
 
 class _GlobalDBs(dict):

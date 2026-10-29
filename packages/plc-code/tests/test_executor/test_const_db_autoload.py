@@ -69,3 +69,14 @@ def test_unregistered_db_still_raises_keyerror() -> None:
     except KeyError:
         return
     raise AssertionError("expected KeyError for unknown DB")
+
+
+def test_load_data_block_applies_start_values_written_after_end_var() -> None:
+    """The exported form puts start values in the body; they override the declared defaults."""
+    db = load_data_block(FIXTURES_DIR / "dbBodyValues.s7dcl")
+    assert db.GAIN == 42
+    assert db.OFFSET == -3
+    assert db.ENABLED is True
+    assert db.RATIO == 0.0
+    assert (db.LIMITS.LOW, db.LIMITS.HIGH) == (-20, 10)
+    assert db.TABLE == [0, 0, 0, -7, 0]
