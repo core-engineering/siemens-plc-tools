@@ -37,6 +37,12 @@ class TestPackageImports:
         assert __version__ == WORKSPACE_VERSION
         assert code_group.name == "code"
 
+    def test_plc_code_web_app_reports_the_package_version(self) -> None:
+        """The OpenAPI page shows the version of the package that serves it."""
+        from plc_code.web.app import app
+
+        assert app.version == WORKSPACE_VERSION
+
     def test_plc_iol_import(self) -> None:
         """Test plc_iol package import."""
         from plc_iol import __version__
