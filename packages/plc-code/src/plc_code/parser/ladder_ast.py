@@ -3,8 +3,8 @@
 A block's networks are flattened into a single ordered `LadderProgram` of rungs
 and label markers. Each `Rung` has a boolean rail (AND of OR-terms over contacts;
 an empty rail means the power rail, always true) and a sequence of actions
-(coils, jumps, boxes, sub-block calls) gated by that rail (boxes execute
-unconditionally — see the interpreter).
+(coils, jumps, boxes, sub-block calls) gated by that rail: a coil takes its
+value, a jump fires when it is true, a box or call runs only when it is true (EN).
 """
 
 from __future__ import annotations

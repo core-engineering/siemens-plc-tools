@@ -44,10 +44,15 @@ class LadderInterpreter:
             rail = eval_rail(rung.rail, ctx)
             jumped = False
             for action in rung.actions:
+                # A box runs only when its EN conducts. The builder puts every contact of a
+                # rung ahead of its actions, so the whole rail is that EN. F-LAD forbids EN on
+                # Move, so there the rail is the power rail and the box always runs.
                 if isinstance(action, Box):
-                    run_box(action, ctx)
+                    if rail:
+                        run_box(action, ctx)
                 elif isinstance(action, CallBox):
-                    run_callbox(action, ctx)
+                    if rail:
+                        run_callbox(action, ctx)
                 elif isinstance(action, Coil):
                     ctx.write(action.operand, rail)
                 elif isinstance(action, JumpCoil):
