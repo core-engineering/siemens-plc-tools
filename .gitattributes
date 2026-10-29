@@ -1,0 +1,5 @@
+# SIMATIC SD sources are imported by TIA Portal byte for byte: UTF-8 BOM and CRLF
+# (see `plc code check-format`). Git must never convert their line endings, and
+# test fixtures that are LF or mixed on purpose must stay that way.
+*.s7dcl -text
+*.s7res -text

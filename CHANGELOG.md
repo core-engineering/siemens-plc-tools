@@ -50,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **plc-code (parser)** — `VAR RETAIN` / `VAR NON_RETAIN` sections parse; the
   qualifier was read as a member name and the whole file failed with
   `Expected COLON`.
+- **examples** — the demo blocks are UTF-8 with BOM and CRLF, as TIA writes them,
+  so `plc code check-format program-blocks` passes on the demo. A
+  `.gitattributes` keeps git from converting `.s7dcl` / `.s7res` line endings.
 
 ## [0.4.0] - 2026-08-24
 
