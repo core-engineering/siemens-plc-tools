@@ -48,6 +48,15 @@ def _run(coro: object) -> object:
     return asyncio.run(coro)  # type: ignore[arg-type]
 
 
+def _run_or_exit(coro: object) -> None:
+    """Run a command coroutine that returns whether it succeeded; exit 1 if it did not.
+
+    The message saying what failed is printed by the coroutine itself.
+    """
+    if not _run(coro):
+        raise SystemExit(1)
+
+
 # =============================================================================
 # CLI Group (Plugin for plc-tools)
 # =============================================================================
@@ -85,11 +94,12 @@ def connect(endpoint: str | None) -> None:
     console.print(f"[dim]Namespaces:[/dim] {', '.join(config.namespaces)}")
     console.print()
 
-    async def _connect() -> None:
+    async def _connect() -> bool:
         client = OpcUaClient(config.opcua)
         info = await client.connect()
+        connected = info.status == "connected"
 
-        if info.status == "connected":
+        if connected:
             console.print(f"[green]Connected[/green] to {info.endpoint}")
             console.print(f"  Server: {info.server_name}")
             console.print(f"  Session: {info.session_id}")
@@ -113,8 +123,9 @@ def connect(endpoint: str | None) -> None:
             console.print(f"[red]Connection failed:[/red] {info.error_message}")
 
         await client.disconnect()
+        return connected
 
-    _run(_connect())
+    _run_or_exit(_connect())
 
 
 # =============================================================================
@@ -140,13 +151,13 @@ def browse(node_id: str | None, depth: int, endpoint: str | None) -> None:
 
     config = _get_config(endpoint)
 
-    async def _browse() -> None:
+    async def _browse() -> bool:
         client = OpcUaClient(config.opcua)
         info = await client.connect()
 
         if info.status != "connected":
             console.print(f"[red]Connection failed:[/red] {info.error_message}")
-            return
+            return False
 
         try:
             tree = Tree(
@@ -161,8 +172,9 @@ def browse(node_id: str | None, depth: int, endpoint: str | None) -> None:
             console.print(tree)
         finally:
             await client.disconnect()
+        return True
 
-    _run(_browse())
+    _run_or_exit(_browse())
 
 
 async def _add_tree_node(
@@ -224,13 +236,13 @@ def read(node_id: str, endpoint: str | None) -> None:
 
     config = _get_config(endpoint)
 
-    async def _read() -> None:
+    async def _read() -> bool:
         client = OpcUaClient(config.opcua)
         info = await client.connect()
 
         if info.status != "connected":
             console.print(f"[red]Connection failed:[/red] {info.error_message}")
-            return
+            return False
 
         try:
             val = await client.read_value(node_id)
@@ -242,8 +254,9 @@ def read(node_id: str, endpoint: str | None) -> None:
                 console.print(f"  Timestamp: {val.source_timestamp}")
         finally:
             await client.disconnect()
+        return True
 
-    _run(_read())
+    _run_or_exit(_read())
 
 
 # =============================================================================
@@ -267,29 +280,33 @@ def write(node_id: str, value: str, data_type: str | None, endpoint: str | None)
 
     config = _get_config(endpoint)
 
-    async def _write() -> None:
+    async def _write() -> bool:
         client = OpcUaClient(config.opcua)
         info = await client.connect()
 
         if info.status != "connected":
             console.print(f"[red]Connection failed:[/red] {info.error_message}")
-            return
+            return False
 
         try:
             success = await client.write_value(node_id, value, data_type)
-            if success:
-                # Read back to confirm
-                val = await client.read_value(node_id)
-                console.print(
-                    f"[green]OK[/green] {val.display_name or node_id} = "
-                    f"[bold]{val.value}[/bold] ({val.data_type})"
-                )
+            if not success:
+                console.print(f"[red]Write failed:[/red] the server did not accept the value for {node_id}")
+                return False
+            # Read back to confirm
+            val = await client.read_value(node_id)
+            console.print(
+                f"[green]OK[/green] {val.display_name or node_id} = "
+                f"[bold]{val.value}[/bold] ({val.data_type})"
+            )
+            return True
         except Exception as e:
             console.print(f"[red]Write failed:[/red] {e}")
+            return False
         finally:
             await client.disconnect()
 
-    _run(_write())
+    _run_or_exit(_write())
 
 
 # =============================================================================
@@ -314,7 +331,7 @@ def monitor(node_ids: tuple[str, ...], interval: int, endpoint: str | None) -> N
     config = _get_config(endpoint)
     nids = list(node_ids)
 
-    async def _monitor() -> None:
+    async def _monitor() -> bool:
         from rich.live import Live
 
         client = OpcUaClient(config.opcua)
@@ -322,7 +339,7 @@ def monitor(node_ids: tuple[str, ...], interval: int, endpoint: str | None) -> N
 
         if info.status != "connected":
             console.print(f"[red]Connection failed:[/red] {info.error_message}")
-            return
+            return False
 
         console.print(
             f"[green]Monitoring {len(nids)} variable(s)[/green] " f"(interval: {interval}ms, Ctrl+C to stop)"
@@ -356,8 +373,9 @@ def monitor(node_ids: tuple[str, ...], interval: int, endpoint: str | None) -> N
             console.print("\n[dim]Monitoring stopped.[/dim]")
         finally:
             await client.disconnect()
+        return True
 
-    _run(_monitor())
+    _run_or_exit(_monitor())
 
 
 # =============================================================================

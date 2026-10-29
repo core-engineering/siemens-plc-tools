@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   exposes its complete field list; the old parser stopped at the first
   `END_STRUCT`, silently truncating any UDT with a nested Struct. This changes
   the generated docs, type graphs and `plc code diff` output for such UDTs.
+- **plc-sim (CLI)** — `plc sim connect`, `browse`, `read`, `write` and `monitor`
+  exit 1 when the connection fails, and `write` exits 1 when the write fails
+  or the server does not accept the value (that case used to print nothing).
+  They all used to exit 0 whatever happened, so a script could not tell.
 
 ### Fixed
 - **plc-code (executor, LAD)** — a box (`Move`, `Add`, ...) or a block call now

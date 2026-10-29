@@ -83,6 +83,8 @@ class FakeOpcUaClient:
     async def write_value(self, node_id: str, value: str, data_type: str | None) -> bool:
         if node_id == "broken":
             raise ValueError("type mismatch")
+        if node_id == "rejected":
+            return False
         self.values[node_id] = value
         return True
 
@@ -116,6 +118,7 @@ def test_connect_prints_server_namespaces_and_roots() -> None:
 def test_connect_reports_a_refused_connection() -> None:
     FakeOpcUaClient.refuse = True
     result = run("connect", "-e", ENDPOINT)
+    assert result.exit_code == 1
     assert "Connection failed: connection refused" in result.output
 
 
@@ -153,13 +156,23 @@ def test_write_reads_back_the_written_value() -> None:
 
 def test_write_reports_a_failed_write() -> None:
     result = run("write", "broken", "1", "-e", ENDPOINT)
+    assert result.exit_code == 1
     assert "Write failed: type mismatch" in result.output
 
 
-@pytest.mark.parametrize("command", [["browse"], ["read", "db.speed"], ["write", "db.speed", "1"]])
-def test_commands_report_a_refused_connection(command: list[str]) -> None:
+def test_write_reports_a_write_the_server_rejects() -> None:
+    result = run("write", "rejected", "1", "-e", ENDPOINT)
+    assert result.exit_code == 1
+    assert "Write failed" in result.output
+
+
+@pytest.mark.parametrize(
+    "command", [["browse"], ["read", "db.speed"], ["write", "db.speed", "1"], ["monitor", "db.speed"]]
+)
+def test_commands_report_a_refused_connection_with_exit_1(command: list[str]) -> None:
     FakeOpcUaClient.refuse = True
     result = run(*command, "-e", ENDPOINT)
+    assert result.exit_code == 1
     assert "Connection failed: connection refused" in result.output
 
 
