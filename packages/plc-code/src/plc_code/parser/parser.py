@@ -1226,18 +1226,21 @@ class SCLParser:
                 field_type = self._parse_data_type()
                 self._skip_newlines()
 
-                # Skip default value if present (e.g., := true)
+                # Default value, if present (e.g., := true), kept as written
+                default_value: str | None = None
                 if self._current().type == TokenType.ASSIGN:
                     self._advance()  # skip :=
                     self._skip_newlines()
-                    # Skip the default value expression until semicolon
+                    parts: list[str] = []
                     while self._current().type not in (
                         TokenType.SEMICOLON,
                         TokenType.END_STRUCT,
                         TokenType.EOF,
                     ):
+                        parts.append(self._current().value)
                         self._advance()
                         self._skip_newlines()
+                    default_value = "".join(parts)
 
                 if self._current().type == TokenType.SEMICOLON:
                     self._advance()
@@ -1247,6 +1250,7 @@ class SCLParser:
                     data_type=field_type,
                     mlc_id=pending_mlc,
                     parent=".".join(parents),
+                    default_value=default_value,
                 )
                 udt.fields.append(field)
                 pending_mlc = ""
