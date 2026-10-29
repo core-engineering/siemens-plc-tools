@@ -78,3 +78,17 @@ def test_box_div_truncates_toward_zero_on_negative() -> None:
     c = _ctx(x=-7)
     run_box(Box("Div", {"in1": "#x", "in2": "2"}, {"out": "#x"}), c)
     assert c.instance.x == -3  # truncation toward zero, not floor (-4)
+
+
+def test_write_to_a_global_db_member() -> None:
+    class DB:
+        Flag = False
+        Value = 0
+
+    db = DB()
+    inst: Any = FakeInstance(x=42)
+    c = EvalContext(instance=inst, runtime=FakeRuntime({"SomeDb": db}))
+    c.write('"SomeDb".Flag', True)
+    run_box(Box("Move", {"in": "#x"}, {"out1": '"SomeDb".Value'}), c)
+    assert (db.Flag, db.Value) == (True, 42)
+    assert not hasattr(inst, '"SomeDb".Flag')
