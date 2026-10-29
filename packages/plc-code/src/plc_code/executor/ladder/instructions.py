@@ -47,6 +47,11 @@ class EvalContext:
         return getattr(self.instance, operand)
 
     def write(self, operand: str, value: Any) -> None:
+        operand = operand.strip()
+        m = _DB_MEMBER_RE.match(operand)
+        if m:
+            setattr(self.runtime.global_dbs[m.group("db")], m.group("member"), value)
+            return
         name = operand[1:] if operand.startswith("#") else operand
         setattr(self.instance, name, value)
 

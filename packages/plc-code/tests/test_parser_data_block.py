@@ -134,3 +134,27 @@ def test_a_stray_closing_bracket_does_not_swallow_the_next_line(tmp_path: Path) 
 def test_a_comment_inside_a_path_is_dropped(tmp_path: Path) -> None:
     block = _parse(tmp_path, "ProbePathComment.s7dcl", PATH_COMMENT)
     assert block.initial_values == {"count": "3"}
+
+
+RETAIN_SECTIONS = """{
+    S7_Optimized := "TRUE"
+}
+DATA_BLOCK Probe
+    VAR RETAIN
+        {
+            S7_Setpoint := "False"
+        }
+        kept : DInt;
+    END_VAR
+    VAR NON_RETAIN
+        lost : Bool;
+    END_VAR
+END_DATA_BLOCK
+"""
+
+
+def test_retain_keyword_is_not_read_as_a_member(tmp_path: Path) -> None:
+    block = _parse(tmp_path, "Probe.s7dcl", RETAIN_SECTIONS)
+    members = [(v.name, v.data_type) for s in block.variable_sections for v in s.variables]
+    assert members == [("kept", "DInt"), ("lost", "Bool")]
+    assert block.variable_sections[0].variables[0].attributes.setpoint == "False"

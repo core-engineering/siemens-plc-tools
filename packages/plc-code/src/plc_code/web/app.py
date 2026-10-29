@@ -16,6 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from plc_code import __version__
+
 from .routes import analysis_router, blocks_router, config_router, tags_router, xref_router
 
 #: Comma-separated list of origins allowed to call the API cross-origin.
@@ -26,7 +28,7 @@ CORS_ORIGINS_ENV = "PLC_WEB_ALLOWED_ORIGINS"
 app = FastAPI(
     title="PLC Analysis Server",
     description="Unified web interface for PLC documentation and I/O tag analysis",
-    version="0.3.0",
+    version=__version__,
 )
 
 

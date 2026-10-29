@@ -20,8 +20,33 @@ from typing import Any
 from plc_code.executor.models import CompileResult, TranspileOptions, TranspileResult, python_class_name
 from plc_code.executor.transpiler import SCLTranspiler
 from plc_code.executor.types import TypeMapper
+from plc_code.parser.ladder_ast import Box, CallBox, LadderProgram, Rung
 from plc_code.parser.ladder_builder import build_ladder_program
 from plc_code.parser.models import Block
+
+
+def _safety_en_error(block: Block, program: LadderProgram) -> str | None:
+    """The refusal for a safety block with a box or call behind a contact, else ``None``.
+
+    TIA Portal refuses EN in a safety program ("Enable input EN cannot be used in
+    the safety program for the instruction 'Move'"); conditional work there is
+    written with ``JumpCoil`` / ``Label``. A block that wires EN would not compile
+    on the target, so running it here with standard-LAD semantics would invent a
+    behaviour the CPU never has.
+    """
+    if not block.attributes.is_safety:
+        return None
+    for rung in program.rungs:
+        if not isinstance(rung, Rung) or not rung.rail:
+            continue
+        for action in rung.actions:
+            if isinstance(action, Box | CallBox):
+                name = action.op if isinstance(action, Box) else action.name
+                return (
+                    f"safety block '{block.name}': EN of '{name}' is wired to a contact; "
+                    "TIA refuses EN in a safety program (use JumpCoil / Label)"
+                )
+    return None
 
 
 def _generate_fields_source(block: Block) -> str:
@@ -58,6 +83,16 @@ def compile_ladder_block(block: Block, **_: Any) -> CompileResult:
         ladder interpreter.
     """
     program = build_ladder_program(block)
+    en_error = _safety_en_error(block, program)
+    if en_error is not None:
+        return CompileResult(
+            success=False,
+            fb_class=None,
+            transpile_result=TranspileResult(
+                success=False, python_code="", class_name=python_class_name(block.name)
+            ),
+            compile_error=en_error,
+        )
 
     fields_source = _generate_fields_source(block)
 

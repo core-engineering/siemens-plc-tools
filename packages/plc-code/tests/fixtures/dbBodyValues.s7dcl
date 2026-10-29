@@ -1,0 +1,22 @@
+﻿{
+    S7_Optimized := "TRUE";
+    S7_Version := "0.1"
+}
+DATA_BLOCK dbBodyValues
+    VAR
+        GAIN : DInt;
+        OFFSET : DInt := 5;
+        ENABLED : Bool;
+        RATIO : Real;
+        LIMITS : Struct
+            LOW : Int;
+            HIGH : Int := 10;
+        END_STRUCT;
+        TABLE : Array[0..4] of DInt;
+    END_VAR
+    GAIN := 42;
+    OFFSET := -3;
+    ENABLED := TRUE;
+    LIMITS.LOW := -20;
+    TABLE[3] := -7;
+END_DATA_BLOCK

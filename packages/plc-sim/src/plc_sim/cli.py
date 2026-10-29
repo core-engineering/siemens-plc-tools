@@ -23,6 +23,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
+from plc_sim import __version__
 from plc_sim.core.config import SimConfig, load_sim_config
 from plc_sim.core.models import NodeClass
 
@@ -433,7 +434,7 @@ def web(port: int, host: str, endpoint: str | None, path: Path | None) -> None:
         app = FastAPI(
             title="PLC Simulation Server",
             description="OPC UA live interaction interface",
-            version="0.3.0",
+            version=__version__,
         )
         # Same rule as the plc-code server: the UI is served by this very app, so
         # same-origin calls need no CORS. Only an explicitly allow-listed,

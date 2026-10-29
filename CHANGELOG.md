@@ -31,6 +31,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `END_STRUCT`, silently truncating any UDT with a nested Struct. This changes
   the generated docs, type graphs and `plc code diff` output for such UDTs.
 
+### Fixed
+- **plc-code (executor, LAD)** — a box (`Move`, `Add`, ...) or a block call now
+  runs only when its rung conducts (EN). It used to run on every cycle whatever
+  the contacts in front of it gave.
+- **plc-code (executor, F-LAD)** — a safety block with a box or call behind a
+  contact (EN wired) no longer compiles in the harness: TIA refuses EN in a
+  safety program, so the block would not load on the target either. Existing
+  F-LAD blocks keep their boxes on the power rail and are unaffected.
+- **plc-code (executor, LAD)** — a coil or box output written to a global DB
+  member (`"Db".member`) now lands in that DB; it used to be set on the block
+  instance under the literal name.
+- **plc-code (executor)** — `load_data_block` reads the block through the parser:
+  start values written after `END_VAR` (`member := 42;`, the form TIA exports)
+  are applied, members declared without a value start at the zero of their type,
+  and inline `Struct` members are nested (`"Db".S.member`) instead of flattened
+  to the top level. Scalars from the body used to be missing.
+- **plc-code (parser)** — `VAR RETAIN` / `VAR NON_RETAIN` sections parse; the
+  qualifier was read as a member name and the whole file failed with
+  `Expected COLON`.
+
 ## [0.4.0] - 2026-08-24
 
 ### Added

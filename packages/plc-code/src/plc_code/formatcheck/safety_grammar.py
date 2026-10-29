@@ -21,12 +21,14 @@ from plc_code.formatcheck.checks import Finding
 
 #: Instructions written without quotes in a SIMATIC SD ladder body. Everything
 #: else that appears in call position is a user block and must be quoted.
+# fmt: off
 SYSTEM_INSTRUCTIONS = frozenset({
     "Add", "Sub", "Mul", "Div", "Mod", "Move", "Neg", "Abs",
     "Coil", "Contact", "SetCoil", "ResetCoil", "JumpCoil", "Label",
     "RD_ARRAY_DI", "WR_ARRAY_DI", "RD_ARRAY_I", "WR_ARRAY_I",
     "GT_Contact", "LT_Contact", "GE_Contact", "LE_Contact", "EQ_Contact", "NE_Contact",
 })
+# fmt: on
 
 _TITLE = re.compile(r"^\s*TITLE\s*=")
 _DECL_WITH_VALUE = re.compile(r"^\s+\w+\s*:\s*(?:DInt|Int|DWord|Word|Bool|Time|Real)\s*:=")
@@ -79,9 +81,15 @@ def _title_lines(path: Path, lines: list[str]) -> list[Finding]:
     only as an MLCID: ``S7_BlockTitle := "MLC_B"`` resolved by the ``.s7res``.
     """
     return [
-        Finding(path, i + 1, "S001", "ERROR",
-                "TITLE line is refused by the importer; use S7_BlockTitle with an MLCID and a .s7res")
-        for i, line in enumerate(lines) if _TITLE.match(line)
+        Finding(
+            path,
+            i + 1,
+            "S001",
+            "ERROR",
+            "TITLE line is refused by the importer; use S7_BlockTitle with an MLCID and a .s7res",
+        )
+        for i, line in enumerate(lines)
+        if _TITLE.match(line)
     ]
 
 
@@ -100,8 +108,15 @@ def _declarations_with_values(path: Path, lines: list[str]) -> list[Finding]:
             in_var = section.group(1) != "END_VAR"
             continue
         if in_var and _DECL_WITH_VALUE.match(line):
-            findings.append(Finding(path, i + 1, "S002", "ERROR",
-                                    "declaration carries an initial value; declare bare and assign after END_VAR"))
+            findings.append(
+                Finding(
+                    path,
+                    i + 1,
+                    "S002",
+                    "ERROR",
+                    "declaration carries an initial value; declare bare and assign after END_VAR",
+                )
+            )
     return findings
 
 
@@ -115,7 +130,8 @@ def _struct_in_safety(path: Path, lines: list[str], safety: bool) -> list[Findin
         return []
     return [
         Finding(path, i + 1, "S003", "ERROR", "Struct is not permitted in a fail-safe block interface")
-        for i, line in enumerate(lines) if re.search(r":\s*Struct\b", line)
+        for i, line in enumerate(lines)
+        if re.search(r":\s*Struct\b", line)
     ]
 
 
@@ -132,8 +148,15 @@ def _variable_arrays_outside_in_out(path: Path, lines: list[str]) -> list[Findin
             section = match.group(1)
             continue
         if _ARRAY_STAR.match(line) and section != "VAR_IN_OUT":
-            findings.append(Finding(path, i + 1, "S009", "ERROR",
-                                    f"Array[*] declared in {section or 'an unknown section'}; only VAR_IN_OUT accepts it"))
+            findings.append(
+                Finding(
+                    path,
+                    i + 1,
+                    "S009",
+                    "ERROR",
+                    f"Array[*] declared in {section or 'an unknown section'}; only VAR_IN_OUT accepts it",
+                )
+            )
     return findings
 
 
@@ -149,8 +172,16 @@ def _unquoted_user_calls(path: Path, lines: list[str]) -> list[Finding]:
     for i, line in enumerate(lines):
         match = _CALL.match(line)
         if match and not match.group(1) and match.group(2) not in SYSTEM_INSTRUCTIONS:
-            findings.append(Finding(path, i + 1, "S007", "WARNING",
-                                    f'call to "{match.group(2)}" is unquoted; user blocks are quoted, system instructions are not'))
+            findings.append(
+                Finding(
+                    path,
+                    i + 1,
+                    "S007",
+                    "WARNING",
+                    f'call to "{match.group(2)}" is unquoted; '
+                    "user blocks are quoted, system instructions are not",
+                )
+            )
     return findings
 
 
@@ -168,8 +199,13 @@ def _read_and_written(path: Path, text: str, safety: bool) -> list[Finding]:
     read = {f"{db}.{member}" for db, member in _OPERAND_READ.findall(text)}
     written = {f"{db}.{member}" for db, member in _OPERAND_WRITE.findall(text)}
     return [
-        Finding(path, None, "S008", "ERROR",
-                f'"{operand}" is both read and written by this safety block; keep intermediates in VAR_TEMP')
+        Finding(
+            path,
+            None,
+            "S008",
+            "ERROR",
+            f'"{operand}" is both read and written by this safety block; keep intermediates in VAR_TEMP',
+        )
         for operand in sorted(read & written)
     ]
 
@@ -189,8 +225,15 @@ def check_s7res_pair(dcl_path: Path, dcl_text: str, res_text: str | None) -> lis
         return []
     findings: list[Finding] = []
     if res_text is None:
-        return [Finding(dcl_path, None, "S005", "ERROR",
-                        f"block references {len(used)} MLCID(s) but no .s7res file sits next to it")]
+        return [
+            Finding(
+                dcl_path,
+                None,
+                "S005",
+                "ERROR",
+                f"block references {len(used)} MLCID(s) but no .s7res file sits next to it",
+            )
+        ]
     declared = set()
     for i, line in enumerate(res_text.splitlines()):
         decl = _MLCID_DECL.match(line)
@@ -199,11 +242,25 @@ def check_s7res_pair(dcl_path: Path, dcl_text: str, res_text: str | None) -> lis
             continue
         value = _RES_TEXT.match(line)
         if value and ": " in value.group(1) and not value.group(1).startswith('"'):
-            findings.append(Finding(dcl_path.with_suffix(".s7res"), i + 1, "S006", "ERROR",
-                                    "unquoted YAML text contains a colon and a space; quote it or the import fails"))
+            findings.append(
+                Finding(
+                    dcl_path.with_suffix(".s7res"),
+                    i + 1,
+                    "S006",
+                    "ERROR",
+                    "unquoted YAML text contains a colon and a space; quote it or the import fails",
+                )
+            )
     for missing in sorted(used - declared):
         findings.append(Finding(dcl_path, None, "S005", "ERROR", f"{missing} has no text in the .s7res"))
     for orphan in sorted(declared - used):
-        findings.append(Finding(dcl_path.with_suffix(".s7res"), None, "S005", "WARNING",
-                                f"{orphan} is declared but never referenced by the block"))
+        findings.append(
+            Finding(
+                dcl_path.with_suffix(".s7res"),
+                None,
+                "S005",
+                "WARNING",
+                f"{orphan} is declared but never referenced by the block",
+            )
+        )
     return findings

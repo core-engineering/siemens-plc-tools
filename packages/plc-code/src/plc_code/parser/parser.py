@@ -525,6 +525,13 @@ class SCLParser:
             self._advance()
             section_type = "VAR_CONSTANT"
             is_constant = True
+        elif (
+            section_type == "VAR"
+            and self._current().type == TokenType.IDENTIFIER
+            and self._current().value.upper() in ("RETAIN", "NON_RETAIN")
+        ):
+            # `VAR RETAIN` / `VAR NON_RETAIN`: a retentivity qualifier, not a member name.
+            self._advance()
 
         section = VariableSection(
             section_type=section_type,  # type: ignore[arg-type]

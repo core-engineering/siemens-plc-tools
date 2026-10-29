@@ -44,10 +44,15 @@ class LadderInterpreter:
             rail = eval_rail(rung.rail, ctx)
             jumped = False
             for action in rung.actions:
+                # A box runs only when its EN conducts. The builder puts every contact of a
+                # rung ahead of its actions, so the whole rail is that EN. A safety block never
+                # gets here with EN wired: TIA refuses it, and so does compile_ladder_block.
                 if isinstance(action, Box):
-                    run_box(action, ctx)
+                    if rail:
+                        run_box(action, ctx)
                 elif isinstance(action, CallBox):
-                    run_callbox(action, ctx)
+                    if rail:
+                        run_callbox(action, ctx)
                 elif isinstance(action, Coil):
                     ctx.write(action.operand, rail)
                 elif isinstance(action, JumpCoil):

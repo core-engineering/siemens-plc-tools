@@ -3,6 +3,7 @@ from pathlib import Path
 
 from plc_code.executor.ladder.interpreter import LadderInterpreter
 from plc_code.parser import parse_scl_file
+from plc_code.parser.ladder_ast import Box, CallBox, CompareContact, LadderProgram, Rung
 from plc_code.parser.ladder_builder import build_ladder_program
 
 FIX = Path(__file__).parent.parent / "fixtures" / "ladder"
@@ -63,3 +64,48 @@ def test_sign_applies_negation_when_flagged() -> None:
 
 def test_sign_keeps_value_when_not_flagged() -> None:
     assert run_sign(9267, False) == 9267
+
+
+class CallRecordingRuntime:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def call_named_block(self, name: str, inputs: object, in_outs: object) -> dict[str, object]:
+        self.calls.append(name)
+        return {"y": 1}
+
+
+@dataclass
+class GatedInst:
+    a: int = 0
+    copied: int = 0
+    total: int = 10
+    called: int = 0
+
+
+def _gated_program() -> LadderProgram:
+    # Standard LAD: each box sits behind `a < 5` and must run only when the rung conducts (EN).
+    rail = ((CompareContact("LT", "#a", "5"),),)
+    return LadderProgram(
+        rungs=(
+            Rung(rail=rail, actions=(Box("Move", {"in": "#a"}, {"out1": "#copied"}),)),
+            Rung(rail=rail, actions=(Box("Add", {"in1": "#total", "in2": "1"}, {"out": "#total"}),)),
+            Rung(rail=rail, actions=(CallBox("Child", (("x", ":=", "#a"), ("y", "=>", "#called"))),)),
+        )
+    )
+
+
+def test_boxes_do_not_run_when_the_rung_does_not_conduct() -> None:
+    inst = GatedInst(a=7)
+    runtime = CallRecordingRuntime()
+    LadderInterpreter(_gated_program()).run(inst, runtime)
+    assert (inst.copied, inst.total, inst.called) == (0, 10, 0)
+    assert runtime.calls == []
+
+
+def test_boxes_run_when_the_rung_conducts() -> None:
+    inst = GatedInst(a=3)
+    runtime = CallRecordingRuntime()
+    LadderInterpreter(_gated_program()).run(inst, runtime)
+    assert (inst.copied, inst.total, inst.called) == (3, 11, 1)
+    assert runtime.calls == ["Child"]
