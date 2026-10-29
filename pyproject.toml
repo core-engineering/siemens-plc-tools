@@ -188,7 +188,7 @@ asyncio_mode = "auto"
 #
 # CLAUDE.md's "85% per package" is the goal, not the state. Worst offender left:
 # plc-sim (32.7%), whose bulk is the CLI and the web layer.
-fail_under = 68
+fail_under = 71
 precision = 2
 
 [tool.mypy]

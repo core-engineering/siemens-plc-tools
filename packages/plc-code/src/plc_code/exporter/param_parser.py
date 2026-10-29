@@ -16,39 +16,25 @@ and expand the structure using type-default values.
 
 from __future__ import annotations
 
+import itertools
+import logging
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
+from plc_code.layout.registry import TypeRegistry, normalize_type_name
+from plc_code.parser.models import StructField
+
+logger = logging.getLogger(__name__)
+
 # TIA Portal XML namespace for interface definitions
 NS = "http://www.siemens.com/automation/Openness/SW/Interface/v5"
 
 
-@dataclass
-class TypeMember:
-    """A member field parsed from an s7dcl UDT definition.
-
-    Attributes
-    ----------
-    name : str
-        Field name (e.g. "analogicMinValue").
-    datatype : str
-        S7 data type or UDT reference (e.g. "Int", "typeSafetyCpmsParameter").
-    default_value : str
-        Default value from the type definition (e.g. "0", "T#150ms", "").
-    is_udt : bool
-        True if the datatype references another UDT.
-    """
-
-    name: str
-    datatype: str
-    default_value: str = ""
-    is_udt: bool = False
-
-
-# Type registry: maps UDT name → list of members
-TypeRegistry = dict[str, list[TypeMember]]
+# ``Array[dims] of Element``; each dim is ``lo..hi``.
+_ARRAY_TYPE_RE = re.compile(r"^Array\s*\[(.*)\]\s*of\s+(.+)$", re.IGNORECASE)
+_ARRAY_BOUNDS_RE = re.compile(r"^\s*(-?\d+)\s*\.\.\s*(-?\d+)\s*$")
 
 
 @dataclass
@@ -148,7 +134,7 @@ def parse_parameter_xml(
         raise ValueError(f"No Static section found in {xml_path}")
 
     # Build type registry if types_dir provided
-    type_registry: TypeRegistry = {}
+    type_registry = TypeRegistry()
     if types_dir is not None:
         type_registry = build_type_registry(types_dir)
 
@@ -271,8 +257,10 @@ def _expand_type(
 ) -> None:
     """Expand a UDT type from the registry into leaf parameter entries.
 
-    Recursively resolves nested UDT references until leaf (scalar) members
-    are reached, then creates ParameterEntry instances with default values.
+    Every member of the type is reached: nested UDTs and inline ``Struct``
+    members are recursed into, and arrays are expanded element by element
+    (``gains[0]``, ``zones[1].x``, ``grid[0,1]``), as the XML export names
+    them. Leaf entries carry the default value written in the type, or ``""``.
 
     Parameters
     ----------
@@ -281,40 +269,111 @@ def _expand_type(
     path_parts : list[str]
         Member names accumulated from root to current position.
     array_names : list[str]
-        Names of members in path_parts that are arrays.
+        Names of members in path_parts that are arrays (unused here: expanded
+        names already carry their indices).
     type_name : str
         UDT type name to expand.
     type_registry : TypeRegistry
-        Registry mapping type names to their members.
+        Registry of the UDTs parsed from the ``.s7dcl`` sources.
     entries : list[ParameterEntry]
         Accumulator for discovered parameter entries.
     """
-    members = type_registry.get(type_name)
-    if not members:
+    if type_name not in type_registry:
         return
+    fields = type_registry.get(type_name).fields
+    _expand_fields(db_name, path_parts, fields, "", type_registry, entries)
 
-    for member in members:
-        current_path = path_parts + [member.name]
-        if member.is_udt and member.datatype in type_registry:
-            # Nested UDT — recurse
-            _expand_type(db_name, current_path, array_names, member.datatype, type_registry, entries)
-        else:
-            # Leaf member — emit entry
-            qualified = db_name + "." + ".".join(current_path)
-            entries.append(
-                ParameterEntry(
-                    qualified_path=qualified,
-                    datatype=member.datatype,
-                    value=member.default_value,
-                )
+
+def _expand_fields(
+    db_name: str,
+    path_parts: list[str],
+    fields: list[StructField],
+    parent: str,
+    type_registry: TypeRegistry,
+    entries: list[ParameterEntry],
+) -> None:
+    """Expand the fields of ``fields`` declared directly under ``parent`` (``""`` = top level)."""
+    for field in fields:
+        if field.parent != parent:
+            continue
+        struct_path = f"{parent}.{field.name}" if parent else field.name
+        _expand_member(
+            db_name,
+            path_parts,
+            field.name,
+            field.data_type,
+            field.default_value or "",
+            fields,
+            struct_path,
+            type_registry,
+            entries,
+        )
+
+
+def _expand_member(
+    db_name: str,
+    path_parts: list[str],
+    name: str,
+    data_type: str,
+    default_value: str,
+    fields: list[StructField],
+    struct_path: str,
+    type_registry: TypeRegistry,
+    entries: list[ParameterEntry],
+) -> None:
+    """Expand one member: inline Struct, array, UDT, or leaf entry.
+
+    ``struct_path`` is the member's path inside its UDT; the fields of an inline
+    ``Struct`` (or of an ``Array[..] of Struct``) are declared under it.
+    """
+    if data_type.strip().lower() == "struct":
+        _expand_fields(db_name, path_parts + [name], fields, struct_path, type_registry, entries)
+        return
+    shape = _array_shape(data_type)
+    if shape is not None:
+        dimensions, element_type = shape
+        for index in itertools.product(*dimensions):
+            element = f"{name}[{','.join(str(i) for i in index)}]"
+            _expand_member(
+                db_name, path_parts, element, element_type, "", fields, struct_path, type_registry, entries
             )
+        return
+    if data_type in type_registry:
+        _expand_type(db_name, path_parts + [name], [], data_type, type_registry, entries)
+        return
+    # Leaf, or an array whose bounds are not literal (kept whole rather than dropped).
+    entries.append(
+        ParameterEntry(
+            qualified_path=db_name + "." + ".".join(path_parts + [name]),
+            datatype=normalize_type_name(data_type),
+            value=default_value,
+        )
+    )
+
+
+def _array_shape(data_type: str) -> tuple[list[range], str] | None:
+    """Index ranges and element type of an ``Array[lo..hi, ...] of T``; ``None`` otherwise.
+
+    ``None`` too for bounds that are not integer literals (``Array[*]``, named
+    constants), which cannot be enumerated from the source alone.
+    """
+    match = _ARRAY_TYPE_RE.match(data_type.strip())
+    if not match:
+        return None
+    dimensions: list[range] = []
+    for dimension in match.group(1).split(","):
+        bounds = _ARRAY_BOUNDS_RE.match(dimension)
+        if not bounds:
+            return None
+        dimensions.append(range(int(bounds.group(1)), int(bounds.group(2)) + 1))
+    return dimensions, match.group(2).strip()
 
 
 def build_type_registry(types_dir: Path) -> TypeRegistry:
     """Build a type registry from all .s7dcl files in a directory tree.
 
-    Scans recursively for .s7dcl files, parses STRUCT type definitions,
-    and returns a mapping of type name to member list.
+    Parses every ``TYPE`` block with the SCL parser. Files that do not parse
+    are logged and skipped (see ``TypeRegistry.problems``).
 
     Parameters
     ----------
@@ -324,126 +383,15 @@ def build_type_registry(types_dir: Path) -> TypeRegistry:
     Returns
     -------
     TypeRegistry
-        Mapping of type name to list of TypeMember.
+        Registry of the UDTs found (empty when ``types_dir`` is not a directory).
     """
-    registry: TypeRegistry = {}
     types_dir = Path(types_dir)
     if not types_dir.is_dir():
-        return registry
-
-    for s7dcl_path in types_dir.rglob("*.s7dcl"):
-        try:
-            text = s7dcl_path.read_text(encoding="utf-8-sig")
-        except OSError:
-            continue
-
-        result = _parse_s7dcl_type(text)
-        if result is not None:
-            name, members = result
-            registry[name] = members
-
+        return TypeRegistry()
+    registry = TypeRegistry.from_directories(types_dir)
+    for problem in registry.problems:
+        logger.warning("type source skipped: %s", problem)
     return registry
-
-
-# Pattern to match struct member declarations in s7dcl files.
-# Captures: name, datatype (with optional _. prefix), optional default value.
-# Examples:
-#   analogicMinValue : Int := 0;
-#   cpms : _.typeSafetyCpmsParameterWithZone;
-#   digitalInputDiscrepency : Time := T#150ms;
-_MEMBER_PATTERN = re.compile(
-    r"^\s+(\w+)\s*:\s*"  # field name
-    r"(?:_\.)?"  # optional _. UDT prefix
-    r"([\w]+)"  # datatype
-    r"(?:\s*:=\s*(.+?))?"  # optional := default
-    r"\s*;",  # trailing semicolon
-    re.MULTILINE,
-)
-
-# S7 primitive datatypes (case-insensitive check)
-_PRIMITIVE_TYPES = frozenset(
-    {
-        "bool",
-        "byte",
-        "word",
-        "dword",
-        "lword",
-        "sint",
-        "int",
-        "dint",
-        "lint",
-        "usint",
-        "uint",
-        "udint",
-        "ulint",
-        "real",
-        "lreal",
-        "time",
-        "ltime",
-        "date",
-        "dtl",
-        "tod",
-        "ltod",
-        "dt",
-        "ldt",
-        "char",
-        "wchar",
-        "string",
-        "wstring",
-        "hw_io",
-        "hw_submodule",
-    }
-)
-
-
-def _parse_s7dcl_type(text: str) -> tuple[str, list[TypeMember]] | None:
-    """Parse a single s7dcl TYPE definition into a type name and members.
-
-    Parameters
-    ----------
-    text : str
-        Full text content of an s7dcl file.
-
-    Returns
-    -------
-    tuple[str, list[TypeMember]] | None
-        (type_name, members) if a STRUCT definition was found, None otherwise.
-    """
-    # Extract type name from "typeName : STRUCT"
-    type_match = re.search(r"(\w+)\s*:\s*STRUCT\b", text)
-    if not type_match:
-        return None
-
-    type_name = type_match.group(1)
-
-    # Extract the STRUCT body (between STRUCT and END_STRUCT)
-    struct_match = re.search(r"STRUCT\b(.*?)END_STRUCT", text, re.DOTALL)
-    if not struct_match:
-        return None
-
-    body = struct_match.group(1)
-
-    # Remove pragma lines { ... } to avoid false matches
-    body = re.sub(r"\{[^}]*\}", "", body)
-
-    members: list[TypeMember] = []
-    for m in _MEMBER_PATTERN.finditer(body):
-        field_name = m.group(1)
-        datatype = m.group(2)
-        default_value = m.group(3).strip() if m.group(3) else ""
-
-        is_udt = datatype.lower() not in _PRIMITIVE_TYPES
-
-        members.append(
-            TypeMember(
-                name=field_name,
-                datatype=datatype,
-                default_value=default_value,
-                is_udt=is_udt,
-            )
-        )
-
-    return (type_name, members) if members else None
 
 
 def _sort_by_array_instance(entries: list[ParameterEntry]) -> list[ParameterEntry]:

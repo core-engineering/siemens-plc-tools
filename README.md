@@ -45,9 +45,14 @@ cd examples/demo-project
 plc code lint
 plc code check-format program-blocks   # UTF-8 BOM/CRLF, one block per file, header attributes
 plc code docs
-plc code test --coverage         # block tests + SCL line coverage
+plc code xref --tags tags program-blocks   # unused / undeclared I/O
+```
+
+On your own project:
+
+```bash
+plc code test --coverage                # block tests (test_*.py) + SCL line coverage
 plc code diff old-export/ new-export/   # semantic diff, formatting-blind
-plc code xref --tags "PLC tags" "Program blocks"   # unused / undeclared I/O
 ```
 
 `plc code check-format` and `plc code layout` operate on a full TIA Portal

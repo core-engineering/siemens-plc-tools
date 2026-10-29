@@ -334,6 +334,8 @@ class StructField:
     parent : str
         dotted path of the enclosing inline Struct ("" at top level); the flat
         list stays flat, this records nesting.
+    default_value : str | None
+        Default value as written after ``:=`` (``None`` when there is none).
     """
 
     name: str
@@ -341,6 +343,7 @@ class StructField:
     mlc_id: str = ""
     comment: str = ""
     parent: str = ""
+    default_value: str | None = None
 
 
 @dataclass

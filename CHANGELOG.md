@@ -50,6 +50,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **plc-code (parser)** — `VAR RETAIN` / `VAR NON_RETAIN` sections parse; the
   qualifier was read as a member name and the whole file failed with
   `Expected COLON`.
+- **examples** — the demo blocks are UTF-8 with BOM and CRLF, as TIA writes them,
+  so `plc code check-format program-blocks` passes on the demo. A
+  `.gitattributes` keeps git from converting `.s7dcl` / `.s7res` line endings.
+- **plc-code (export params)** — a self-closing UDT member of a parameter XML
+  is expanded from the `.s7dcl` types through the SCL parser (`layout.TypeRegistry`)
+  instead of a regex. Members the regex dropped now appear: arrays (expanded
+  element by element, `gains[0]`, `grid[0,1]`; kept whole when a bound is a
+  named constant), inline `Struct` members (nested, no longer promoted to the
+  top level), quoted names, and nested UDTs the regex could not read. On real
+  sources, 50 of 131 UDTs were read wrong. `build_type_registry` now returns a
+  `layout.TypeRegistry`; `TypeMember` is gone.
+- **plc-code (parser)** — `StructField.default_value` keeps a UDT member's
+  default as written; it used to be skipped.
 
 ## [0.4.0] - 2026-08-24
 
