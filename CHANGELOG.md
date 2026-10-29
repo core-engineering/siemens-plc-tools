@@ -34,8 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - **plc-code (executor, LAD)** — a box (`Move`, `Add`, ...) or a block call now
   runs only when its rung conducts (EN). It used to run on every cycle whatever
-  the contacts in front of it gave. F-LAD is unaffected: TIA refuses EN on `Move`
-  there, so its boxes sit on the power rail.
+  the contacts in front of it gave.
+- **plc-code (executor, F-LAD)** — a safety block with a box or call behind a
+  contact (EN wired) no longer compiles in the harness: TIA refuses EN in a
+  safety program, so the block would not load on the target either. Existing
+  F-LAD blocks keep their boxes on the power rail and are unaffected.
 - **plc-code (executor, LAD)** — a coil or box output written to a global DB
   member (`"Db".member`) now lands in that DB; it used to be set on the block
   instance under the literal name.

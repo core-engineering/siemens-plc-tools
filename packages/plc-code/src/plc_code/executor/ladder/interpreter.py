@@ -45,8 +45,8 @@ class LadderInterpreter:
             jumped = False
             for action in rung.actions:
                 # A box runs only when its EN conducts. The builder puts every contact of a
-                # rung ahead of its actions, so the whole rail is that EN. F-LAD forbids EN on
-                # Move, so there the rail is the power rail and the box always runs.
+                # rung ahead of its actions, so the whole rail is that EN. A safety block never
+                # gets here with EN wired: TIA refuses it, and so does compile_ladder_block.
                 if isinstance(action, Box):
                     if rail:
                         run_box(action, ctx)
