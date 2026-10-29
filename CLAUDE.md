@@ -383,32 +383,34 @@ from plc_iol.exporters import ExcelExporter
 | Unit tests | Each package has `tests/` directory (no `__init__.py` — see §6) |
 | Integration tests | Root `tests/` for cross-package tests |
 | Coverage goal | 85% per package |
-| Coverage gate | `fail_under = 68` (whole workspace), a ratchet — raise it, never lower it |
+| Coverage gate | `fail_under = 71` (whole workspace), a ratchet — raise it, never lower it |
 
 ### Coverage: goal vs. state
 
 `uv run pytest` measures all nine coverage targets and fails below the floor in
-`[tool.coverage.report]`. As of the last full run: **68.26%** overall
-(14019/20537 statements).
+`[tool.coverage.report]`. As of the last full run: **71.58%** overall
+(15646/21858 statements).
 
 | Package | Coverage | Covered / statements |
 |---------|----------|----------------------|
 | plc-modbus | 97.8% | 135 / 138 |
+| plc-code | 74.7% | 11919 / 15960 |
 | plc-trace | 72.9% | 312 / 428 |
-| plc-code | 72.8% | 10661 / 14649 |
+| plc-sim | 68.8% | 674 / 979 |
 | plc-iol | 67.3% | 1082 / 1608 |
 | plc-tools | 65.3% | 32 / 49 |
-| plc-core | 58.0% | 1033 / 1780 |
+| plc-core | 58.6% | 1048 / 1789 |
 | plc-net | 49.9% | 230 / 461 |
 | plc-sup | 48.0% | 214 / 446 |
-| plc-sim | 32.7% | 320 / 978 |
 
-The statement counts matter as much as the percentages: `plc-code` is 71% of the
+The statement counts matter as much as the percentages: `plc-code` is 73% of the
 workspace, so it alone sets the headline number.
 
 `plc-net`, `plc-sup` and `plc-sim` now have unit suites over their pure logic
-(dissector, step parsing, executors on fakes); what remains uncovered there is
-live I/O (capture, OPC UA/Redis/DB connections, the web layer).
+(dissector, step parsing, executors on fakes); `plc-sim` also tests its web API
+and its live commands (`connect`, `browse`, `read`, `write`, `results`) on a fake
+OPC UA client. What remains uncovered there is live I/O (capture, OPC UA/Redis/DB
+connections) and `plc sim test` / `monitor` / `web`.
 
 ---
 
